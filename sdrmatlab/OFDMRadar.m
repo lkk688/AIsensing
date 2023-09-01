@@ -40,7 +40,7 @@ spectrum = spectrumAnalyzer('SampleRate', plutoSampRate, "NumInputPorts",2);
 plutoTx = sdrtx('Pluto'); %comm.SDRTxPluto(RadioID='ip:pluto2.local');
 plutoTx.CenterFrequency = 1e9; % dopo il mixer abbiamo RF=2*LO + IF; LO=13Ghz, IF=2.55Ghz; RF=28.55Ghz
 plutoTx.Gain = 0;
-plutoTx.BasebandSampleRate = plutoSampRate; % default 1.0e6
+plutoTx.BasebandSampleRate = 2*plutoSampRate; % default 1.0e6
 plutoTx.ShowAdvancedProperties = true;
 plutoTx.FrequencyCorrection = 0;
 info(plutoTx)
@@ -58,7 +58,7 @@ plutoRx.OutputDataType = "double";
 plutoRx.SamplesPerFrame = txOfdmMod.NumSymbols * (fftlen + cplen); % better be > 4000 samples
 plutoRx.GainSource = "Manual";
 plutoRx.Gain = 0;
-plutoRx.BasebandSampleRate = plutoSampRate;
+plutoRx.BasebandSampleRate = 2*plutoSampRate;
 
 tic
 while toc < 30
@@ -69,3 +69,5 @@ end
 %%
 release(plutoTx);
 release(plutoRx);
+
+%https://ez.analog.com/adieducation/university-program/f/q-a/568337/matlab-pluto-sdr-received-ofdm-signal-looks-band-pass-filtered-but-no-filter-was-applied
