@@ -9,7 +9,9 @@ from scipy import signal
 # Create radio
 piuri="ip:phaser.local:50901"
 localuri="ip:analog.local"
-sdr = adi.ad9361(uri=piuri)
+antsdruri="ip:192.168.1.10"#connected via Ethernet with static IP
+plutodruri="ip:192.168.2.16"#connected via USB
+sdr = adi.ad9361(uri=antsdruri)
 
 # Configure properties
 sdr.rx_rf_bandwidth = 4000000 #4MHz

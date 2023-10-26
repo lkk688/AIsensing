@@ -33,7 +33,7 @@ OFDM Radar Sample code:
 The simulation results of the DFTS-OFDM radar for two targets:
 ![ofdmradarheatmap](imgs/ofdmradarheatmap.png)
 
-## Radio device connected to MATLAB
+## ADALM-PLUTO Radio devices
 ADALM-PLUTO is based on Analog Devices AD9363--Highly Integrated RF Agile Transceiver and Xilinx® Zynq Z-7010 FPGA
   * Website: https://www.analog.com/en/design-center/evaluation-hardware-and-software/evaluation-boards-kits/adalm-pluto.html#eb-overview
   * RF coverage from 325 MHz to 3.8 GHz
@@ -62,8 +62,42 @@ ADI Book Software-Defined Radio for Engineers, 2018: https://www.analog.com/en/e
 
 Analog Devices Board Support Packages Toolbox For MATLAB and Simulink: https://wiki.analog.com/resources/eval/user-guides/matlab_bsp
 
+PlutoSDR quick start: https://wiki.analog.com/university/tools/pluto/users/quick_start
+  * Download windows driver from: https://github.com/analogdevicesinc/plutosdr-m2k-drivers-win/releases
+  * The terminal settings are 115200 baud, 8 bits, no parity, 1 stop bit. This is referred to as 115200-8N1. The default username is root, and the default root password is analog.
+  * The IP number is set by the device, and can be found by looking inside the ADALM-PLUTO's mass storage device, and the info.html page.
+  * Checking from serial port: ifconfig usb0
+  * Check IIO devices "iio_info -s", "iio_attr -a -C"
+
+```bash 
+(mycondapy310) PS D:\Developer\radarsensing> iio_attr -a -C fw_version   
+Using auto-detected IIO context at URI "usb:2.46.5"
+fw_version: v0.35
+(mycondapy310) PS D:\Developer\radarsensing> iio_info -u ip:192.168.2.16
+(mycondapy310) PS D:\Developer\radarsensing> ssh root@192.168.2.16 #ssh root@pluto.local
+#password: analog
+iio_info -u "ip:192.168.1.10"
+ssh root@192.168.1.10 #password: analog
+v0.34-dirty
+https://github.com/MicroPhase/antsdr-fw
+# fw_printenv attr_name
+attr_name=compatible
+# fw_printenv attr_val
+attr_val=ad9361
+# fw_printenv compatible
+compatible=ad9361
+# fw_printenv mode
+mode=2r2t
+```
+
+
+Upgrade the firmware: https://wiki.analog.com/university/tools/pluto/users/firmware
+
+
 After the driver installation, the pluto device can be connected and tested via ADI IIO:
 ![plutoiio](imgs/plutoiio.png)
+
+Install IIO_oscilloscope: https://wiki.analog.com/resources/tools-software/linux-software/iio_oscilloscope
 
 The spectrum diagram from IIO:
 ![plutoiiospectrum](imgs/plutoiiospectrum.png)
@@ -89,3 +123,22 @@ When antenna is not attached:
 
 When antenna is attached, we can see the received signal spectrum:
 ![OFDMtransmitreceive](imgs/OFDMtransmitreceive.png)
+
+### Python interface
+PyADI-IIO: https://wiki.analog.com/resources/tools-software/linux-software/pyadi-iio
+
+```bash 
+conda install -c conda-forge pylibiio
+pip install pyadi-iio
+pip install matplotlib
+pip install scipy
+pip install PyQt5
+pip install pyqtgraph
+
+pip install kiwisolver
+pip install Pillow
+pip install numpy matplotlib
+conda install pyqtgraph 
+conda install -c anaconda pyqt 
+conda install -c anaconda numpy
+```
