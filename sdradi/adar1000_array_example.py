@@ -1,6 +1,3 @@
-# Copyright (C) 2020 Analog Devices, Inc.
-#
-# SPDX short identifier: ADIBSD
 
 """ Example of how to use the adar1000_array class """
 

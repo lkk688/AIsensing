@@ -1,8 +1,3 @@
-# Copyright (C) 2020-2021 Analog Devices, Inc.
-#
-# SPDX short identifier: ADIBSD
-
-# type: ignore
 
 import csv
 import os

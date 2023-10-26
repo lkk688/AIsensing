@@ -1,6 +1,3 @@
-# Copyright (C) 2019 Analog Devices, Inc.
-#
-# SPDX short identifier: ADIBSD
 
 import time
 
