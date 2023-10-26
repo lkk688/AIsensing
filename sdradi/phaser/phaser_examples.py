@@ -49,7 +49,9 @@ from time import sleep
 import matplotlib.pyplot as plt
 import numpy as np
 from adi import ad9361
-from adi.cn0566 import CN0566
+#from adi.cn0566 import CN0566
+import mycn0566 as mycn0566
+CN0566=mycn0566.CN0566
 from phaser_functions import (
     calculate_plot,
     channel_calibration,
@@ -112,18 +114,28 @@ def do_cal_phase():
 # on failure, connect to remote CN0566
 
 try:
-    print("Attempting to connect to CN0566 via ip:localhost...")
-    my_phaser = CN0566(uri="ip:localhost")
-    print("Found CN0566. Connecting to PlutoSDR via default IP address...")
-    my_sdr = ad9361(uri="ip:192.168.2.1")
-    print("PlutoSDR connected.")
+    # print("Attempting to connect to CN0566 via ip:localhost...")
+    # my_phaser = CN0566(uri="ip:localhost")
+    # print("Found CN0566. Connecting to PlutoSDR via default IP address...")
+    # my_sdr = ad9361(uri="ip:192.168.2.1")
+    # print("PlutoSDR connected.")
 
-except:
+    my_sdr = ad9361(uri="ip:phaser.local:50901")
+    print("Found SDR on shared phaser.local.")
+    sleep(1.5)
     print("CN0566 on ip.localhost not found, connecting via ip:phaser.local...")
     my_phaser = CN0566(uri="ip:phaser.local")
     print("Found CN0566. Connecting to PlutoSDR via shared context...")
-    my_sdr = ad9361(uri="ip:phaser.local:50901")
-    print("Found SDR on shared phaser.local.")
+    
+    
+
+except:
+    print("Device connection problem")
+    # print("CN0566 on ip.localhost not found, connecting via ip:phaser.local...")
+    # my_phaser = CN0566(uri="ip:phaser.local")
+    # print("Found CN0566. Connecting to PlutoSDR via shared context...")
+    # my_sdr = ad9361(uri="ip:phaser.local:50901")
+    # print("Found SDR on shared phaser.local.")
 
 my_phaser.sdr = my_sdr  # Set my_phaser.sdr
 
@@ -161,7 +173,7 @@ except:
 
 #  Configure SDR parameters.
 
-my_sdr.filter = "LTE20_MHz.ftr"  # Load LTE 20 MHz filter
+my_sdr.filter = "sdradi\phaser\LTE20_MHz.ftr" #"LTE20_MHz.ftr"  # Load LTE 20 MHz filter
 
 
 # use_tx = config.use_tx
@@ -230,7 +242,7 @@ my_phaser.set_beam_phase_diff(0.0)
 
 # Really basic options - "plot" to plot continuously, "cal" to calibrate both gain and phase.
 func = sys.argv[1] if len(sys.argv) >= 2 else "plot"
-
+func='cal'
 
 if func == "cal":
     input(

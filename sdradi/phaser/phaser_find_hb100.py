@@ -50,26 +50,40 @@ from time import sleep
 import matplotlib.pyplot as plt
 import numpy as np
 from adi import ad9361
-from adi.cn0566 import CN0566
+import adi
+#from adi.cn0566 import CN0566
+import mycn0566 as mycn0566
 from phaser_functions import save_hb100_cal, spec_est
 from scipy import signal
+
+CN0566=mycn0566.CN0566
 
 # First try to connect to a locally connected CN0566. On success, connect,
 # on failure, connect to remote CN0566
 
-try:
-    print("Attempting to connect to CN0566 via ip:localhost...")
-    my_phaser = CN0566(uri="ip:localhost")
-    print("Found CN0566. Connecting to PlutoSDR via default IP address...")
-    my_sdr = ad9361(uri="ip:192.168.2.1")
-    print("PlutoSDR connected.")
+# try:
+#     print("Attempting to connect to CN0566 via ip:localhost...")
+#     my_phaser = CN0566(uri="ip:localhost")
+#     print("Found CN0566. Connecting to PlutoSDR via default IP address...")
+#     my_sdr = ad9361(uri="ip:192.168.2.1")
+#     print("PlutoSDR connected.")
 
-except:
-    print("CN0566 on ip.localhost not found, connecting via ip:phaser.local...")
-    my_phaser = CN0566(uri="ip:phaser.local")
-    print("Found CN0566. Connecting to PlutoSDR via shared context...")
-    my_sdr = ad9361(uri="ip:phaser.local:50901")
-    print("Found SDR on shared phaser.local.")
+# except:
+#     print("CN0566 on ip.localhost not found, connecting via ip:phaser.local...")
+#     my_phaser = CN0566(uri="ip:phaser.local")
+#     print("Found CN0566. Connecting to PlutoSDR via shared context...")
+#     my_sdr = ad9361(uri="ip:phaser.local:50901")
+#     print("Found SDR on shared phaser.local.")
+
+#test=adi.one_bit_adc_dac(uri="ip:phaser.local")
+
+my_sdr = ad9361(uri="ip:phaser.local:50901")
+print("Found SDR on shared phaser.local.")
+sleep(1.5)
+my_phaser = CN0566(uri="ip:phaser.local")
+print("Found CN0566. Connecting to PlutoSDR via shared context...")
+#my_sdr = ad9361(uri="ip:phaser.local:50901")
+#print("Found SDR on shared phaser.local.")
 
 my_phaser.sdr = my_sdr  # Set my_phaser.sdr
 
@@ -102,7 +116,7 @@ my_sdr.rx_hardwaregain_chan1 = 0  # dB
 my_sdr.rx_lo = int(2.0e9)  # Downconvert by 2GHz  # Receive Freq
 
 #my_sdr.filter = "LTE20_MHz.ftr"  # Handy filter for fairly widdeband measurements
-my_sdr.filter = "examples\phaser\LTE20_MHz.ftr"  # Handy filter for fairly widdeband measurements
+my_sdr.filter = "sdradi\phaser\LTE20_MHz.ftr"  # Handy filter for fairly widdeband measurements
 
 # Make sure the Tx channels are attenuated (or off) and their freq is far away from Rx
 # this is a negative number between 0 and -88
@@ -151,7 +165,7 @@ for freq in range(int(f_start), int(f_stop), int(f_step)):
         int(my_phaser.SignalFreq) + my_sdr.rx_lo
     ) // 4  # PLL feedback via /4 VCO output
 
-    data = my_sdr.rx()
+    data = my_sdr.rx() #two item array, each iteam is (1024,) complex
     data_sum = data[0] + data[1]
     #    max0 = np.max(abs(data[0]))
     #    max1 = np.max(abs(data[1]))
@@ -170,7 +184,8 @@ peak_index = np.argmax(full_ampl) #(71680,) -> 22526
 peak_freq = full_freqs[peak_index]
 print("Peak frequency found at ", full_freqs[peak_index], " GHz.")
 
-plt.figure(2)
+plt.figure(figsize=(10,6))
+#plt.figure(2)
 plt.title("Full Spectrum, peak at " + str(full_freqs[peak_index]) + " GHz.")
 plt.plot(full_freqs, full_ampl, linestyle="", marker="o", ms=2)
 plt.xlabel("Frequency [GHz]")

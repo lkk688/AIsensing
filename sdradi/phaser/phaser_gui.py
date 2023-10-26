@@ -2508,8 +2508,9 @@ class App:
 
 root = Tk()
 root.title("Phased Array Beamforming")
-root.geometry("1600x800+100+20")
-root.call("tk", "scaling", 1.50)  # MWT: This seemed to fix scaling issues in Windows.
+#root.geometry("1600x800+100+20")
+root.geometry("2000x1200+100+20")
+#root.call("tk", "scaling", 1.50)  # MWT: This seemed to fix scaling issues in Windows.
 # Verify it doesn't mess anything up on the Pi, detect os if so.
 root.resizable(
     False, False

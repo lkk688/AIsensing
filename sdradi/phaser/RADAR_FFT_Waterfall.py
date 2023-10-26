@@ -57,6 +57,11 @@ from scipy import interpolate, signal
 mpl.rcParams["mathtext.fontset"] = "cm"
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
+#fix the error of `np.float` was a deprecated alias for the builtin `float`
+np.float = float    
+np.int = int   #module 'numpy' has no attribute 'int'
+np.object = object    #module 'numpy' has no attribute 'object'
+np.bool = bool    #module 'numpy' has no attribute 'bool'
 
 # Instantiate all the Devices
 try:
@@ -67,7 +72,8 @@ try:
 except:
     print("No config file found...")
     rpi_ip = "ip:phaser.local"  # IP address of the Raspberry Pi
-    sdr_ip = "ip:192.168.2.1"  # "192.168.2.1, or pluto.local"  # IP address of the Transreceiver Block
+    #sdr_ip = "ip:192.168.2.1"  # "192.168.2.1, or pluto.local"  # IP address of the Transreceiver Block
+    sdr_ip = "ip:phaser.local:50901"  #new add
 
 try:
     x = my_sdr.uri
