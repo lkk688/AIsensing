@@ -2,6 +2,8 @@ import numpy as np
 import adi
 import matplotlib.pyplot as plt
 
+# transmitting a QPSK signal in the 915 MHz band, receiving it, and plotting the PSD
+
 Rx_CHANNEL =1
 
 sample_rate = 1e6 # Hz
@@ -10,6 +12,8 @@ num_samps = 100000 # number of samples per call to rx()
 
 #sdr = adi.Pluto("ip:192.168.2.1")
 sdr = adi.ad9361(uri="ip:pluto.local")
+# Read back properties from hardware
+print(sdr.tx_rf_bandwidth)
 sdr.sample_rate = int(sample_rate)
 
 # Config Tx
@@ -39,10 +43,14 @@ x_radians = x_degrees*np.pi/180.0 # sin() and cos() takes in radians
 x_symbols = np.cos(x_radians) + 1j*np.sin(x_radians) # this produces our QPSK complex symbols
 samples = np.repeat(x_symbols, 16) # 16 samples per symbol (rectangular pulses)
 samples *= 2**14 # The PlutoSDR expects samples to be between -2^14 and +2^14, not -1 and +1 like some SDRs
-#size: 16000
+#IQ samples between -1 and 1, before transmitting them scale by 2^14  size: 16000
+print(np.min(samples), np.max(samples))
+
 # Start the transmitter
 sdr.tx_cyclic_buffer = True # Enable cyclic buffers
 sdr.tx(samples) # start transmitting
+#To change the samples that are being continuously transmitted, you cannot simply call sdr.tx(samples) again with a new set of samples, 
+# you have to first call sdr.tx_destroy_buffer(), then call sdr.tx(samples)
 
 # Clear buffer just to be safe
 for i in range (0, 10):
