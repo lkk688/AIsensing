@@ -124,7 +124,7 @@ def main():
         # Since sdr.tx_cyclic_buffer was set to True, this data will just keep repeating.  There’s no need to send it again.   
         sdr.tx(iq)
     elif signal_type == 'dds':
-        ddstone(sdr, dualtune=True, dds_freq_hz = 10000, dds_scale = 0.9)
+        ddstone(sdr, dualtune=False, dds_freq_hz = 500000, dds_scale = 0.9)
 
     if plot_flag:
         #plt.figure(figsize=(10,6))
@@ -140,12 +140,13 @@ def main():
         f, Pxx_den = signal.periodogram(data0.real, fs) #https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.periodogram.html
         #returns f (ndarray): Array of sample frequencies.
         #returns Pxx_den (ndarray): Power spectral density or power spectrum of x.
-        #Npoints=min(len(data1), len(data0))
+        Npoints=min(len(data1.real), len(data0.real))
+        t = (ts*1000)*np.arange(Npoints) #second to ms
         #t = np.arange(0, N, ts)
         if plot_flag:
             #plt.clf()
-            plotfigure(axs, data0[0:N-1], data1[0:N-1], f, Pxx_den)
-            plt.draw()
+            plotfigure(axs, t, data0[0:Npoints], data1[0:Npoints], f, Pxx_den)
+            #plt.draw()
             #plt.show()
             plt.pause(0.01)
         time.sleep(0.2)
@@ -168,14 +169,13 @@ def main():
 #         line2.set_ydata(data1.real)
 #         return (line1, line2)
 
-def plotfigure(axs, data0, data1, specf,specp):
-
+def plotfigure(axs, t, data0, data1, specf,specp):
     #axs[0].plot(t, data0.real, t, data1.real)
     axs[0].cla()  
-    axs[0].plot(data0.real, marker="o", ms=2, color="red")  # Only plot real part
-    axs[0].plot(data1.real, marker="o", ms=2, color="blue")
+    axs[0].plot(t, data0.real, marker="o", ms=2, color="red")  # Only plot real part
+    axs[0].plot(t, data1.real, marker="o", ms=2, color="blue")
     #axs[0].set_xlim(0, 2)
-    axs[0].set_xlabel('Time (s)')
+    axs[0].set_xlabel('Time (ms)')
     axs[0].set_ylabel('data0 and data1')
     axs[0].grid(True)
     axs[1].cla()  
@@ -213,7 +213,7 @@ parser.add_argument('--urladdress', default="ip:pluto.local", type=str,
                     help='urladdress of the device')
 parser.add_argument('--rxch', default=2, type=int, 
                     help='number of rx channels')
-parser.add_argument('--signal', default="sinusoid", type=str,
+parser.add_argument('--signal', default="dds", type=str,
                     help='signal type: sinusoid, dds')
 parser.add_argument('--plot', default=True, type=bool,
                     help='plot figure')

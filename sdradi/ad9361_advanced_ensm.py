@@ -2,7 +2,7 @@ import adi
 
 # This example shows how to navigate between FDD and TDD modes using debug attributes for AD936X devices
 
-sdr = adi.ad9361(uri="ip:analog")
+sdr = adi.ad9361(uri="ip:pluto.local")
 
 # Initial stage
 print("Initial ensm_mode:", sdr._ctrl.attrs["ensm_mode"].value)
