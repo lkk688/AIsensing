@@ -58,6 +58,8 @@ ADALM-PLUTO for End Users: https://wiki.analog.com/university/tools/pluto/users
   * Accessing Pluto's FPGA Over JTAG: https://wiki.analog.com/university/tools/pluto/devs/fpga
   * HDL code: https://github.com/analogdevicesinc/hdl/tree/master/projects/pluto
 
+https://ez.analog.com/ez-blogs/b/engineerzone-spotlight/posts/how-to-construct-a-beamformer-with-the-adalm-pluto
+
 ADI Book Software-Defined Radio for Engineers, 2018: https://www.analog.com/en/education/education-library/software-defined-radio-for-engineers.html
 
 Analog Devices Board Support Packages Toolbox For MATLAB and Simulink: https://wiki.analog.com/resources/eval/user-guides/matlab_bsp
@@ -89,7 +91,19 @@ compatible=ad9361
 # fw_printenv mode
 mode=2r2t
 ```
+Follow this link: https://wiki.analog.com/university/tools/pluto/users/customizing#updating_to_the_ad9364, to enable the second channel. Current PlutoSDR is Rev.C
+```bash 
+ssh root@pluto.local
+#password: analog
+v0.37
+https://wiki.analog.com/university/tools/pluto
 
+# fw_setenv attr_name compatible
+# fw_setenv attr_val ad9361
+# fw_setenv compatible ad9361
+# fw_setenv mode 2r2t
+# reboot
+```
 
 Upgrade the firmware: https://wiki.analog.com/university/tools/pluto/users/firmware
 
@@ -141,4 +155,5 @@ pip install numpy matplotlib
 conda install pyqtgraph 
 conda install -c anaconda pyqt 
 conda install -c anaconda numpy
+pip install pygame
 ```

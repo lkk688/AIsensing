@@ -293,17 +293,20 @@ class ADIPlotter(object):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="ADI fast plotting app")
-    parser.add_argument(
-        "class", help="pyadi class name to use as plot source", action="store"
-    )
-    parser.add_argument("uri", help="URI of target device", action="store")
-    args = vars(parser.parse_args())
+    # parser = argparse.ArgumentParser(description="ADI fast plotting app")
+    # parser.add_argument(
+    #     "class", help="pyadi class name to use as plot source", action="store"
+    # )
+    # parser.add_argument("uri", help="URI of target device", action="store")
+    # args = vars(parser.parse_args())
 
-    if args["class"] not in ["Pluto", "ad9361", "ad9364", "ad9363", "cn0532"]:
-        raise Exception("Only AD936x based devices or CN0532 are supported")
+    # if args["class"] not in ["Pluto", "ad9361", "ad9364", "ad9363", "cn0532"]:
+    #     raise Exception("Only AD936x based devices or CN0532 are supported")
 
-    app = ADIPlotter(args["class"], args["uri"])
+    # args["class"] = 'ad9361'
+    # args["uri"]="ip:pluto.local"
+    #app = ADIPlotter(args["class"], args["uri"])
+    app = ADIPlotter('ad9361', "ip:pluto.local")
     app.animation()
     print("Exiting...")
     app.thread.join()

@@ -10,7 +10,8 @@ from PIL import Image
 DISPLAY_WIDTH = 256
 DISPLAY_HEIGHT = 200
 
-sdr = adi.Pluto()
+#sdr = adi.Pluto()
+sdr = adi.ad9361(uri="ip:pluto.local")
 # configure device
 sdr.sample_rate = int(2.4e6)  # Hz
 sdr.rx_lo = int(1e9)  # Hz
