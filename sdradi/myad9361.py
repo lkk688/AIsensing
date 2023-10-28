@@ -140,10 +140,13 @@ def main():
         #plt.figure(figsize=(10,6))
         fig, axs = plt.subplots(2, 1, layout='constrained', figsize=(12,6))
     # Collect data
-    alldata0 = np.empty(0) #Default is numpy.float64.
+    #alldata0 = np.empty(0) #Default is numpy.float64.
+    alldata0 = np.empty(0, dtype=np.complex_) #Default is numpy.float64.
     rxtime=[]
     processtime=[]
-    for r in range(20):
+    Nperiod=int(2*fs/num_samps) #total time 10s *fs=total samples /fft_size = Number of frames
+    print("Total period for 2s:", Nperiod)
+    for r in range(Nperiod):
         start = timer()
         x = sdr.rx() #1024 size array of complex
         rxt = timer()
@@ -156,7 +159,7 @@ def main():
             data0=x
         datarate=len(data0.real)*4/timedelta/1e6 #Mbps, complex data is 4bytes
         print("Data rate at ", datarate, "Mbps.") #7-8Mbps in 10240 points, 10Mbps in 102400points, single channel in 19-20Mbps
-        alldata0 = np.concatenate((alldata0, data0.real))
+        alldata0 = np.concatenate((alldata0, data0))
         f, Pxx_den = signal.periodogram(data0.real, fs) #https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.periodogram.html
         #returns f (ndarray): Array of sample frequencies.
         #returns Pxx_den (ndarray): Power spectral density or power spectrum of x.
@@ -185,7 +188,9 @@ def main():
     sdr.tx_destroy_buffer() #Clears TX buffer
     sdr.rx_destroy_buffer() #Clears RX buffer
     print(len(alldata0))
-    plotfigure(ts, alldata0[0:num_samps*2])
+    with open('./data/ad9361data.npy', 'wb') as f:
+        np.save(f, alldata0)
+    plotfigure(ts, alldata0.real[0:num_samps*2])
     print(np.mean(rxtime))
     print(np.mean(processtime))
 

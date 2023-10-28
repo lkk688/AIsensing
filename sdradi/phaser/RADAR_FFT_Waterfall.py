@@ -66,9 +66,9 @@ gain_list = [8, 34, 84, 127, 127, 84, 34, 8]  # Blackman taper
 for i in range(0, len(gain_list)):
     my_phaser.set_chan_gain(i, gain_list[i], apply_cal=True)
 
-sample_rate = 0.6e6
-center_freq = 2.1e9
-signal_freq = 100e3
+sample_rate = 0.6e6 #0.6M
+center_freq = 2.1e9 #2.1G
+signal_freq = 100e3 #100K
 num_slices = 200
 fft_size = 1024 * 16
 img_array = np.zeros((num_slices, fft_size))
@@ -97,12 +97,13 @@ my_sdr.tx_hardwaregain_chan1 = -0  # must be between 0 and -88
 # gpio.gpio_phaser_enable = True
 
 # Configure the ADF4159 Rampling PLL
-output_freq = 12.1e9
+#final output is 12.1GHz-LO(2.1GHz)=10GHz, Ramp range is 10GHz~10.5Ghz(10GHz+500MHz)
+output_freq = 12.1e9 
 BW = 500e6
 num_steps = 1000
 ramp_time = 1e3  # us
 ramp_time_s = ramp_time / 1e6
-my_phaser.frequency = int(output_freq / 4)  # Output frequency divided by 4
+my_phaser.frequency = int(output_freq / 4)  # Output frequency divided by 4, there is /4 ahead of the ADF4159 RFIN
 my_phaser.freq_dev_range = int(
     BW / 4
 )  # frequency deviation range in Hz.  This is the total freq deviation of the complete freq ramp
@@ -145,17 +146,17 @@ IF: {signal_freq}kHz
 )
 
 # Create a sinewave waveform
-fs = int(my_sdr.sample_rate)
+fs = int(my_sdr.sample_rate) #0.6MHz
 print("sample_rate:", fs)
 N = int(my_sdr.rx_buffer_size)
-fc = int(signal_freq / (fs / N)) * (fs / N)
+fc = int(signal_freq / (fs / N)) * (fs / N) #100KHz
 ts = 1 / float(fs)
 t = np.arange(0, N * ts, ts)
 i = np.cos(2 * np.pi * t * fc) * 2 ** 14
 q = np.sin(2 * np.pi * t * fc) * 2 ** 14
 iq = 1 * (i + 1j * q)
 
-fc = int(300e3 / (fs / N)) * (fs / N)
+fc = int(300e3 / (fs / N)) * (fs / N) #300KHz
 i = np.cos(2 * np.pi * t * fc) * 2 ** 14
 q = np.sin(2 * np.pi * t * fc) * 2 ** 14
 iq_300k = 1 * (i + 1j * q)
