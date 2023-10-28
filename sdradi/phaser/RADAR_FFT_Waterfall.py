@@ -456,7 +456,7 @@ def update():
 
 timer = QtCore.QTimer()
 timer.timeout.connect(update)
-timer.start(0)
+timer.start(0) #A QTimer with a timeout interval of 0 will time out as soon as all the events in the window system's event queue have been processed.
 
 # start the app
 sys.exit(App.exec())

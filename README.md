@@ -60,6 +60,10 @@ ADALM-PLUTO for End Users: https://wiki.analog.com/university/tools/pluto/users
 
 https://ez.analog.com/ez-blogs/b/engineerzone-spotlight/posts/how-to-construct-a-beamformer-with-the-adalm-pluto
 
+https://wiki.analog.com/resources/tools-software/linux-software/libiio_internals#high-speed_mmap_interface
+
+https://github.com/analogdevicesinc/libiio
+
 ADI Book Software-Defined Radio for Engineers, 2018: https://www.analog.com/en/education/education-library/software-defined-radio-for-engineers.html
 
 Analog Devices Board Support Packages Toolbox For MATLAB and Simulink: https://wiki.analog.com/resources/eval/user-guides/matlab_bsp
@@ -156,4 +160,11 @@ conda install pyqtgraph
 conda install -c anaconda pyqt 
 conda install -c anaconda numpy
 pip install pygame
+conda install -c anaconda pandas
+```
+
+Test throughput
+```bash 
+(mycondapy310) PS D:\Developer\radarsensing> iio_readdev -u ip:pluto.local -B -b 65768 cf-ad9361-lpc
+Throughput: 22 MiB/s
 ```

@@ -210,3 +210,5 @@ def PS(bits):
     return bits.reshape((-1,))
 bits_est = PS(PS_est) #(55, 4) -> (220,)
 print ("Obtained Bit error rate: ", np.sum(abs(bits-bits_est))/len(bits))
+
+#https://varun19299.github.io/ID4100-Wireless-Lab-IITM/posts/6-schmidl-cox/

@@ -5,7 +5,7 @@ import adi
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy import signal
-
+from timeit import default_timer as timer
 
 def testlibiioaccess(urladdress="ip:pluto.local"):
     import iio
@@ -20,6 +20,16 @@ def testlibiioaccess(urladdress="ip:pluto.local"):
     print(phy.attrs["ensm_mode"].value) #fdd
     # View options
     print(phy.attrs["ensm_mode_available"].value) #sleep wait alert fdd pinctrl pinctrl_fdd_indep
+
+def readiio(sdr):
+    phy = sdr.ctx.find_device("ad9361-phy")
+    # Read product ID register
+    pi = phy.reg_read(0x37)
+    #print(f"ID: {hex(pi)}")
+    r = 0x80000088
+    status = phy.reg_read(r)
+    if status & 0b0100:
+        print("Overflow")
 
 # Read back properties from hardware https://analogdevicesinc.github.io/pyadi-iio/devices/adi.ad936x.html
 def printSDRproperties(sdr):
@@ -98,8 +108,8 @@ def main():
     sdr.tx_hardwaregain_chan0 = -30
     sdr.gain_control_mode_chan0 = "slow_attack" #'manual'
 
-    # num_samps = 10000 # number of samples returned per call to rx()
-    # sdr.rx_buffer_size = num_samps
+    num_samps = 1024*100#10000 # number of samples returned per call to rx()
+    sdr.rx_buffer_size = num_samps
 
     # Configuration data channels
     if Rx_CHANNEL==2:
@@ -117,44 +127,67 @@ def main():
     fs = int(sdr.sample_rate) #6MHz
     ts = 1/float(fs)
     N = 1024
-    fc = int(1000000 / (fs / N)) * (fs / N) #996093~1MHz
+    fc = int(1000000) #int(1000000 / (fs / N)) * (fs / N) #996093~1MHz
     if signal_type == 'sinusoid':
         iq = createcomplexsinusoid(fs, fc, N)
         # Send data
         # Since sdr.tx_cyclic_buffer was set to True, this data will just keep repeating.  There’s no need to send it again.   
         sdr.tx(iq)
     elif signal_type == 'dds':
-        ddstone(sdr, dualtune=False, dds_freq_hz = 500000, dds_scale = 0.9)
+        ddstone(sdr, dualtune=False, dds_freq_hz = fc, dds_scale = 0.9)
 
     if plot_flag:
         #plt.figure(figsize=(10,6))
         fig, axs = plt.subplots(2, 1, layout='constrained', figsize=(12,6))
     # Collect data
+    alldata0 = np.empty(0) #Default is numpy.float64.
+    rxtime=[]
+    processtime=[]
     for r in range(20):
+        start = timer()
         x = sdr.rx() #1024 size array of complex
+        rxt = timer()
+        timedelta=rxt-start
+        rxtime.append(timedelta)
         if Rx_CHANNEL==2:
             data0=x[0]
             data1=x[1]
         else:
             data0=x
+        datarate=len(data0.real)*4/timedelta/1e6 #Mbps, complex data is 4bytes
+        print("Data rate at ", datarate, "Mbps.") #7-8Mbps in 10240 points, 10Mbps in 102400points, single channel in 19-20Mbps
+        alldata0 = np.concatenate((alldata0, data0.real))
         f, Pxx_den = signal.periodogram(data0.real, fs) #https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.periodogram.html
         #returns f (ndarray): Array of sample frequencies.
         #returns Pxx_den (ndarray): Power spectral density or power spectrum of x.
-        Npoints=min(len(data1.real), len(data0.real))
-        t = (ts*1000)*np.arange(Npoints) #second to ms
-        #t = np.arange(0, N, ts)
+        f /= 1e6  # Hz -> MHz
+        peak_index = np.argmax(Pxx_den) #(71680,) -> 22526
+        peak_freq = f[peak_index]
+        print("Peak frequency found at ", peak_freq, "MHz.")
+
+        readiio(sdr)
+
         if plot_flag:
+            Npoints=min(len(data1.real), len(data0.real))
+            t = (ts*1000)*np.arange(Npoints) #second to ms
+            #t = np.arange(0, N, ts)
             #plt.clf()
-            plotfigure(axs, t, data0[0:Npoints], data1[0:Npoints], f, Pxx_den)
+            updatefigure(axs, t, data0[0:Npoints], data1[0:Npoints], f, Pxx_den)
             #plt.draw()
             #plt.show()
             plt.pause(0.01)
-        time.sleep(0.2)
+            time.sleep(0.2)
+        endtime = timer()
+        processtime.append(endtime-start)
+        
 
     # Stop transmitting
     sdr.tx_destroy_buffer() #Clears TX buffer
     sdr.rx_destroy_buffer() #Clears RX buffer
-    #plt.show()
+    print(len(alldata0))
+    plotfigure(ts, alldata0[0:num_samps*2])
+    print(np.mean(rxtime))
+    print(np.mean(processtime))
 
 # def animationfig(axs, data0, data1):
 #     line1=axs[0].plot(data0.real, marker="o", ms=2, color="red")  # Only plot real part
@@ -168,8 +201,28 @@ def main():
 #         line1.set_ydata(data0.real)
 #         line2.set_ydata(data1.real)
 #         return (line1, line2)
+def plotfigure(ts, data0):
+    f, Pxx_den = signal.periodogram(data0, int(1/ts))
+    Npoints=len(data0)
+    t = (ts*1000)*np.arange(Npoints) #second to ms
+    fig, axs = plt.subplots(2, 1, layout='constrained', figsize=(12,6))
+    axs[0].cla()  
+    axs[0].plot(t, data0.real, marker="o", ms=2, color="red")  # Only plot real part
+    #axs[0].plot(t, data1.real, marker="o", ms=2, color="blue")
+    #axs[0].set_xlim(0, 2)
+    axs[0].set_xlabel('Time (ms)')
+    axs[0].set_ylabel('data0')
+    axs[0].set_title("Time Domain Dual Ch Data")
+    axs[0].grid(True)
+    axs[1].cla()  
+    axs[1].semilogy(f/1e6, Pxx_den)
+    axs[1].set_ylim([1e-7, 1e2])
+    axs[1].set_xlabel("frequency [MHz]") #-3e^6 3e^6
+    axs[1].set_ylabel("PSD [V**2/Hz]")
+    axs[1].set_title("Spectrum")
+    plt.show()
 
-def plotfigure(axs, t, data0, data1, specf,specp):
+def updatefigure(axs, t, data0, data1, specf,specp):
     #axs[0].plot(t, data0.real, t, data1.real)
     axs[0].cla()  
     axs[0].plot(t, data0.real, marker="o", ms=2, color="red")  # Only plot real part
@@ -177,12 +230,14 @@ def plotfigure(axs, t, data0, data1, specf,specp):
     #axs[0].set_xlim(0, 2)
     axs[0].set_xlabel('Time (ms)')
     axs[0].set_ylabel('data0 and data1')
+    axs[0].set_title("Time Domain Dual Ch Data")
     axs[0].grid(True)
     axs[1].cla()  
     axs[1].semilogy(specf, specp)
     axs[1].set_ylim([1e-7, 1e2])
     axs[1].set_xlabel("frequency [Hz]") #-3e^6 3e^6
     axs[1].set_ylabel("PSD [V**2/Hz]")
+    axs[1].set_title("Spectrum")
 
     # plt.subplot(2, 1, 1)
     # plt.title("Time Domain I/Q Data")
@@ -211,11 +266,11 @@ import argparse
 parser = argparse.ArgumentParser(description='MyAD9361')
 parser.add_argument('--urladdress', default="ip:pluto.local", type=str,
                     help='urladdress of the device')
-parser.add_argument('--rxch', default=2, type=int, 
+parser.add_argument('--rxch', default=1, type=int, 
                     help='number of rx channels')
 parser.add_argument('--signal', default="dds", type=str,
                     help='signal type: sinusoid, dds')
-parser.add_argument('--plot', default=True, type=bool,
+parser.add_argument('--plot', default=False, type=bool,
                     help='plot figure')
 
 if __name__ == '__main__':
