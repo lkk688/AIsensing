@@ -49,6 +49,12 @@ def showspectrum(data, fs, N_frame):
     s_mag = np.maximum(s_mag, 10 ** (-15))
     s_dbfs = 20 * np.log10(s_mag / (2 ** 11))
     """there's a scaling issue on the y-axis of the waterfallcthe data is off by 300kHz.  To fix, I'm just shifting the freq"""
+    # fc = int(300e3 / (fs / N_frame)) * (fs / N_frame) #300KHz
+    # ts =1.0/fs
+    # t = np.arange(0, N_frame * ts, ts)
+    # i = np.cos(2 * np.pi * t * fc) * 2 ** 14
+    # q = np.sin(2 * np.pi * t * fc) * 2 ** 14
+    # iq_300k = 1 * (i + 1j * q)
     # data_shift = data * iq_300k
     # y = data_shift * win_funct
     # sp = np.absolute(np.fft.fft(y))
@@ -60,7 +66,8 @@ def showspectrum(data, fs, N_frame):
     #freq, s_dbfs
     freq = np.linspace(-fs / 2, fs / 2, int(N_frame))
     plt.figure(figsize=(10,6))
-    plt.plot(freq,s_dbfs)
+    plt.plot(freq,s_dbfs,color="red")
+    #plt.plot(freq,s_dbfs_shift) #s_dbfs)
     plt.xlabel('Frequency')
     plt.ylabel('Amplitude')
     plt.title('Spectrum')
@@ -143,8 +150,40 @@ def dynamicRD(dataall, fs, N_frame):
         plt.draw()
         plt.pause(0.1)
 
+def matplotlibspectrogram(dataall, fs, N_frame):
+    # plt.figure(figsize=(10,6))
+    totallen=len(dataall)
+    Ntotalframe=int(totallen/N_frame)-1
+    # plt.specgram(dataall[100:100+fft_size],Fs=fs)
+    # plt.show()
+    fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(15, 15))
+    #t = np.arange(0.0, N_frame, 1.0/fs)
+    for i in range(0, Ntotalframe, 10):
+        data = dataall[i*N_frame:(i+1)*N_frame]
+        n_s = 600
+        n_r = int(len(data)/n_s)-1
+        table = np.zeros((n_r, n_s)) #150 chirps,1000 samples/chirp
+        for chirp_nr in range(n_r):
+            table[chirp_nr, :] = data[(chirp_nr*n_s):(n_s*(chirp_nr+1))]
+        Z_fft2 = abs(np.fft.fft2(table))
+        Data_fft2 = Z_fft2[0:n_r,0:300]
+        ax1.cla()  
+        #ax1.plot(data)
+        ax1.imshow(Data_fft2) 
+        ax2.cla()  
+        Pxx, freqs, bins, im = ax2.specgram(data, NFFT=N_frame, Fs=fs)
+        # The `specgram` method returns 4 objects. They are:
+        # - Pxx: the periodogram
+        # - freqs: the frequency vector
+        # - bins: the centers of the time bins
+        # - im: the matplotlib.image.AxesImage instance representing the data in the plot
+        #plt.show()
+        plt.draw()
+        plt.pause(0.1)
+
+
 def main():
-    with open('./data/radardata5s.npy', 'rb') as f:
+    with open('./data/radardata5s-indoor2.npy', 'rb') as f:
         alldata = np.load(f)
     print(len(alldata))
     sample_rate = 0.6e6 #0.6M
@@ -166,32 +205,53 @@ def main():
     slope = BW / ramp_time_s
     Nr = int(ramp_time_s * fs) #Number ADC sampling points in each chirp
 
-    dynamicRD(alldata, fs, fft_size)
+    dynamicspectrum(alldata, fs, N_frame)
 
-    dynamicspectrum2(alldata, fs, fft_size)
+    showspectrum(alldata.real, fs, N_frame)
 
-    #dynamicspectrum(alldata, fs, 1024*2)
+    matplotlibspectrogram(alldata.real, fs, N_frame)
+
+    #dynamicRD(alldata, fs, fft_size)
+
+    #dynamicspectrum2(alldata, fs, fft_size)
+
+    
+
+    
 
     #2D plot
-    Nd=int(len(alldata)/fft_size) #70
-    mat2D = np.zeros((Nd, fft_size)) #128 chirps * 1024 samples/chirp
+    newfft_size=Nr
+    Nd=int(len(alldata)/newfft_size) #70
+    mat2D = np.zeros((Nd, newfft_size)) #128 chirps * 1024 samples/chirp
     i = 0
     while(i<Nd):
-        mat2D[i, :] = alldata[i*fft_size:(i+1)*fft_size]
+        mat2D[i, :] = alldata.real[i*newfft_size:(i+1)*newfft_size]
         i = i + 1
     plt.figure(figsize=(10,6))
     plt.matshow(mat2D)
     plt.title('2D original data')
 
+    #2D FFT and Velocity-Distance Relationship
+    Z_fft2 = abs(np.fft.fft2(mat2D)) #(150, 1000)
+    Data_fft2 = Z_fft2#[0:75,0:500] #get half
+    #plt.subplot(4,2,8)
+    plt.figure(figsize=(10,6))
+    plt.imshow(Data_fft2) 
+    plt.xlabel("Range")
+    plt.ylabel("Velocity")
+    plt.title('Velocity-Range 2D FFT')
+
+    plt.tight_layout(pad=3, w_pad=0.05, h_pad=0.05)
+    plt.show()
     
-    showspectrum(alldata.real, fs, N_frame)
+    
 
     #Range FFT
-    doppler = 10*np.log10(np.abs(np.fft.fft(alldata[0:fft_size]))) #(1024,)
+    doppler = 10*np.log10(np.abs(np.fft.fft(alldata.real[0:fft_size]))) #(1024,)
     frequency = np.fft.fftfreq(fft_size, 1/fs)
     range = frequency*c/(2*slope)
     plt.figure(figsize=(10,6))
-    plt.plot(range[0:fft_size/2],doppler[0:fft_size/2])
+    plt.plot(range[0:int(fft_size/2)],doppler[0:int(fft_size/2)])
     plt.xlabel('Frequency->Distance')
     plt.ylabel('Amplitude')
     plt.title('IF Signal FFT')

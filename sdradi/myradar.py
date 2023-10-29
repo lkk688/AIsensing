@@ -252,7 +252,7 @@ def main():
         # Stop transmitting
     sdr.tx_destroy_buffer() #Clears TX buffer
     sdr.rx_destroy_buffer() #Clears RX buffer
-    with open('./data/radardata5s-indoor.npy', 'wb') as f:
+    with open('./data/radardata5s-indoor2.npy', 'wb') as f:
         np.save(f, alldata0)
     print(len(alldata0)) #1196032
 # piuri="ip:phaser.local:50901"

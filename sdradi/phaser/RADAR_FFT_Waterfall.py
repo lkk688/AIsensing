@@ -17,6 +17,8 @@ from PyQt5.QtSvg import QSvgWidget
 from PyQt5.QtWidgets import *
 from pyqtgraph.Qt import QtCore, QtGui
 from scipy import interpolate, signal
+import mycn0566 as mycn0566
+CN0566=mycn0566.CN0566
 
 mpl.rcParams["mathtext.fontset"] = "cm"
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -53,7 +55,8 @@ try:
     print("cn0566 already connected")
 except NameError:
     print("cn0566 not open...")
-    my_phaser = adi.CN0566(uri=rpi_ip, sdr=my_sdr)
+    #my_phaser = adi.CN0566(uri=rpi_ip, sdr=my_sdr)
+    my_phaser = CN0566(uri=rpi_ip, sdr=my_sdr)
 
 # Initialize both ADAR1000s, set gains to max, and all phases to 0
 my_phaser.configure(device_mode="rx")
@@ -175,7 +178,6 @@ dist = (freq - signal_freq) * c / (4 * slope)
 xdata = freq
 plot_dist = False
 
-
 class Window(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -241,7 +243,7 @@ class Window(QMainWindow):
         self.low_slider = QSlider(Qt.Horizontal)
         self.low_slider.setMinimum(-100)
         self.low_slider.setMaximum(100)
-        self.low_slider.setValue(20)
+        self.low_slider.setValue(-20) #20
         self.low_slider.setTickInterval(20)
         self.low_slider.setTickPosition(QSlider.TicksBelow)
         self.low_slider.valueChanged.connect(self.get_water_levels)
@@ -250,7 +252,7 @@ class Window(QMainWindow):
         self.high_slider = QSlider(Qt.Horizontal)
         self.high_slider.setMinimum(-100)
         self.high_slider.setMaximum(100)
-        self.high_slider.setValue(60)
+        self.high_slider.setValue(30) #60
         self.high_slider.setTickInterval(20)
         self.high_slider.setTickPosition(QSlider.TicksBelow)
         self.high_slider.valueChanged.connect(self.get_water_levels)
@@ -294,7 +296,8 @@ class Window(QMainWindow):
         # FFT plot
         self.fft_plot = pg.plot()
         self.fft_plot.setMinimumWidth(1200)
-        self.fft_curve = self.fft_plot.plot(freq, pen="y", width=6)
+        #self.fft_curve = self.fft_plot.plot(freq, pen="y", width=6)
+        self.fft_curve = self.fft_plot.plot(freq, pen=pg.mkPen('b'), width=6)
         title_style = {"size": "15pt"}
         label_style = {"color": "#FFF", "font-size": "10pt"}
         self.fft_plot.setLabel("bottom", text="Frequency", units="Hz", **label_style)
@@ -312,6 +315,19 @@ class Window(QMainWindow):
         tr = QtGui.QTransform()
         tr.scale(0.35, sample_rate / (N))
         self.imageitem.setTransform(tr)
+        # # color map
+        # colors = [
+        #     (0, 0, 0),
+        #     (4, 5, 61),
+        #     (84, 42, 55),
+        #     (15, 87, 60),
+        #     (208, 17, 141),
+        #     (255, 255, 255)
+        # ]
+        # cmap = pg.ColorMap(pos=np.linspace(0.0, 1.0, 6), color=colors)
+        # # setting color map to the image view
+        # self.imageitem.setColorMap(cmap)
+
         zoom_freq = 40e3
         self.waterfall.setRange(yRange=(100e3, 100e3 + zoom_freq))
         self.waterfall.setTitle("Waterfall Spectrum", **title_style)
