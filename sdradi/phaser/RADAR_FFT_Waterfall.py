@@ -194,9 +194,9 @@ class Window(QMainWindow):
         layout = QGridLayout()
 
         # Control Panel
-        control_label = QLabel("ADALM-PHASER Simple FMCW Radar")
+        control_label = QLabel("FMCW Radar")
         font = control_label.font()
-        font.setPointSize(20)
+        font.setPointSize(18)
         control_label.setFont(font)
         control_label.setAlignment(Qt.AlignHCenter)  # | Qt.AlignVCenter)
         layout.addWidget(control_label, 0, 0, 1, 2)
@@ -204,7 +204,7 @@ class Window(QMainWindow):
         # Check boxes
         self.x_axis_check = QCheckBox("Toggle Range/Frequency x-axis")
         font = self.x_axis_check.font()
-        font.setPointSize(15)
+        font.setPointSize(12)
         self.x_axis_check.setFont(font)
 
         self.x_axis_check.stateChanged.connect(self.change_x_axis)
@@ -217,7 +217,7 @@ class Window(QMainWindow):
             % (default_rf_bw / 1e6, c / (2 * default_rf_bw))
         )
         font = self.range_res_label.font()
-        font.setPointSize(15)
+        font.setPointSize(12)
         self.range_res_label.setFont(font)
         self.range_res_label.setAlignment(Qt.AlignRight)
         self.range_res_label.setMinimumWidth(300)
@@ -295,8 +295,8 @@ class Window(QMainWindow):
         self.fft_plot = pg.plot()
         self.fft_plot.setMinimumWidth(1200)
         self.fft_curve = self.fft_plot.plot(freq, pen="y", width=6)
-        title_style = {"size": "20pt"}
-        label_style = {"color": "#FFF", "font-size": "14pt"}
+        title_style = {"size": "15pt"}
+        label_style = {"color": "#FFF", "font-size": "10pt"}
         self.fft_plot.setLabel("bottom", text="Frequency", units="Hz", **label_style)
         self.fft_plot.setLabel("left", text="Magnitude", units="dB", **label_style)
         self.fft_plot.setTitle("Received Signal - Frequency Spectrum", **title_style)
@@ -418,7 +418,7 @@ def update():
 		None
 	"""
     global index, xdata, plot_dist, freq, dist
-    label_style = {"color": "#FFF", "font-size": "14pt"}
+    label_style = {"color": "#FFF", "font-size": "12pt"}
 
     data = my_sdr.rx()
     data = data[0] + data[1]

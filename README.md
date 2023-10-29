@@ -76,9 +76,12 @@ PlutoSDR quick start: https://wiki.analog.com/university/tools/pluto/users/quick
   * Check IIO devices "iio_info -s", "iio_attr -a -C"
 
 ```bash 
+nmap -sn 192.168.86.0/24 #scan IP
 (mycondapy310) PS D:\Developer\radarsensing> iio_attr -a -C fw_version   
 Using auto-detected IIO context at URI "usb:2.46.5"
 fw_version: v0.35
+iio_info -u ip:phaser.local:50901 #SDR in phaser in pi
+iio_info -u ip:phaser.local #phaser in pi
 (mycondapy310) PS D:\Developer\radarsensing> iio_info -u ip:192.168.2.16
 (mycondapy310) PS D:\Developer\radarsensing> ssh root@192.168.2.16 #ssh root@pluto.local
 #password: analog
@@ -167,4 +170,16 @@ Test throughput
 ```bash 
 (mycondapy310) PS D:\Developer\radarsensing> iio_readdev -u ip:pluto.local -B -b 65768 cf-ad9361-lpc
 Throughput: 22 MiB/s
+ iio_readdev -u ip:192.168.1.10 -B -b 65768 cf-ad9361-lpc
+Throughput: 50 MiB/s
+(mycondapy310) PS C:\Users\lkk68> iio_readdev -u ip:phaser.local:50901 -B -b 65768 cf-ad9361-lpc
+Throughput: 1 MiB/s
+(mycondapy310) PS C:\Users\lkk68> iio_readdev -u ip:phaser.local:50901 -B -b 65768 cf-ad9361-lpc
+Throughput: 6 MiB/s
+#inside the raspberry Pi
+analog@phaser:~ $  iio_readdev -u ip:pluto.local -B -b 65768 cf-ad9361-lpc
+Throughput: 4 MiB/s
+analog@phaser:~ $ iio_readdev -u ip:pluto.local -B -b 65768 cf-ad9361-lpc
+Throughput: 22 MiB/s
+
 ```

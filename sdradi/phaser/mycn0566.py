@@ -321,7 +321,7 @@ class CN0566(adf4159, adar1000_array):
             pickle.dump(self.pcal, file)  # save calibrated phase value to a file
             file.close()
 
-    def load_channel_cal(self, filename="channel_cal_val.pkl"):
+    def load_channel_cal(self, filename="sdradi\phaser\channel_cal_val.pkl"):
         """
         Load channel gain compensation values, if not calibrated set all to 0.
 
@@ -333,11 +333,12 @@ class CN0566(adf4159, adar1000_array):
         try:
             with open(filename, "rb") as file:
                 self.ccal = pickle.load(file)  # Load gain cal values
+                print("load gain file successful")
         except FileNotFoundError:
             print("file not found, loading default (no channel gain compensation)")
             self.ccal = [0.0] * 2
 
-    def load_gain_cal(self, filename="gain_cal_val.pkl"):
+    def load_gain_cal(self, filename="sdradi\phaser\gain_cal_val.pkl"):
         """Load gain calibrated value, if not calibrated set all channel gain to maximum.
 
         Parameters
@@ -348,11 +349,12 @@ class CN0566(adf4159, adar1000_array):
         try:
             with open(filename, "rb") as file1:
                 self.gcal = pickle.load(file1)  # Load gain cal values
+                print("load gain cal file successful")
         except FileNotFoundError:
             print("file not found, loading default (all gain at maximum)")
             self.gcal = [1.0] * 8  # .append(0x7F)
 
-    def load_phase_cal(self, filename="phase_cal_val.pkl"):
+    def load_phase_cal(self, filename="sdradi\phaser\phase_cal_val.pkl"):
         """Load phase calibrated value, if not calibrated set all channel phase correction to 0.
 
         Parameters
@@ -363,6 +365,7 @@ class CN0566(adf4159, adar1000_array):
         try:
             with open(filename, "rb") as file:
                 self.pcal = pickle.load(file)  # Load gain cal values
+                print("load phase cal file successful")
         except FileNotFoundError:
             print("file not found, loading default (no phase shift)")
             self.pcal = [0.0] * 8

@@ -1,10 +1,12 @@
 import time
-
+from time import sleep
 import adi
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy import signal
 from timeit import default_timer as timer
+import phaser.mycn0566 as mycn0566
+CN0566=mycn0566.CN0566
 
 # Read back properties from hardware https://analogdevicesinc.github.io/pyadi-iio/devices/adi.ad936x.html
 def printSDRproperties(sdr):
@@ -27,7 +29,8 @@ def printSDRproperties(sdr):
     print("DDS scales:", sdr.dds_scales)
 
 def initPhaser(urladdress, my_sdr):
-    my_phaser = adi.CN0566(uri=urladdress, sdr=my_sdr)
+    #my_phaser = adi.CN0566(uri=urladdress, sdr=my_sdr)
+    my_phaser = CN0566(uri=urladdress, sdr=my_sdr)
     print("Phaser url: ", my_phaser.uri)
     print("Phaser already connected")
 
@@ -79,7 +82,7 @@ def initAD9361(urladdress, fs, center_freq, fft_size, Rx_CH=2, Tx_CH=2):
     # Create radio
     sdr = adi.ad9361(uri=urladdress)
     sdr.rx_rf_bandwidth = 4000000 #4MHz
-    sdr.sample_rate = int(fs)
+    sdr.sample_rate = int(fs) #0.6Mhz
 
     # Configure Rx
     sdr.rx_lo = int(center_freq)  # set this to output_freq - (the freq of the HB100)
@@ -142,7 +145,8 @@ def readiio(sdr):
 
 def main():
     args = parser.parse_args()
-    urladdress = args.urladdress #"ip:pluto.local"
+    phaserurladdress = args.phaserurladdress #urladdress #"ip:pluto.local"
+    ad9361urladdress = args.ad9361urladdress
     Rx_CHANNEL = args.rxch
     signal_type = args.signal
     plot_flag = args.plot
@@ -164,9 +168,9 @@ def main():
     ramp_time = 1e3  # us
     ramp_time_s = ramp_time / 1e6
 
-    sdr=initAD9361(urladdress, sample_rate, center_freq, fft_size, Rx_CH=2, Tx_CH=2)
-    
-    my_phaser=initPhaser(urladdress, sdr)
+    sdr=initAD9361(ad9361urladdress, sample_rate, center_freq, fft_size, Rx_CH=2, Tx_CH=2)
+    sleep(1)
+    my_phaser=initPhaser(phaserurladdress, sdr)
 
     my_phaser=configureADF4159(my_phaser, output_freq, BW, num_steps, ramp_time)
 
@@ -215,16 +219,16 @@ def main():
     plot_dist = False
 
     print("Slope: %0.2fMHz/s" % (slope / 1e6))
-    range_resolution = c / (2 * default_rf_bw)
-    range_x = (100e3) * c / (4 * slope)
+    range_resolution = c / (2 * default_rf_bw) #0.3
+    range_x = (100e3) * c / (4 * slope) #15
     #0, range_x or frequency 100e3, 200e3
 
     # Collect data
     alldata0 = np.empty(0, dtype=np.complex_) #Default is numpy.float64.
     rxtime=[]
     processtime=[]
-    Nperiod=int(10*fs/fft_size) #total time 10s *fs=total samples /fft_size = Number of frames
-    print("Total period for 10s:", Nperiod)
+    Nperiod=int(5*fs/fft_size) #total time 10s *fs=total samples /fft_size = Number of frames
+    print("Total period for 5s:", Nperiod) #73
     for r in range(Nperiod):
         start = timer()
         x = sdr.rx() #1024 size array of complex
@@ -248,8 +252,9 @@ def main():
         # Stop transmitting
     sdr.tx_destroy_buffer() #Clears TX buffer
     sdr.rx_destroy_buffer() #Clears RX buffer
-    with open('./data/radardata.npy', 'wb') as f:
+    with open('./data/radardata5s-indoor.npy', 'wb') as f:
         np.save(f, alldata0)
+    print(len(alldata0)) #1196032
 # piuri="ip:phaser.local:50901"
 # localuri="ip:analog.local"
 # antsdruri="ip:192.168.1.10"#connected via Ethernet with static IP
@@ -257,9 +262,11 @@ def main():
 
 import argparse
 parser = argparse.ArgumentParser(description='MyRadar')
-parser.add_argument('--urladdress', default="ip:phaser.local:50901", type=str,
+parser.add_argument('--ad9361urladdress', default="ip:phaser.local:50901", type=str,
                     help='urladdress of the device')
-parser.add_argument('--rxch', default=1, type=int, 
+parser.add_argument('--phaserurladdress', default="ip:phaser.local", type=str,
+                    help='urladdress of the device')
+parser.add_argument('--rxch', default=2, type=int, 
                     help='number of rx channels')
 parser.add_argument('--signal', default="dds", type=str,
                     help='signal type: sinusoid, dds')
