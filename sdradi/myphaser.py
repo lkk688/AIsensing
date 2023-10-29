@@ -7,6 +7,7 @@ from scipy import signal
 from timeit import default_timer as timer
 import phaser.mycn0566 as mycn0566
 CN0566=mycn0566.CN0566
+import pickle
 
 # Read back properties from hardware https://analogdevicesinc.github.io/pyadi-iio/devices/adi.ad936x.html
 def printSDRproperties(sdr):
@@ -91,7 +92,6 @@ def initAD9361(urladdress, fs, center_freq=2.2e9, rxbuffer=1024, Rx_CH=2, Tx_CH=
     sdr.sample_rate = int(fs) #0.6Mhz
 
     # Configure Rx
-    sdr.rx_lo = int(center_freq)  # set this to output_freq - (the freq of the HB100)
     #sdr.rx_enabled_channels = [0, 1]  # enable Rx1 (voltage0) and Rx2 (voltage1)
     # Configuration data channels
     if Rx_CH==2:
@@ -105,6 +105,7 @@ def initAD9361(urladdress, fs, center_freq=2.2e9, rxbuffer=1024, Rx_CH=2, Tx_CH=
         sdr.gain_control_mode_chan0 = "manual"  # manual or slow_attack
         sdr.rx_hardwaregain_chan0 = int(30)  # must be between -3 and 70
     sdr.rx_buffer_size = int(rxbuffer)
+    sdr.rx_lo = int(center_freq)  # set this to output_freq - (the freq of the HB100)
     #num_samps = 1024*100#10000 # number of samples returned per call to rx()
     #sdr.rx_buffer_size = num_samps
 
@@ -121,7 +122,6 @@ def initAD9361(urladdress, fs, center_freq=2.2e9, rxbuffer=1024, Rx_CH=2, Tx_CH=
     )  # Default is 4 Rx buffers are stored, but we want to change and immediately measure the result, so buffers=1
 
     # Configure Tx
-    sdr.tx_lo = int(center_freq)
     if Tx_CH==2:
         sdr.tx_enabled_channels = [0, 1]
         sdr.tx_hardwaregain_chan0 = txgain0  # must be between 0 and -88
@@ -130,7 +130,7 @@ def initAD9361(urladdress, fs, center_freq=2.2e9, rxbuffer=1024, Rx_CH=2, Tx_CH=
         sdr.tx_enabled_channels = [0] #enables Tx0
         sdr.tx_hardwaregain_chan0 = txgain0  # must be between 0 and -88
     sdr.tx_cyclic_buffer = True  # must set cyclic buffer to true for the tdd burst mode.  Otherwise Tx will turn on and off randomly
-    
+    sdr.tx_lo = int(center_freq)
     # Enable TDD logic in pluto (this is for synchronizing Rx Buffer to ADF4159 TX input)
     # gpio = adi.one_bit_adc_dac(sdr_ip)
     # gpio.gpio_phaser_enable = True
@@ -160,6 +160,67 @@ def readiio(sdr):
     if status & 0b0100:
         print("Overflow")
 
+def plotdualchtimefreq(data, sample_rate):
+    # Take FFT
+    PSD0 = 10*np.log10(np.abs(np.fft.fftshift(np.fft.fft(data[0])))**2)
+    PSD1 = 10*np.log10(np.abs(np.fft.fftshift(np.fft.fft(data[1])))**2)
+    f = np.linspace(-sample_rate/2, sample_rate/2, len(data[0]))
+
+    # Time plot helps us check that we see the HB100 and that we're not saturated (ie gain isnt too high)
+    plt.subplot(2, 1, 1)
+    plt.plot(data[0].real) # Only plot real part
+    plt.plot(data[1].real)
+    plt.xlabel("Data Point")
+    plt.ylabel("ADC output")
+
+    # PSDs show where the HB100 is and verify both channels are working
+    plt.subplot(2, 1, 2)
+    plt.plot(f/1e6, PSD0)
+    plt.plot(f/1e6, PSD1)
+    plt.xlabel("Frequency [MHz]")
+    plt.ylabel("Signal Strength [dB]")
+    plt.tight_layout()
+    plt.show()
+
+def performbeamforming(phaser, phase_cal):
+    powers = [] # main DOA result
+    angle_of_arrivals = []
+    for phase in np.arange(-180, 180, 2): # sweep over angle
+        print(phase)
+        # set phase difference between the adjacent channels of devices
+        for i in range(8):
+            channel_phase = (phase * i + phase_cal[i]) % 360.0 # Analog Devices had this forced to be a multiple of phase_step_size (2.8125 or 360/2**6bits) but it doesn't seem nessesary
+            phaser.elements.get(i + 1).rx_phase = channel_phase
+        phaser.latch_rx_settings() # apply settings
+
+        steer_angle = np.degrees(np.arcsin(max(min(1, (3e8 * np.radians(phase)) / (2 * np.pi * signal_freq * phaser.element_spacing)), -1))) # arcsin argument must be between 1 and -1, or numpy will throw a warning
+        # If you're looking at the array side of Phaser (32 squares) then add a *-1 to steer_angle
+        angle_of_arrivals.append(steer_angle)
+        data = phaser.sdr.rx() # receive a batch of samples
+        data_sum = data[0] + data[1] # sum the two subarrays (within each subarray the 4 channels have already been summed)
+        power_dB = 10*np.log10(np.sum(np.abs(data_sum)**2))
+        powers.append(power_dB)
+        # in addition to just taking the power in the signal, we could also do the FFT then grab the value of the max bin, effectively filtering out noise, results came out almost exactly the same in my tests
+        #PSD = 10*np.log10(np.abs(np.fft.fft(data_sum * np.blackman(len(data_sum))))**2) # in dB
+
+    powers -= np.max(powers) # normalize so max is at 0 dB
+
+    plt.plot(angle_of_arrivals, powers, '.-')
+    plt.xlabel("Angle of Arrival")
+    plt.ylabel("Magnitude [dB]")
+    plt.show()
+
+    # Polar plot
+    fig, ax = plt.subplots(subplot_kw={'projection': 'polar'})
+    ax.plot(np.deg2rad(angle_of_arrivals), powers) # x axis in radians
+    ax.set_rticks([-40, -30, -20, -10, 0])  # Less radial ticks
+    ax.set_thetamin(np.min(angle_of_arrivals)) # in degrees
+    ax.set_thetamax(np.max(angle_of_arrivals))
+    ax.set_theta_direction(-1) # increase clockwise
+    ax.set_theta_zero_location('N') # make 0 degrees point up
+    ax.grid(True)
+    plt.show()
+
 def main():
     args = parser.parse_args()
     phaserurladdress = args.phaserurladdress #urladdress #"ip:pluto.local"
@@ -171,81 +232,57 @@ def main():
     
     # Configure properties
     #fs= 6000000 #6MHz
-    sample_rate = 0.6e6 #0.6M
-    center_freq = 2.1e9 #2.1G
-    signal_freq = 100e3 #100K
+    sample_rate = 6e6 #30e6 #0.6e6 #0.6M
+    center_freq = 2.2e9 #2.1e9 #2.1G
+    signal_freq = pickle.load(open("./sdradi/phaser/hb100_freq_val.pkl", "rb")) #100e3 #100K
+    print("signal_freq:", signal_freq)
     num_slices = 200
-    fft_size = 1024 * 16
-    img_array = np.zeros((num_slices, fft_size))
-
-    # Configure the ADF4159 Rampling PLL
-    #final output is 12.1GHz-LO(2.1GHz)=10GHz, Ramp range is 10GHz~10.5Ghz(10GHz+500MHz)
-    output_freq = 12.1e9 
-    BW = 500e6
-    num_steps = 1000
-    ramp_time = 1e3  # us
-    ramp_time_s = ramp_time / 1e6
-    rxbw=4000000
-
-    #sdr=initAD9361(ad9361urladdress, sample_rate, center_freq, fft_size, Rx_CH=2, Tx_CH=2)
+    fft_size = 1024 # * 16 rx buffer size # samples per buffer
+    #img_array = np.zeros((num_slices, fft_size))
+    rxbw=4e6 #10e6 #4000000 # analog filter bandwidth
+    
     sdr=initAD9361(ad9361urladdress, sample_rate, center_freq, rxbuffer=fft_size, \
                    Rx_CH=Rx_CHANNEL, Tx_CH=Tx_CHANNEL, rxbw=rxbw, rxgain0=30, rxgain1=30, txgain0=-88, txgain1=0)
+
     sleep(1)
     my_phaser=initPhaser(phaserurladdress, sdr)
-
+    # Set the Phaser's PLL (the ADF4159 onboard) to downconvert the HB100 to 2.2 GHz plus a small offset
+    offset = 1000000 # add a small arbitrary offset just so we're not right at 0 Hz where there's a DC spike
+    phaserlo = int(signal_freq + sdr.rx_lo - offset)
+    print("Phaser lo:", phaserlo)
+    my_phaser.lo = phaserlo
+    
     # Aim the beam at boresight (zero degrees)
     my_phaser.set_beam_phase_diff(0.0)
 
-    my_phaser=configureADF4159(my_phaser, output_freq, BW, num_steps, ramp_time)
+        # Configure the ADF4159 Rampling PLL
+    #final output is 12.1GHz-LO(2.1GHz)=10GHz, Ramp range is 10GHz~10.5Ghz(10GHz+500MHz)
+    # output_freq = 12.1e9 
+    # BW = 500e6
+    # num_steps = 1000
+    # ramp_time = 1e3  # us
+    # ramp_time_s = ramp_time / 1e6
+    # my_phaser=configureADF4159(my_phaser, output_freq, BW, num_steps, ramp_time)
 
     # Read properties
     print("RX LO %s" % (sdr.rx_lo)) #2Ghz
+    sdr.rx_lo = int(2.2e9) # 2.2GHz The Pluto will tune to this freq
     printSDRproperties(sdr)
 
-    # Print config
-    print(
-        """
-    CONFIG:
-    Sample rate: {sample_rate}MHz
-    Num samples: 2^{Nlog2}
-    Bandwidth: {BW}MHz
-    Ramp time: {ramp_time}ms
-    Output frequency: {output_freq}MHz
-    IF: {signal_freq}kHz
-    """.format(
-            sample_rate=sample_rate / 1e6,
-            Nlog2=int(np.log2(fft_size)),
-            BW=BW / 1e6,
-            ramp_time=ramp_time / 1e3,
-            output_freq=output_freq / 1e6,
-            signal_freq=signal_freq / 1e3,
-        )
-    )
 
-    fs = int(sdr.sample_rate) #0.6MHz
+    fs = int(sdr.sample_rate) 
     print("sample_rate:", fs)
     N = int(sdr.rx_buffer_size)
-    iq = createcomplexsinusoid(fs, signal_freq, N)
-    iq_300k = createcomplexsinusoid(fs, signal_freq*3, N)
 
-    # Send data
-    sdr._ctx.set_timeout(0)
-    sdr.tx([iq * 0.5, iq])  # only send data to the 2nd channel (that's all we need)
+    # Grab some samples (whatever we set rx_buffer_size to), remember we are receiving on 2 channels at the same time
+    for i in range(3):
+        data = sdr.rx()
+        plotdualchtimefreq(data, sample_rate)
 
-    c = 3e8
-    default_rf_bw = BW #500e6
-    N_frame = fft_size
-    freq = np.linspace(-fs / 2, fs / 2, int(N_frame))
-    slope = BW / ramp_time_s
-    dist = (freq - signal_freq) * c / (4 * slope)
-
-    xdata = freq
-    plot_dist = False
-
-    print("Slope: %0.2fMHz/s" % (slope / 1e6))
-    range_resolution = c / (2 * default_rf_bw) #0.3
-    range_x = (100e3) * c / (4 * slope) #15
-    #0, range_x or frequency 100e3, 200e3
+    #Performing Beamforming
+    phase_cal = pickle.load(open("./sdradi/phaser/phase_cal_val.pkl", "rb"))
+    performbeamforming(my_phaser, phase_cal)
+    
 
     # Collect data
     alldata0 = np.empty(0, dtype=np.complex_) #Default is numpy.float64.
@@ -276,7 +313,7 @@ def main():
         # Stop transmitting
     sdr.tx_destroy_buffer() #Clears TX buffer
     sdr.rx_destroy_buffer() #Clears RX buffer
-    with open('./data/radardata5s-indoor2.npy', 'wb') as f:
+    with open('./data/phaserdata1.npy', 'wb') as f:
         np.save(f, alldata0)
     print(len(alldata0)) #1196032
 # piuri="ip:phaser.local:50901"
@@ -285,13 +322,15 @@ def main():
 # plutodruri="ip:192.168.2.16"#connected via USB
 
 import argparse
-parser = argparse.ArgumentParser(description='MyRadar')
+parser = argparse.ArgumentParser(description='MyPhaser')
 parser.add_argument('--ad9361urladdress', default="ip:phaser.local:50901", type=str,
                     help='urladdress of the device')
 parser.add_argument('--phaserurladdress', default="ip:phaser.local", type=str,
                     help='urladdress of the device')
 parser.add_argument('--rxch', default=2, type=int, 
                     help='number of rx channels')
+parser.add_argument('--txch', default=2, type=int, 
+                    help='number of tx channels')
 parser.add_argument('--signal', default="dds", type=str,
                     help='signal type: sinusoid, dds')
 parser.add_argument('--plot', default=False, type=bool,

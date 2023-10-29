@@ -40,7 +40,13 @@ def loadad9361data():
     print(len(alldata)/num_samps)
 
 def showspectrum(data, fs, N_frame):
-    data=data[0:N_frame]
+    # fc = int(100e3 / (fs / N_frame)) * (fs / N_frame) #300KHz
+    # ts =1.0/fs
+    # t = np.arange(0, N_frame * ts, ts)
+    # i = np.cos(2 * np.pi * t * fc) * 2 ** 14
+    # q = np.sin(2 * np.pi * t * fc) * 2 ** 14
+    # iq_100k = 1 * (i + 1j * q)
+    data=data[0:N_frame] #* iq_100k
     win_funct = np.blackman(len(data))
     y = data * win_funct
     sp = np.absolute(np.fft.fft(y))
@@ -92,7 +98,7 @@ def dynamicspectrum(dataall, fs, N_frame):
         plt.plot(freq,s_dbfs)
         plt.xlabel('Frequency')
         plt.ylabel('Amplitude')
-        plt.ylim(-140, -40)
+        #plt.ylim(-140, -40)
         plt.title('Spectrum')
         #plt.show()
         plt.draw()
@@ -205,13 +211,25 @@ def main():
     slope = BW / ramp_time_s
     Nr = int(ramp_time_s * fs) #Number ADC sampling points in each chirp
 
-    dynamicspectrum(alldata, fs, N_frame)
+    fc = int(100e3 / (fs / N_frame)) * (fs / N_frame) #300KHz
+    ts =1.0/fs
+    t = np.arange(0, len(alldata) * ts, ts)
+    i = np.cos(2 * np.pi * t * fc) * 2 ** 14
+    q = np.sin(2 * np.pi * t * fc) * 2 ** 14
+    iq_100k = 1 * (i + 1j * q)
+    alldata=alldata * iq_100k
 
     showspectrum(alldata.real, fs, N_frame)
 
-    matplotlibspectrogram(alldata.real, fs, N_frame)
+    dynamicspectrum(alldata.real, fs, N_frame)
 
-    #dynamicRD(alldata, fs, fft_size)
+    dynamicRD(alldata.real, fs, fft_size)
+
+    
+
+    
+
+    matplotlibspectrogram(alldata.real, fs, N_frame)
 
     #dynamicspectrum2(alldata, fs, fft_size)
 
