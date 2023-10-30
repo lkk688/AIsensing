@@ -168,18 +168,18 @@ conda install -c anaconda pandas
 
 Test throughput
 ```bash 
-(mycondapy310) PS D:\Developer\radarsensing> iio_readdev -u ip:pluto.local -B -b 65768 cf-ad9361-lpc
+(mycondapy310) PS D:\Developer\radarsensing> iio_readdev -u ip:pluto.local -B -b 65768 cf-ad9361-lpc 
 Throughput: 22 MiB/s
  iio_readdev -u ip:192.168.1.10 -B -b 65768 cf-ad9361-lpc
 Throughput: 50 MiB/s
-(mycondapy310) PS C:\Users\lkk68> iio_readdev -u ip:phaser.local:50901 -B -b 65768 cf-ad9361-lpc
+(mycondapy310) PS C:\Users\lkk68> iio_readdev -u ip:phaser.local:50901 -B -b 65768 cf-ad9361-lpc #PC to pi
 Throughput: 1 MiB/s
-(mycondapy310) PS C:\Users\lkk68> iio_readdev -u ip:phaser.local:50901 -B -b 65768 cf-ad9361-lpc
+(mycondapy310) PS C:\Users\lkk68> iio_readdev -u ip:phaser.local:50901 -B -b 65768 cf-ad9361-lpc #PC to pi (new USB port)
 Throughput: 6 MiB/s
 #inside the raspberry Pi
 analog@phaser:~ $  iio_readdev -u ip:pluto.local -B -b 65768 cf-ad9361-lpc
 Throughput: 4 MiB/s
-analog@phaser:~ $ iio_readdev -u ip:pluto.local -B -b 65768 cf-ad9361-lpc
+analog@phaser:~ $ iio_readdev -u ip:pluto.local -B -b 65768 cf-ad9361-lpc #changed USB port
 Throughput: 22 MiB/s
 
 ```

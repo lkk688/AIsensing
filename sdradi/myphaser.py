@@ -53,7 +53,7 @@ def initPhaser(urladdress, my_sdr, calibrationfile=True, Blackman=False):
 
     return my_phaser
 
-def updatePhaserCalibration(my_phaser, calibrationfile=False, gain=64, Blackman=False):
+def updatePhaserCalibration(my_phaser, calibrationfile=False, rxgain=30, gain=64, Blackman=False):
     if calibrationfile:
         my_phaser.load_gain_cal() #gcal
         my_phaser.load_phase_cal() #pcal
@@ -74,10 +74,12 @@ def updatePhaserCalibration(my_phaser, calibrationfile=False, gain=64, Blackman=
     #apply channel calibration for two SDR channels
     # First crack at compensating for channel gain mismatch
     my_phaser.sdr.rx_hardwaregain_chan0 = (
-        my_phaser.sdr.rx_hardwaregain_chan0 + my_phaser.ccal[0]
+        #my_phaser.sdr.rx_hardwaregain_chan0 + my_phaser.ccal[0]
+        rxgain + my_phaser.ccal[0]
     )
     my_phaser.sdr.rx_hardwaregain_chan1 = (
-        my_phaser.sdr.rx_hardwaregain_chan1 + my_phaser.ccal[1]
+        #my_phaser.sdr.rx_hardwaregain_chan1 + my_phaser.ccal[1]
+        rxgain + my_phaser.ccal[1]
     )
 
 colors = ["black", "gray", "red", "orange", "yellow", "green", "blue", "purple"]
@@ -237,17 +239,17 @@ def readiio(sdr):
     if status & 0b0100:
         print("Overflow")
 
-def plotdualchtimefreq(data, sample_rate):
+def plotdualchtimefreq(data0, data1, sample_rate):
     # Take FFT
-    PSD0 = 10*np.log10(np.abs(np.fft.fftshift(np.fft.fft(data[0])))**2)
-    PSD1 = 10*np.log10(np.abs(np.fft.fftshift(np.fft.fft(data[1])))**2)
-    f = np.linspace(-sample_rate/2, sample_rate/2, len(data[0]))
+    PSD0 = 10*np.log10(np.abs(np.fft.fftshift(np.fft.fft(data0)))**2)
+    PSD1 = 10*np.log10(np.abs(np.fft.fftshift(np.fft.fft(data1)))**2)
+    f = np.linspace(-sample_rate/2, sample_rate/2, len(data0))
 
     # Time plot helps us check that we see the HB100 and that we're not saturated (ie gain isnt too high)
     plt.figure(figsize=(10,6))
     plt.subplot(2, 1, 1)
-    plt.plot(data[0].real) # Only plot real part
-    plt.plot(data[1].real)
+    plt.plot(data0.real) # Only plot real part
+    plt.plot(data1.real)
     plt.xlabel("Data Point")
     plt.ylabel("ADC output")
 
@@ -300,6 +302,58 @@ def performbeamforming(phaser, phase_cal,signal_freq):
     ax.grid(True)
     plt.show()
 
+def plotperiodogram(ch0, ch1, fs, my_phaser):
+    #https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.periodogram.html
+    f, Pxx_den0 = signal.periodogram(
+        ch0[1:-1], fs, "blackman", scaling="spectrum"
+    )
+    f, Pxx_den1 = signal.periodogram(
+        ch1[1:-1], fs, "blackman", scaling="spectrum"
+    )
+    plt.figure(figsize=(10,6))
+    plt.clf()
+    plt.plot(np.real(ch0), color="red")
+    plt.plot(np.imag(ch0), color="blue")
+    plt.plot(np.real(ch1), color="green")
+    plt.plot(np.imag(ch1), color="black")
+    plt.xlabel("data point")
+    plt.ylabel("output code")
+    plt.draw()
+
+    plt.figure(figsize=(10,6))
+    plt.clf()
+    plt.semilogy(f, Pxx_den0)
+    plt.semilogy(f, Pxx_den1)
+    plt.ylim([1e-5, 1e6])
+    plt.xlabel("frequency [Hz]")
+    plt.ylabel("PSD [V**2/Hz]")
+    plt.draw()
+
+    # Plot the output based on experiment that you are performing
+    print("Plotting...")
+
+    plt.figure(figsize=(10,6))
+    plt.ion()
+    #    plt.show()
+    (
+        gain,#128 array
+        angle,#128 array
+        delta,#128 array
+        diff_error,
+        beam_phase,
+        xf,
+        max_gain,
+        PhaseValues,
+    ) = calculate_plot(my_phaser)
+    #print("Sweeping took this many seconds: " + str(time.time() - start))
+    #    gain,  = my_phaser.plot(plot_type="monopulse")
+    plt.clf()
+    plt.scatter(angle, gain, s=10)
+    plt.scatter(angle, delta, s=10)
+    plt.show()
+
+    plt.pause(0.05)
+
 def main():
     args = parser.parse_args()
     phaserurladdress = args.phaserurladdress #urladdress #"ip:pluto.local"
@@ -317,12 +371,14 @@ def main():
     signal_freq = pickle.load(open("./sdradi/phaser/hb100_freq_val.pkl", "rb")) #100e3 #100K
     print("signal_freq:", signal_freq)
     num_slices = 200
-    fft_size = 1024 # * 16 rx buffer size # samples per buffer
+    fft_size=1024
+    rxbuffersize = 1024*100 # * 16 rx buffer size # samples per buffer
     #img_array = np.zeros((num_slices, fft_size))
     rxbw=4e6 #10e6 #4000000 # analog filter bandwidth
+    rxgain=30
     
-    sdr=initAD9361(ad9361urladdress, sample_rate, center_freq, rxbuffer=fft_size, \
-                   Rx_CH=Rx_CHANNEL, Tx_CH=Tx_CHANNEL, rxbw=rxbw, rxgain0=30, rxgain1=30, txgain0=-88, txgain1=0)
+    sdr=initAD9361(ad9361urladdress, sample_rate, center_freq, rxbuffer=rxbuffersize, \
+                   Rx_CH=Rx_CHANNEL, Tx_CH=Tx_CHANNEL, rxbw=rxbw, rxgain0=rxgain, rxgain1=rxgain, txgain0=-88, txgain1=0)
 
     sleep(1)
     if calibrate: 
@@ -330,6 +386,7 @@ def main():
     else:
         calibrationfile=True
     my_phaser=initPhaser(phaserurladdress, sdr, calibrationfile=calibrationfile, Blackman=False)
+    my_phaser.SignalFreq = signal_freq
     # Set the Phaser's PLL (the ADF4159 onboard) to downconvert the HB100 to 2.2 GHz plus a small offset
     offset = 1000000 # add a small arbitrary offset just so we're not right at 0 Hz where there's a DC spike
     phaserlo = int(signal_freq + sdr.rx_lo - offset) #10.4+2.2-
@@ -341,7 +398,7 @@ def main():
 
     if calibrate:
         calibratePhaser(my_phaser, savefile=False)
-        updatePhaserCalibration(my_phaser, calibrationfile=calibrationfile, gain=64, Blackman=False)
+        updatePhaserCalibration(my_phaser, calibrationfile=calibrationfile, rxgain=rxgain, gain=64, Blackman=False)
 
         # Configure the ADF4159 Rampling PLL
     #final output is 12.1GHz-LO(2.1GHz)=10GHz, Ramp range is 10GHz~10.5Ghz(10GHz+500MHz)
@@ -363,25 +420,30 @@ def main():
     N = int(sdr.rx_buffer_size)
 
     # Grab some samples (whatever we set rx_buffer_size to), remember we are receiving on 2 channels at the same time
-    for i in range(3):
-        data = sdr.rx()
-        plotdualchtimefreq(data, sample_rate)
+    if plot_flag:
+        for i in range(3):
+            data = sdr.rx()
+            data0=data[0]
+            data1=data[1]
+            plotdualchtimefreq(data0[0:fft_size],data1[0:fft_size], sample_rate)
 
     #Performing Beamforming
     if calibrate:
         phase_cal = my_phaser.pcal
     else:
         phase_cal = pickle.load(open("./sdradi/phaser/phase_cal_val.pkl", "rb"))
-    #performbeamforming(my_phaser, phase_cal)
-    performbeamforming(my_phaser, phase_cal, signal_freq)
+    if plot_flag:
+        performbeamforming(my_phaser, phase_cal, signal_freq)
     
 
     # Collect data
     alldata0 = np.empty(0, dtype=np.complex_) #Default is numpy.float64.
     rxtime=[]
     processtime=[]
-    Nperiod=int(5*fs/fft_size) #total time 10s *fs=total samples /fft_size = Number of frames
+    Nperiod=int(5*fs/rxbuffersize) #total time 10s *fs=total samples /fft_size = Number of frames
     print("Total period for 5s:", Nperiod) #73
+    my_phaser.set_beam_phase_diff(0.0)
+
     for r in range(Nperiod):
         start = timer()
         x = sdr.rx() #1024 size array of complex
@@ -397,6 +459,9 @@ def main():
         datarate=len(data.real)*4/timedelta/1e6 #Mbps, complex data is 4bytes
         print("Data rate at ", datarate, "Mbps.") #7-8Mbps in 10240 points, 10Mbps in 102400points, single channel in 19-20Mbps
         alldata0 = np.concatenate((alldata0, data))
+
+        if plot_flag:
+            plotperiodogram(data0[0:fft_size], data1[0:fft_size], fs, my_phaser)
 
         readiio(sdr)
         endtime = timer()
