@@ -29,18 +29,37 @@ def printSDRproperties(sdr):
     print("Sample rate:", sdr.sample_rate) #Sample rate RX and TX paths in samples per second
     print("DDS scales:", sdr.dds_scales)
 
-def initPhaser(urladdress, my_sdr, Blackman=False):
+def initPhaser(urladdress, my_sdr, calibrationfile=True, Blackman=False):
     #my_phaser = adi.CN0566(uri=urladdress, sdr=my_sdr)
     my_phaser = CN0566(uri=urladdress, sdr=my_sdr)
     print("Phaser url: ", my_phaser.uri)
     print("Phaser already connected")
 
     # Initialize both ADAR1000s, set gains to max, and all phases to 0
+    #load calibration files
     my_phaser.configure(device_mode="rx")
-    my_phaser.load_gain_cal()
-    my_phaser.load_phase_cal()
+
+    my_phaser.freq_dev_step = 5690
+    my_phaser.freq_dev_range = 0
+    my_phaser.freq_dev_time = 0
+    my_phaser.powerdown = 0
+    my_phaser.ramp_mode = "disabled"
+
+    # Averages decide number of time samples are taken to plot and/or calibrate system. By default it is 1.
+    my_phaser.Averages = 4
+
+    if calibrationfile:
+        updatePhaserCalibration(my_phaser, calibrationfile=True, gain=64, Blackman=Blackman)
+
+    return my_phaser
+
+def updatePhaserCalibration(my_phaser, calibrationfile=False, gain=64, Blackman=False):
+    if calibrationfile:
+        my_phaser.load_gain_cal() #gcal
+        my_phaser.load_phase_cal() #pcal
+        my_phaser.load_channel_cal() #ccal for channels 0 and 1
     for i in range(0, 8):
-        my_phaser.set_chan_phase(i, 0)
+        my_phaser.set_chan_phase(i, 0) #apply channel phase calibration for rx_phase
 
     if Blackman == True:
         gain_list = [8, 34, 84, 127, 127, 84, 34, 8]  # Blackman taper
@@ -48,11 +67,69 @@ def initPhaser(urladdress, my_sdr, Blackman=False):
             my_phaser.set_chan_gain(i, gain_list[i], apply_cal=True)
     else:
         # Set all antenna elements to half scale - a typical HB100 will have plenty of signal power.
-        gain = 64 # 64 is about half scale
+        #gain = 64 # 64 is about half scale
         for i in range(8):
-            my_phaser.set_chan_gain(i, gain, apply_cal=False)
+            my_phaser.set_chan_gain(i, gain, apply_cal=True) #rx_gain
     
-    return my_phaser
+    #apply channel calibration for two SDR channels
+    # First crack at compensating for channel gain mismatch
+    my_phaser.sdr.rx_hardwaregain_chan0 = (
+        my_phaser.sdr.rx_hardwaregain_chan0 + my_phaser.ccal[0]
+    )
+    my_phaser.sdr.rx_hardwaregain_chan1 = (
+        my_phaser.sdr.rx_hardwaregain_chan1 + my_phaser.ccal[1]
+    )
+
+colors = ["black", "gray", "red", "orange", "yellow", "green", "blue", "purple"]
+from phaser.phaser_functions import (
+    calculate_plot,
+    channel_calibration,
+    gain_calibration,
+    load_hb100_cal,
+    phase_calibration,
+)
+def calibratePhaser(my_phaser, savefile=False):
+    my_phaser.set_beam_phase_diff(0.0)
+    channel_calibration(my_phaser, verbose=True)
+    print(my_phaser.ccal)
+
+    if savefile == True:
+        my_phaser.save_channel_cal(filename="channel_cal.pkl")
+        print("Calibrating Gain, verbosely, then saving cal file...")
+
+    # Start Gain Calibration
+    my_phaser.set_beam_phase_diff(0.0)
+    #    plot_data = my_phaser.gain_calibration(verbose=True)  # Start Gain Calibration
+    plot_data = gain_calibration(my_phaser, verbose=True)  # Start Gain Calibration
+    print(my_phaser.gcal)
+    plt.figure(figsize=(10,6))
+    plt.title("Gain calibration FFTs")
+    plt.xlabel("FFT Bin number")
+    plt.ylabel("Amplitude (ADC counts)")
+    for i in range(0, 8):
+        plt.plot(plot_data[i], color=colors[i])
+    plt.show()
+    if savefile == True:
+        my_phaser.save_gain_cal(filename="gain_cal.pkl")  # Default filename
+        print("Calibrating Phase, verbosely, then saving cal file...")
+    
+    # Start Phase Calibration
+    PhaseValues, plot_data = phase_calibration(
+        my_phaser, verbose=True
+    )  # Start Phase Calibration
+    print(my_phaser.pcal)
+    plt.figure(figsize=(10,6))
+    plt.title("Phase sweeps of adjacent elements")
+    plt.xlabel("Phase difference (degrees)")
+    plt.ylabel("Amplitude (ADC counts)")
+    for i in range(0, 7):
+        plt.plot(PhaseValues, plot_data[i], color=colors[i])
+    plt.show()
+    if savefile == True:
+        my_phaser.save_phase_cal(filename="phase_cal.pkl")  # Default filename
+    
+    #updatePhaserCalibration(my_phaser, calibrationfile=False, gain=64, Blackman=False)
+    print("Done calibration")
 
 def configureADF4159(my_phaser, output_freq= 12.1e9, BW= 500e6, num_steps= 1000, ramp_time= 1e3):
     # Configure the ADF4159 Rampling PLL
@@ -89,7 +166,7 @@ def initAD9361(urladdress, fs, center_freq=2.2e9, rxbuffer=1024, Rx_CH=2, Tx_CH=
     # Create radio
     sdr = adi.ad9361(uri=urladdress)
     sdr.rx_rf_bandwidth = int(rxbw) #4000000 #4MHz
-    sdr.sample_rate = int(fs) #0.6Mhz
+    sdr.sample_rate = int(fs) 
 
     # Configure Rx
     #sdr.rx_enabled_channels = [0, 1]  # enable Rx1 (voltage0) and Rx2 (voltage1)
@@ -109,17 +186,17 @@ def initAD9361(urladdress, fs, center_freq=2.2e9, rxbuffer=1024, Rx_CH=2, Tx_CH=
     #num_samps = 1024*100#10000 # number of samples returned per call to rx()
     #sdr.rx_buffer_size = num_samps
 
-    #from mycn0566 SDR_init
-    sdr._ctrl.debug_attrs[
-        "adi,frequency-division-duplex-mode-enable"
-    ].value = "1"  # set to fdd mode
-    sdr._ctrl.debug_attrs[
-        "adi,ensm-enable-txnrx-control-enable"
-    ].value = "0"  # Disable pin control so spi can move the states
-    sdr._ctrl.debug_attrs["initialize"].value = "1"
-    sdr._rxadc.set_kernel_buffers_count(
-        1
-    )  # Default is 4 Rx buffers are stored, but we want to change and immediately measure the result, so buffers=1
+    #from mycn0566 SDR_init, LKK: these will cause sdr parameters to reset
+    # sdr._ctrl.debug_attrs[
+    #     "adi,frequency-division-duplex-mode-enable"
+    # ].value = "1"  # set to fdd mode
+    # sdr._ctrl.debug_attrs[
+    #     "adi,ensm-enable-txnrx-control-enable"
+    # ].value = "0"  # Disable pin control so spi can move the states
+    # sdr._ctrl.debug_attrs["initialize"].value = "1"
+    # sdr._rxadc.set_kernel_buffers_count(
+    #     1
+    # )  # Default is 4 Rx buffers are stored, but we want to change and immediately measure the result, so buffers=1
 
     # Configure Tx
     if Tx_CH==2:
@@ -167,6 +244,7 @@ def plotdualchtimefreq(data, sample_rate):
     f = np.linspace(-sample_rate/2, sample_rate/2, len(data[0]))
 
     # Time plot helps us check that we see the HB100 and that we're not saturated (ie gain isnt too high)
+    plt.figure(figsize=(10,6))
     plt.subplot(2, 1, 1)
     plt.plot(data[0].real) # Only plot real part
     plt.plot(data[1].real)
@@ -182,7 +260,7 @@ def plotdualchtimefreq(data, sample_rate):
     plt.tight_layout()
     plt.show()
 
-def performbeamforming(phaser, phase_cal):
+def performbeamforming(phaser, phase_cal,signal_freq):
     powers = [] # main DOA result
     angle_of_arrivals = []
     for phase in np.arange(-180, 180, 2): # sweep over angle
@@ -203,15 +281,16 @@ def performbeamforming(phaser, phase_cal):
         # in addition to just taking the power in the signal, we could also do the FFT then grab the value of the max bin, effectively filtering out noise, results came out almost exactly the same in my tests
         #PSD = 10*np.log10(np.abs(np.fft.fft(data_sum * np.blackman(len(data_sum))))**2) # in dB
 
-    powers -= np.max(powers) # normalize so max is at 0 dB
-
+    powers -= np.max(powers) # normalize so max is at 0 dB, 180 items
+    plt.figure(figsize=(10,6))
     plt.plot(angle_of_arrivals, powers, '.-')
     plt.xlabel("Angle of Arrival")
     plt.ylabel("Magnitude [dB]")
     plt.show()
 
     # Polar plot
-    fig, ax = plt.subplots(subplot_kw={'projection': 'polar'})
+    #plt.figure(figsize=(10,6))
+    fig, ax = plt.subplots(subplot_kw={'projection': 'polar'}, figsize=(10,6))
     ax.plot(np.deg2rad(angle_of_arrivals), powers) # x axis in radians
     ax.set_rticks([-40, -30, -20, -10, 0])  # Less radial ticks
     ax.set_thetamin(np.min(angle_of_arrivals)) # in degrees
@@ -227,6 +306,7 @@ def main():
     ad9361urladdress = args.ad9361urladdress
     Rx_CHANNEL = args.rxch
     Tx_CHANNEL = args.txch
+    calibrate = args.calibrate
     signal_type = args.signal
     plot_flag = args.plot
     
@@ -245,15 +325,23 @@ def main():
                    Rx_CH=Rx_CHANNEL, Tx_CH=Tx_CHANNEL, rxbw=rxbw, rxgain0=30, rxgain1=30, txgain0=-88, txgain1=0)
 
     sleep(1)
-    my_phaser=initPhaser(phaserurladdress, sdr)
+    if calibrate: 
+        calibrationfile=False
+    else:
+        calibrationfile=True
+    my_phaser=initPhaser(phaserurladdress, sdr, calibrationfile=calibrationfile, Blackman=False)
     # Set the Phaser's PLL (the ADF4159 onboard) to downconvert the HB100 to 2.2 GHz plus a small offset
     offset = 1000000 # add a small arbitrary offset just so we're not right at 0 Hz where there's a DC spike
-    phaserlo = int(signal_freq + sdr.rx_lo - offset)
-    print("Phaser lo:", phaserlo)
+    phaserlo = int(signal_freq + sdr.rx_lo - offset) #10.4+2.2-
+    print("Phaser lo:", phaserlo) #12.589GHz
     my_phaser.lo = phaserlo
     
     # Aim the beam at boresight (zero degrees)
     my_phaser.set_beam_phase_diff(0.0)
+
+    if calibrate:
+        calibratePhaser(my_phaser, savefile=False)
+        updatePhaserCalibration(my_phaser, calibrationfile=calibrationfile, gain=64, Blackman=False)
 
         # Configure the ADF4159 Rampling PLL
     #final output is 12.1GHz-LO(2.1GHz)=10GHz, Ramp range is 10GHz~10.5Ghz(10GHz+500MHz)
@@ -280,8 +368,12 @@ def main():
         plotdualchtimefreq(data, sample_rate)
 
     #Performing Beamforming
-    phase_cal = pickle.load(open("./sdradi/phaser/phase_cal_val.pkl", "rb"))
-    performbeamforming(my_phaser, phase_cal)
+    if calibrate:
+        phase_cal = my_phaser.pcal
+    else:
+        phase_cal = pickle.load(open("./sdradi/phaser/phase_cal_val.pkl", "rb"))
+    #performbeamforming(my_phaser, phase_cal)
+    performbeamforming(my_phaser, phase_cal, signal_freq)
     
 
     # Collect data
@@ -335,6 +427,7 @@ parser.add_argument('--signal', default="dds", type=str,
                     help='signal type: sinusoid, dds')
 parser.add_argument('--plot', default=False, type=bool,
                     help='plot figure')
-
+parser.add_argument('--calibrate', default=False, type=bool,
+                    help='calibrate')
 if __name__ == '__main__':
     main()

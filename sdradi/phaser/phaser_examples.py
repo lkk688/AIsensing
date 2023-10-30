@@ -170,7 +170,7 @@ else:
 # Onboard source w/ external Vivaldi
 my_phaser.frequency = (
     int(my_phaser.SignalFreq) + config.Rx_freq
-) // 4  # PLL feedback via /4 VCO output
+) // 4  # PLL feedback via /4 VCO output, 10.5+2.2G
 my_phaser.freq_dev_step = 5690
 my_phaser.freq_dev_range = 0
 my_phaser.freq_dev_time = 0
