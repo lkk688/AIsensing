@@ -30,34 +30,45 @@ np.object = object    #module 'numpy' has no attribute 'object'
 np.bool = bool    #module 'numpy' has no attribute 'bool'
 
 # Instantiate all the Devices
-try:
-    import phaser_config
+# try:
+#     import phaser_config
 
-    rpi_ip = phaser_config.rpi_ip
-    sdr_ip = "ip:192.168.2.1"  # "192.168.2.1, or pluto.local"  # IP address of the Transreceiver Block
-except:
-    print("No config file found...")
-    rpi_ip = "ip:phaser.local"  # IP address of the Raspberry Pi
-    #sdr_ip = "ip:192.168.2.1"  # "192.168.2.1, or pluto.local"  # IP address of the Transreceiver Block
-    sdr_ip = "ip:phaser.local:50901"  #new add
+#     rpi_ip = phaser_config.rpi_ip
+#     sdr_ip = "ip:192.168.2.1"  # "192.168.2.1, or pluto.local"  # IP address of the Transreceiver Block
+# except:
+#     print("No config file found...")
+#     rpi_ip = "ip:phaser.local"  # IP address of the Raspberry Pi
+#     #sdr_ip = "ip:192.168.2.1"  # "192.168.2.1, or pluto.local"  # IP address of the Transreceiver Block
+#     sdr_ip = "ip:phaser.local:50901"  #new add
 
+# try:
+#     x = my_sdr.uri
+#     print("Pluto already connected")
+# except NameError:
+#     print("Pluto not connected...")
+#     my_sdr = adi.ad9361(uri=sdr_ip)
+
+# time.sleep(0.5)
+
+# try:
+#     x = my_phaser.uri
+#     print("cn0566 already connected")
+# except NameError:
+#     print("cn0566 not open...")
+#     #my_phaser = adi.CN0566(uri=rpi_ip, sdr=my_sdr)
+#     my_phaser = CN0566(uri=rpi_ip, sdr=my_sdr)
+
+# piuri="ip:phaser.local:50901"
+# localuri="ip:analog.local"
+# antsdruri="ip:192.168.1.10"#connected via Ethernet with static IP
+# plutodruri="ip:192.168.2.16"#connected via USB
 try:
-    x = my_sdr.uri
-    print("Pluto already connected")
+    my_sdr = adi.ad9361(uri="ip:pluto.local") #"ip:phaser.local:50901", ip:pluto.local
+    time.sleep(0.5)
+    my_phaser = CN0566(uri="ip:phaser.local", sdr=my_sdr) #
+    print("Device connected")
 except NameError:
-    print("Pluto not connected...")
-    my_sdr = adi.ad9361(uri=sdr_ip)
-
-time.sleep(0.5)
-
-try:
-    x = my_phaser.uri
-    print("cn0566 already connected")
-except NameError:
-    print("cn0566 not open...")
-    #my_phaser = adi.CN0566(uri=rpi_ip, sdr=my_sdr)
-    my_phaser = CN0566(uri=rpi_ip, sdr=my_sdr)
-
+    print("device not open...")
 # Initialize both ADAR1000s, set gains to max, and all phases to 0
 my_phaser.configure(device_mode="rx")
 my_phaser.load_gain_cal()
@@ -85,7 +96,7 @@ my_sdr.rx_lo = int(center_freq)  # set this to output_freq - (the freq of the HB
 my_sdr.rx_enabled_channels = [0, 1]  # enable Rx1 (voltage0) and Rx2 (voltage1)
 my_sdr.rx_buffer_size = int(fft_size)
 my_sdr.gain_control_mode_chan0 = "manual"  # manual or slow_attack
-my_sdr.gain_control_mode_chan1 = "manual"  # manual or slow_attack
+my_sdr.gain_control_mode_chan1 = "manual"  # manual or slow_attack fast_attack
 my_sdr.rx_hardwaregain_chan0 = int(30)  # must be between -3 and 70
 my_sdr.rx_hardwaregain_chan1 = int(30)  # must be between -3 and 70
 # Configure Tx
@@ -182,7 +193,7 @@ class Window(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Interactive FFT")
-        self.setGeometry(100, 100, 800, 1200)
+        self.setGeometry(100, 100, 800, 1200) #x-coordinate, y-coordinate, width of window, height of window
         self.num_rows = 12
         self.UiComponents()
         # showing all the widgets
@@ -436,7 +447,7 @@ def update():
     global index, xdata, plot_dist, freq, dist
     label_style = {"color": "#FFF", "font-size": "12pt"}
 
-    data = my_sdr.rx()
+    data = my_sdr.rx() #16384
     data = data[0] + data[1]
     win_funct = np.blackman(len(data))
     y = data * win_funct

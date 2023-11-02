@@ -170,6 +170,8 @@ Test throughput
 ```bash 
 (mycondapy310) PS D:\Developer\radarsensing> iio_readdev -u ip:pluto.local -B -b 65768 cf-ad9361-lpc 
 Throughput: 22 MiB/s
+(mycondapy310) PS D:\Developer\radarsensing> iio_readdev -u ip:192.168.2.1 -B -b 65768 cf-ad9361-lpc
+Throughput: 22 MiB/s
  iio_readdev -u ip:192.168.1.10 -B -b 65768 cf-ad9361-lpc
 Throughput: 50 MiB/s
 (mycondapy310) PS C:\Users\lkk68> iio_readdev -u ip:phaser.local:50901 -B -b 65768 cf-ad9361-lpc #PC to pi
@@ -189,4 +191,17 @@ Throughput: 22 MiB/s
 (base) PS D:\Developer\radarsensing\sdradi\phaser> scp analog@phaser.local:~/pyadi-iio/examples/phaser/channel_cal_val.pkl .
 (base) PS D:\Developer\radarsensing\sdradi\phaser> scp analog@phaser.local:~/pyadi-iio/examples/phaser/gain_cal_val.pkl .
 (base) PS D:\Developer\radarsensing\sdradi\phaser> scp analog@phaser.local:~/pyadi-iio/examples/phaser/phase_cal_val.pkl .
+```
+
+pyqtbug: in "D:\anaconda3\envs\mycondapy310\Lib\site-packages\pyqtgraph\widgets\GraphicsView.py" line 371, change to the followng code:
+```bash 
+  def mouseMoveEvent(self, ev):
+      if self.lastMousePos is None:
+          self.lastMousePos = Point(ev.pos())
+      mousepoint = self.lastMousePos
+      x,y=mousepoint
+      mousepoint = QtCore.QPoint(int(x), int(y))
+      delta = Point(ev.pos() - QtCore.QPoint(int(x), int(y)))
+      #delta = Point(ev.pos() - QtCore.QPoint(*self.lastMousePos)) #*self.lastMousePos
+      self.lastMousePos = Point(ev.pos())
 ```

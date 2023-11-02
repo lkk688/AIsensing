@@ -88,10 +88,9 @@ def initAD9361(urladdress, fs, center_freq=2.2e9, rxbuffer=1024, Rx_CH=2, Tx_CH=
     # Create radio
     sdr = adi.ad9361(uri=urladdress)
     sdr.rx_rf_bandwidth = int(rxbw) #4000000 #4MHz
-    sdr.sample_rate = int(fs) #0.6Mhz
+    sdr.sample_rate = int(fs) 
 
     # Configure Rx
-    sdr.rx_lo = int(center_freq)  # set this to output_freq - (the freq of the HB100)
     #sdr.rx_enabled_channels = [0, 1]  # enable Rx1 (voltage0) and Rx2 (voltage1)
     # Configuration data channels
     if Rx_CH==2:
@@ -105,23 +104,23 @@ def initAD9361(urladdress, fs, center_freq=2.2e9, rxbuffer=1024, Rx_CH=2, Tx_CH=
         sdr.gain_control_mode_chan0 = "manual"  # manual or slow_attack
         sdr.rx_hardwaregain_chan0 = int(30)  # must be between -3 and 70
     sdr.rx_buffer_size = int(rxbuffer)
+    sdr.rx_lo = int(center_freq)  # set this to output_freq - (the freq of the HB100)
     #num_samps = 1024*100#10000 # number of samples returned per call to rx()
     #sdr.rx_buffer_size = num_samps
 
-    #from mycn0566 SDR_init
-    sdr._ctrl.debug_attrs[
-        "adi,frequency-division-duplex-mode-enable"
-    ].value = "1"  # set to fdd mode
-    sdr._ctrl.debug_attrs[
-        "adi,ensm-enable-txnrx-control-enable"
-    ].value = "0"  # Disable pin control so spi can move the states
-    sdr._ctrl.debug_attrs["initialize"].value = "1"
-    sdr._rxadc.set_kernel_buffers_count(
-        1
-    )  # Default is 4 Rx buffers are stored, but we want to change and immediately measure the result, so buffers=1
+    #from mycn0566 SDR_init, LKK: these will cause sdr parameters to reset
+    # sdr._ctrl.debug_attrs[
+    #     "adi,frequency-division-duplex-mode-enable"
+    # ].value = "1"  # set to fdd mode
+    # sdr._ctrl.debug_attrs[
+    #     "adi,ensm-enable-txnrx-control-enable"
+    # ].value = "0"  # Disable pin control so spi can move the states
+    # sdr._ctrl.debug_attrs["initialize"].value = "1"
+    # sdr._rxadc.set_kernel_buffers_count(
+    #     1
+    # )  # Default is 4 Rx buffers are stored, but we want to change and immediately measure the result, so buffers=1
 
     # Configure Tx
-    sdr.tx_lo = int(center_freq)
     if Tx_CH==2:
         sdr.tx_enabled_channels = [0, 1]
         sdr.tx_hardwaregain_chan0 = txgain0  # must be between 0 and -88
@@ -130,7 +129,7 @@ def initAD9361(urladdress, fs, center_freq=2.2e9, rxbuffer=1024, Rx_CH=2, Tx_CH=
         sdr.tx_enabled_channels = [0] #enables Tx0
         sdr.tx_hardwaregain_chan0 = txgain0  # must be between 0 and -88
     sdr.tx_cyclic_buffer = True  # must set cyclic buffer to true for the tdd burst mode.  Otherwise Tx will turn on and off randomly
-    
+    sdr.tx_lo = int(center_freq)
     # Enable TDD logic in pluto (this is for synchronizing Rx Buffer to ADF4159 TX input)
     # gpio = adi.one_bit_adc_dac(sdr_ip)
     # gpio.gpio_phaser_enable = True
@@ -175,7 +174,7 @@ def main():
     center_freq = 2.1e9 #2.1G
     signal_freq = 100e3 #100K
     num_slices = 200
-    fft_size = 1024 * 16
+    fft_size = 1024 * 16 #*10
     img_array = np.zeros((num_slices, fft_size))
 
     # Configure the ADF4159 Rampling PLL
@@ -276,7 +275,7 @@ def main():
         # Stop transmitting
     sdr.tx_destroy_buffer() #Clears TX buffer
     sdr.rx_destroy_buffer() #Clears RX buffer
-    with open('./data/radardata5s-indoor2.npy', 'wb') as f:
+    with open('./data/radardata5s-1101fast4move.npy', 'wb') as f:
         np.save(f, alldata0)
     print(len(alldata0)) #1196032
 # piuri="ip:phaser.local:50901"
@@ -286,11 +285,13 @@ def main():
 
 import argparse
 parser = argparse.ArgumentParser(description='MyRadar')
-parser.add_argument('--ad9361urladdress', default="ip:phaser.local:50901", type=str,
-                    help='urladdress of the device')
+parser.add_argument('--ad9361urladdress', default="ip:pluto.local", type=str,
+                    help='urladdress of the device') #ip:pluto.local, ip:phaser.local:50901
 parser.add_argument('--phaserurladdress', default="ip:phaser.local", type=str,
                     help='urladdress of the device')
 parser.add_argument('--rxch', default=2, type=int, 
+                    help='number of rx channels')
+parser.add_argument('--txch', default=2, type=int, 
                     help='number of rx channels')
 parser.add_argument('--signal', default="dds", type=str,
                     help='signal type: sinusoid, dds')

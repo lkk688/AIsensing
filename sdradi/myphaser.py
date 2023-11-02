@@ -470,18 +470,20 @@ def main():
         # Stop transmitting
     sdr.tx_destroy_buffer() #Clears TX buffer
     sdr.rx_destroy_buffer() #Clears RX buffer
-    with open('./data/phaserdata1.npy', 'wb') as f:
+    with open('./data/phaser1101data1.npy', 'wb') as f:
         np.save(f, alldata0)
     print(len(alldata0)) #1196032
-# piuri="ip:phaser.local:50901"
-# localuri="ip:analog.local"
+    
+# piuri="ip:phaser.local:50901"#connect ad9361 via Pi
+# localuri="ip:analog.local"#Pi
+# phaseruri="ip:phaser.local" #CN0566 in pi
 # antsdruri="ip:192.168.1.10"#connected via Ethernet with static IP
 # plutodruri="ip:192.168.2.16"#connected via USB
-
+#ip:pluto.local
 import argparse
 parser = argparse.ArgumentParser(description='MyPhaser')
-parser.add_argument('--ad9361urladdress', default="ip:phaser.local:50901", type=str,
-                    help='urladdress of the device')
+parser.add_argument('--ad9361urladdress', default="ip:pluto.local", type=str,
+                    help='urladdress of the device') #ip:pluto.local, ip:phaser.local:50901
 parser.add_argument('--phaserurladdress', default="ip:phaser.local", type=str,
                     help='urladdress of the device')
 parser.add_argument('--rxch', default=2, type=int, 
