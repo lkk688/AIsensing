@@ -205,3 +205,10 @@ pyqtbug: in "D:\anaconda3\envs\mycondapy310\Lib\site-packages\pyqtgraph\widgets\
       #delta = Point(ev.pos() - QtCore.QPoint(*self.lastMousePos)) #*self.lastMousePos
       self.lastMousePos = Point(ev.pos())
 ```
+
+Install opengl
+```bash
+pip install PyOpenGL PyOpenGL_accelerate
+pip install pyopengl
+#try: import pyqtgraph.opengl as gl
+```

@@ -9,6 +9,7 @@ from pyqtgraph.Qt import QtCore, QtGui
 import pyqtgraph as pg
 import numpy as np
 from scipy import ndimage
+import pyqtgraph.opengl as gl
 
 #fix the error of `np.float` was a deprecated alias for the builtin `float`
 np.float = float    
@@ -60,24 +61,27 @@ def showspectrum(data):
     return s_dbfs, s_dbfs_shift
 
 
-def rangedoppler(data, n_s=600):
+def rangedoppler(data, n_c=150, n_s=600, showdb=True):
     #n_s = 600
-    n_r = int(len(data)/n_s)-1
-    table = np.zeros((n_r, n_s)) #150 chirps,1000 samples/chirp
-    for chirp_nr in range(n_r):
+    #n_r = int(len(data)/n_s)-1
+    table = np.zeros((n_c, n_s)) #150 chirps,1000 samples/chirp
+    for chirp_nr in range(n_c):
         table[chirp_nr, :] = data[(chirp_nr*n_s):(n_s*(chirp_nr+1))]
     #fft_output = np.fft.fft2(table)
     #2D FFT and Velocity-Distance Relationship
     Z_fft2 = abs(np.fft.fft2(table)) #
+    if showdb:
+        s_mag = np.abs(Z_fft2)/len(Z_fft2) #power spectrum
+        Z_fft2 = 20 * np.log10(s_mag)
     #Data_fft2 = Z_fft2[0:int(n_r/2),0:int(n_s/2)] #get half
-    Data_fft2 = Z_fft2[0:int(n_r/2),0:int(n_s/2)]#70:120] #get half 0:int(n_s/2)
+    Data_fft2 = Z_fft2[0:int(n_c/2),0:int(n_s/2)]#70:120] #get half 0:int(n_s/2)
     return Data_fft2, table
 
 c = 3e8
 default_rf_bw = 500e6
 sample_rate = 0.6e6 #0.6M
 fs = int(sample_rate) #0.6MHz
-fft_size = 1024 * 16
+fft_size = 1024 * 16 * 15
 N_frame = fft_size
 freq = np.linspace(-fs / 2, fs / 2, int(N_frame))
 N = int(fft_size)
@@ -90,12 +94,14 @@ BW = 500e6
 ramp_time = 1e3  # us
 ramp_time_s = ramp_time / 1e6
 slope = BW / ramp_time_s
-Nr = int(ramp_time_s * fs) #Number ADC sampling points in each chirp
-
+N_s = int(ramp_time_s * fs) #Number ADC sampling points in each chirp, 600
 
 alldata, Ntotalframe = loadData(N_frame)
+N_c = int(N_frame/N_s)-1 #number of chirps in fft_size
 
-
+global xSize, ySize
+xSize = int(N_c/2) #13 1024 #128 #26 #128
+ySize = int(N_s/2) #300 1024 #150 #600 #128
 
 class Window(QMainWindow): 
     def __init__(self): 
@@ -314,12 +320,50 @@ class Window(QMainWindow):
         img = np.random.normal(size=(60, 60))#[np.newaxis, :, :] #(1, 200, 200)
         # Displaying the data and assign each frame a time value from 1.0 to 3.0
         self.imv.setImage(img)
-        layout.addWidget(self.imv, 10, 3, 10, 1)
+        #layout.addWidget(self.imv, 10, 3, 10, 1)
 
+        self.add3Dplot()
 
         widget.setLayout(layout)
         # setting this widget as central widget of the main window
         self.setCentralWidget(widget)
+
+    def add3Dplot(self):
+        self.canvas3d = gl.GLViewWidget()
+        layout.addWidget(self.canvas3d, 10, 3, 10, 1)
+        # add grid
+        gridSize = QtGui.QVector3D(20,20,20) #(4,5,6)
+        g = gl.GLGridItem(size=gridSize)
+        g.scale(5.85,5,0)
+        self.canvas3d.addItem(g)
+
+        # the initial plot data before data is received
+        z = np.random.normal(size=(xSize,ySize))
+        # initialize the x-y boundries of the plot
+        x = np.linspace(-73.5, 144.3, xSize)
+        y = np.linspace(0.1, 5, ySize)
+
+        # initialize the colors of the plots (light blue)
+        self.colors = np.ones((xSize,ySize,4), dtype=float)
+        self.colors[:,:,0] = 0
+        self.colors[:,:,1] = 0.4
+        self.colors[:,:,2] = 1
+
+        # plot the data
+        self.surface_plot = gl.GLSurfacePlotItem(x = x, y = y, z = z, shader = 'shaded',
+                                     colors = self.colors.reshape(xSize*ySize,4), smooth=False)
+        # # determine the size
+        # p3.scale(16./49., 20, 0.1)
+        # # determine the location on the gride
+        # p3.translate(-12, -50, 0)
+        #self.surface_plot = gl.GLSurfacePlotItem(computeNormals=False)
+        #self.surface_plot.translate(-12, -50, 0) #translate(0, 0, 100)
+
+        self.canvas3d.addItem(self.surface_plot)
+        self.canvas3d.setCameraPosition(distance=100)
+        #self.surface_plot.setData(x=x, y=y, z = z, colors = self.colors.reshape(xSize*ySize,4))
+
+        
     
     def create_timer(self, timestep=300):  #300 milliseconds
         # Add a timer to simulate new temperature measurements
@@ -354,12 +398,24 @@ class Window(QMainWindow):
         # rddata=rddata/max(rddata)
         # print(rddata)
         #endframeid=(self.currentindex*5+1)*N_frame
-        Ntimes=5
-        if self.currentindex>Ntimes:
-            currentdata2=alldata[max(0, (self.currentindex-Ntimes)*N_frame):(self.currentindex+1)*N_frame]
-            rddata, table=rangedoppler(currentdata2, n_s=Nr) #81 300
-            resampled_rd=ndimage.zoom(rddata, zoom=(20,5))
-            self.imv.setImage(resampled_rd)
+        # Ntimes=5
+        # if self.currentindex>Ntimes:
+        #     currentdata2=alldata[max(0, (self.currentindex-Ntimes)*N_frame):(self.currentindex+1)*N_frame]
+        #     N_c = int(len(currentdata2)/N_s)-1 #number of chirps in fft_size
+        #     rddata, table=rangedoppler(currentdata2, n_c=N_c, n_s=N_s, showdb=True) #81 300
+        #     xSize = int(N_c/2)
+        #     newsize = int(xSize * ySize)
+        #     self.surface_plot.setData(z=rddata, colors = self.colors.reshape(newsize,4))
+            
+            #resampled_rd=ndimage.zoom(rddata, zoom=(20,5))
+            #self.imv.setImage(resampled_rd)
+        rddata, table = rangedoppler(currentdata, n_c=N_c, n_s=N_s, showdb=True) #Number of Chirps, Number of samples
+        print(ySize)
+        newsize = int(xSize * ySize)
+        print(self.colors.shape)
+        newcolorshape = self.colors.reshape(newsize,4)
+        self.surface_plot.setData(z=rddata)#, colors = newcolorshape)
+
 
         self.currentindex = self.currentindex + 1
 
