@@ -147,10 +147,17 @@ w.setWindowTitle('PYRF pyqtgraph example: 3D FFT Plot')
 w.setCameraPosition(distance=100)
 
 # add grid
+# gridSize = QtGui.QVector3D(4,5,6)
+# g = gl.GLGridItem(size=gridSize)
+# g.scale(5.85,5,0)
+# w.addItem(g)
+
 gridSize = QtGui.QVector3D(4,5,6)
-g = gl.GLGridItem(size=gridSize)
-g.scale(5.85,5,0)
+g = gl.GLGridItem()
 w.addItem(g)
+g.setSize(x=150, y=150, z=150)
+
+
 
 # the initial plot data before data is received
 z = np.random.normal(size=(xSize,ySize))
