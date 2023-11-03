@@ -159,24 +159,8 @@ def readiio(sdr):
     if status & 0b0100:
         print("Overflow")
 
-def main():
-    args = parser.parse_args()
-    phaserurladdress = args.phaserurladdress #urladdress #"ip:pluto.local"
-    ad9361urladdress = args.ad9361urladdress
-    Rx_CHANNEL = args.rxch
-    Tx_CHANNEL = args.txch
-    signal_type = args.signal
-    plot_flag = args.plot
-    
-    # Configure properties
-    #fs= 6000000 #6MHz
-    sample_rate = 0.6e6 #0.6M
-    center_freq = 2.1e9 #2.1G
-    signal_freq = 100e3 #100K
-    num_slices = 200
-    fft_size = 1024 * 16 #*10
-    img_array = np.zeros((num_slices, fft_size))
-
+def setupalldevices(sdrurl, phaserurl, Rx_CHANNEL, Tx_CHANNEL, fs, center_freq, signal_freq, fft_size):
+    sample_rate=fs
     # Configure the ADF4159 Rampling PLL
     #final output is 12.1GHz-LO(2.1GHz)=10GHz, Ramp range is 10GHz~10.5Ghz(10GHz+500MHz)
     output_freq = 12.1e9 
@@ -184,13 +168,13 @@ def main():
     num_steps = 1000
     ramp_time = 1e3  # us
     ramp_time_s = ramp_time / 1e6
-    rxbw=4000000
+    rxbw=4000000 #4Mhz
 
     #sdr=initAD9361(ad9361urladdress, sample_rate, center_freq, fft_size, Rx_CH=2, Tx_CH=2)
-    sdr=initAD9361(ad9361urladdress, sample_rate, center_freq, rxbuffer=fft_size, \
+    sdr=initAD9361(sdrurl, sample_rate, center_freq, rxbuffer=fft_size, \
                    Rx_CH=Rx_CHANNEL, Tx_CH=Tx_CHANNEL, rxbw=rxbw, rxgain0=30, rxgain1=30, txgain0=-88, txgain1=0)
     sleep(1)
-    my_phaser=initPhaser(phaserurladdress, sdr)
+    my_phaser=initPhaser(phaserurl, sdr)
 
     # Aim the beam at boresight (zero degrees)
     my_phaser.set_beam_phase_diff(0.0)
@@ -220,6 +204,28 @@ def main():
             signal_freq=signal_freq / 1e3,
         )
     )
+    return sdr, my_phaser, BW, num_steps, ramp_time_s
+
+def main():
+    args = parser.parse_args()
+    phaserurladdress = args.phaserurladdress #urladdress #"ip:pluto.local"
+    ad9361urladdress = args.ad9361urladdress
+    Rx_CHANNEL = args.rxch
+    Tx_CHANNEL = args.txch
+    signal_type = args.signal
+    plot_flag = args.plot
+    
+    # Configure properties
+    #fs= 6000000 #6MHz
+    sample_rate = 0.6e6 #0.6M
+    center_freq = 2.1e9 #2.1G
+    signal_freq = 100e3 #100K
+    num_slices = 200
+    fft_size = 1024 * 16 #*10
+    img_array = np.zeros((num_slices, fft_size))
+
+    sdr, my_phaser, BW, num_steps, ramp_time_s = setupalldevices(ad9361urladdress, phaserurladdress, Rx_CHANNEL, Tx_CHANNEL, fs, center_freq, signal_freq, fft_size)
+
 
     fs = int(sdr.sample_rate) #0.6MHz
     print("sample_rate:", fs)
