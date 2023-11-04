@@ -77,6 +77,8 @@ PlutoSDR quick start: https://wiki.analog.com/university/tools/pluto/users/quick
 
 ```bash 
 nmap -sn 192.168.86.0/24 #scan IP
+ssh analog@phaser.local #analog@192.168.1.83 (wifi) analog@192.168.1.73 (eth0)
+
 (mycondapy310) PS D:\Developer\radarsensing> iio_attr -a -C fw_version   
 Using auto-detected IIO context at URI "usb:2.46.5"
 fw_version: v0.35
@@ -85,7 +87,7 @@ iio_info -u ip:phaser.local #phaser in pi
 (mycondapy310) PS D:\Developer\radarsensing> iio_info -u ip:192.168.2.16
 (mycondapy310) PS D:\Developer\radarsensing> ssh root@192.168.2.16 #ssh root@pluto.local
 #password: analog
-iio_info -u "ip:192.168.1.10"
+iio_info -u "ip:192.168.1.10" #antsdr
 ssh root@192.168.1.10 #password: analog
 v0.34-dirty
 https://github.com/MicroPhase/antsdr-fw
