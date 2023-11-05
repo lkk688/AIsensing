@@ -12,155 +12,14 @@ from scipy import ndimage
 import pyqtgraph.opengl as gl
 from timeit import default_timer as timer
 
-from myradar import setupalldevices, createcomplexsinusoid
-def loadData(N_frame):
-    with open('./data/radardata5s-1101fast3move.npy', 'rb') as f:
-        alldata = np.load(f)
-    print(len(alldata))
-    totallen=len(alldata)
-    Ntotalframe=int(totallen/N_frame)-1
-    return alldata, Ntotalframe
-    # for i in range(Ntotalframe):
-    #     data = alldata[i*N_frame:(i+1)*N_frame]
-
-class RadarData:
-    def __init__(self, datapath='./data/radardata5s-1101fast3move.npy', samplerate=0.6e6, rxbuffersize=1024*16):
-        with open(datapath, 'rb') as f:
-            self.alldata = np.load(f)
-        print(len(self.alldata))
-        self.samplerate = samplerate
-        self.rxbuffersize=rxbuffersize
-        self.totallen=len(self.alldata)
-        self.Ntotalframe=int(self.totallen/rxbuffersize)-1
-
-        BW = 500e6
-        ramp_time = 1e3  # us
-        ramp_time_s = ramp_time / 1e6
-        slope = BW / ramp_time_s
-        self.N_s = int(ramp_time_s * fs) #Number ADC sampling points in each chirp, 600
-        self.N_c = int(self.rxbuffersize/N_s)-1 #number of chirps in fft_size
-    
-    def receive(self, index):
-        self.currentindex = index
-        start = timer()
-        currentdata = self.alldata[self.currentindex*self.rxbuffersize:(self.currentindex+1)*self.rxbuffersize]
-        rxt = timer()
-        timedelta=rxt-start
-        return currentdata, len(currentdata)
-
-class RadarDevice:
-    def __init__(self, sdrurl, phaserurl, samplerate =0.6e6, rxbuffersize = 1024*16):
-        self.Rx_CHANNEL = 2
-        self.Tx_CHANNEL = 2
-        self.samplerate = samplerate
-        self.center_freq = 2.1e9 #2.1G
-        self.signal_freq = 100e3 #100K
-        self.rxbuffersize=rxbuffersize
-
-        self.sdr, self.phaser, BW, num_steps, ramp_time_s=setupalldevices(sdrurl, phaserurl, self.Rx_CHANNEL, self.Tx_CHANNEL, self.samplerate, \
-                                    self.center_freq, self.signal_freq, self.rxbuffersize)
-        
-        c = 3e8
-        fs= int(samplerate)
-        default_rf_bw = BW #500e6
-        freq = np.linspace(-fs / 2, fs / 2, self.rxbuffersize)
-        slope = BW / ramp_time_s
-        dist = (freq - signal_freq) * c / (4 * slope)
-        self.N_s = int(ramp_time_s * fs) #Number ADC sampling points in each chirp, 600
-        self.N_c = int(self.rxbuffersize/N_s)-1 #number of chirps in fft_size
-
-        xdata = freq
-        plot_dist = False
-
-        print("Slope: %0.2fMHz/s" % (slope / 1e6))
-        range_resolution = c / (2 * default_rf_bw) #0.3
-        range_x = (100e3) * c / (4 * slope) #15
-
-        self.transmitsetup()
-        self.transmit()
-    
-    def transmitsetup(self):
-        fs = int(self.sdr.sample_rate) #0.6MHz
-        print("sample_rate:", fs)
-        N = int(self.sdr.rx_buffer_size)
-        self.iq = createcomplexsinusoid(fs, signal_freq, N)
-        iq_300k = createcomplexsinusoid(fs, signal_freq*3, N)
-        self.sdr._ctx.set_timeout(0)
-    
-    def transmit(self):
-        self.sdr.tx([self.iq * 0.5, self.iq])  # only send data to the 2nd channel (that's all we need)
-    
-    def receive(self, index):
-        self.currentindex = index
-        start = timer()
-        x = self.sdr.rx() #1024 size array of complex
-        rxt = timer()
-        timedelta=rxt-start
-        if self.Rx_CHANNEL==2:
-            data0=x[0]
-            data1=x[1]
-            data = data0 + data1
-        else:
-            data=x
-        datalen=len(data.real)
-        datarate=datalen*4/timedelta/1e6 #Mbps, complex data is 4bytes
-        print("Data rate at ", datarate, "Mbps.") #7-8Mbps in 10240 points, 10Mbps in 102400points, single channel in 19-20Mbps
-        return data, datalen
+from myradar import RadarData, RadarDevice
+from processing import rangedoppler, showspectrum
 
 #fix the error of `np.float` was a deprecated alias for the builtin `float`
 np.float = float    
 np.int = int   #module 'numpy' has no attribute 'int'
 np.object = object    #module 'numpy' has no attribute 'object'
 np.bool = bool    #module 'numpy' has no attribute 'bool'
-
-def showspectrum(data):
-    # fc = int(100e3 / (fs / N_frame)) * (fs / N_frame) #300KHz
-    # ts =1.0/fs
-    # t = np.arange(0, N_frame * ts, ts)
-    # i = np.cos(2 * np.pi * t * fc) * 2 ** 14
-    # q = np.sin(2 * np.pi * t * fc) * 2 ** 14
-    # iq_100k = 1 * (i + 1j * q)
-    #data=data[0:N_frame] #* iq_100k
-    win_funct = np.blackman(len(data))
-    y = data * win_funct
-    sp = np.absolute(np.fft.fft(y))
-    sp = np.fft.fftshift(sp)
-    s_mag = np.abs(sp) / np.sum(win_funct)
-    s_mag = np.maximum(s_mag, 10 ** (-15))
-    s_dbfs = 20 * np.log10(s_mag / (2 ** 11))
-
-    """there's a scaling issue on the y-axis of the waterfallcthe data is off by 300kHz.  To fix, I'm just shifting the freq"""
-    fc = int(300e3 / (fs / N_frame)) * (fs / N_frame) #300KHz
-    ts =1.0/fs
-    t = np.arange(0, N_frame * ts, ts)
-    i = np.cos(2 * np.pi * t * fc) * 2 ** 14
-    q = np.sin(2 * np.pi * t * fc) * 2 ** 14
-    iq_300k = 1 * (i + 1j * q)
-    data_shift = data * iq_300k
-    y = data_shift * win_funct
-    sp = np.absolute(np.fft.fft(y))
-    sp = np.fft.fftshift(sp)
-    s_mag = np.abs(sp) / np.sum(win_funct)
-    s_mag = np.maximum(s_mag, 10 ** (-15))
-    s_dbfs_shift = 20 * np.log10(s_mag / (2 ** 11))
-    return s_dbfs, s_dbfs_shift
-
-
-def rangedoppler(data, n_c=150, n_s=600, showdb=True):
-    #n_s = 600
-    #n_r = int(len(data)/n_s)-1
-    table = np.zeros((n_c, n_s), dtype=np.complex_) #150 chirps,1000 samples/chirp
-    for chirp_nr in range(n_c):
-        table[chirp_nr, :] = data[(chirp_nr*n_s):(n_s*(chirp_nr+1))]
-    #fft_output = np.fft.fft2(table)
-    #2D FFT and Velocity-Distance Relationship
-    Z_fft2 = abs(np.fft.fft2(table)) #
-    if showdb:
-        s_mag = np.abs(Z_fft2)/len(Z_fft2) #power spectrum
-        Z_fft2 = 20 * np.log10(s_mag)
-    #Data_fft2 = Z_fft2[0:int(n_r/2),0:int(n_s/2)] #get half
-    Data_fft2 = Z_fft2[0:int(n_c/2),0:int(n_s/2)]#70:120] #get half 0:int(n_s/2)
-    return Data_fft2, table
 
 def create_color_heatmap(powData, PLOT_SIZE=128):
 # create a colored array to represent an FFT
@@ -207,27 +66,21 @@ def create_color_heatmap(powData, PLOT_SIZE=128):
        
     return colorArray
 
-c = 3e8
-default_rf_bw = 500e6
 sample_rate = 0.6e6 #0.6M
 fs = int(sample_rate) #0.6MHz
-fft_size = 1024 * 16 * 15
-N_frame = fft_size
-freq = np.linspace(-fs / 2, fs / 2, int(N_frame))
-N = int(fft_size)
-signal_freq = 100e3 #100K
-fc = int(signal_freq / (fs / N)) * (fs / N) #100KHz
+rxbuffersize = 1024 * 16 * 15 #fft_size
+UseRadarDevice= False
+if UseRadarDevice == True:
+    sdrurl = "ip:pluto.local" #ip:phaser.local:50901
+    phaserurl = "ip:phaser.local"
+    radar=RadarDevice(sdrurl="", phaserurl="", samplerate=sample_rate, rxbuffersize=rxbuffersize)
+else:
+    datapath='./data/radardata5s-1101fast3move.npy'
+    radar=RadarData(datapath=datapath, samplerate=sample_rate, rxbuffersize=rxbuffersize)
+c, BW, num_steps, ramp_time_s, slope, N_c, N_s, freq, dist, range_resolution, signal_freq, range_x = radar.returnparameters()
+
 ts = 1 / float(fs)
-t = np.arange(0, N * ts, ts)
-
-BW = 500e6
-ramp_time = 1e3  # us
-ramp_time_s = ramp_time / 1e6
-slope = BW / ramp_time_s
-N_s = int(ramp_time_s * fs) #Number ADC sampling points in each chirp, 600
-
-alldata, Ntotalframe = loadData(N_frame)
-N_c = int(N_frame/N_s)-1 #number of chirps in fft_size
+t = np.arange(0, rxbuffersize * ts, ts)
 
 global xSize, ySize
 xSize = int(N_c/2) #13 1024 #128 #26 #128
@@ -284,7 +137,7 @@ class Window(QMainWindow):
         # Changes with the RF BW slider
         self.range_res_label = QLabel(
             "B<sub>RF</sub>: %0.2f MHz - R<sub>res</sub>: %0.2f m"
-            % (default_rf_bw / 1e6, c / (2 * default_rf_bw))
+            % (BW / 1e6, c / (2 * BW))
         )
         font = self.range_res_label.font()
         font.setPointSize(12)
@@ -297,7 +150,7 @@ class Window(QMainWindow):
         self.bw_slider = QSlider(Qt.Horizontal)
         self.bw_slider.setMinimum(100)
         self.bw_slider.setMaximum(500)
-        self.bw_slider.setValue(int(default_rf_bw / 1e6))
+        self.bw_slider.setValue(int(BW / 1e6))
         self.bw_slider.setTickInterval(50)
         self.bw_slider.setTickPosition(QSlider.TicksBelow)
         self.bw_slider.valueChanged.connect(self.get_range_res)
@@ -417,11 +270,11 @@ class Window(QMainWindow):
         self.fft_plot.setTitle("Received Signal Spectrum", **title_style)
         layout.addWidget(self.fft_plot, 10, 2, 10, 1) #10, 2, 10, 1 row=2, col=2m rowspan=4, colspan=1
         self.fft_plot.setYRange(-80, 0)
-        self.fft_plot.setXRange(100e3, 200e3)
+        self.fft_plot.setXRange(signal_freq, signal_freq*2)
 
         # Waterfall plot
         self.num_slices = 200
-        self.img_array = np.zeros((self.num_slices, fft_size))
+        self.img_array = np.zeros((self.num_slices, rxbuffersize))
         self.waterfall = pg.PlotWidget()
         self.waterfall.setBackground("w")
         self.waterfall.setMinimumWidth(1200)
@@ -429,10 +282,10 @@ class Window(QMainWindow):
         self.waterfall.addItem(self.imageitem)
         # self.imageitem.scale(0.35, sample_rate / (N))  # this is deprecated -- we have to use setTransform instead
         tr = QtGui.QTransform()
-        tr.scale(0.35, sample_rate / (N)) ## scale horizontal and vertical axes
+        tr.scale(0.35, sample_rate / (rxbuffersize)) ## scale horizontal and vertical axes
         self.imageitem.setTransform(tr)
         zoom_freq = 40e3
-        self.waterfall.setRange(yRange=(100e3, 100e3 + zoom_freq))#starting from 100K
+        self.waterfall.setRange(yRange=(signal_freq, signal_freq + zoom_freq))#starting from 100K
         self.waterfall.setTitle("Waterfall Spectrum", **title_style)
         self.waterfall.setLabel("left", "Frequency", units="Hz")
         self.waterfall.setLabel("bottom", "Time", units="sec")
@@ -524,18 +377,12 @@ class Window(QMainWindow):
         self.timer.start()
     
     def update_plot(self):
-        #self.fft_curve
-        print("update plot percentage: ", self.currentindex/Ntotalframe)
-        #alldata, Ntotalframe
-        if self.currentindex>=Ntotalframe:
-            print("Finished")
-            self.currentindex=0
-        currentdata = alldata[self.currentindex*N_frame:(self.currentindex+1)*N_frame]
+        currentdata, datalen, self.currentindex = radar.receive(self.currentindex)
+
         self.line.setData(t, currentdata.real)
 
-        sepcf, s_dbfs_shift = showspectrum(currentdata)
-        
-
+        sepcf, s_dbfs_shift = showspectrum(currentdata, fs)
+    
         self.fft_curve.setData(freq, sepcf)
 
         #Roll array elements along a given axis. Elements that roll beyond the last position are re-introduced at the first.
@@ -561,15 +408,14 @@ class Window(QMainWindow):
             #resampled_rd=ndimage.zoom(rddata, zoom=(20,5))
             #self.imv.setImage(resampled_rd)
         rddata, table = rangedoppler(currentdata, n_c=N_c, n_s=N_s, showdb=True) #Number of Chirps, Number of samples
-        print(np.max(rddata))
-        print(np.min(rddata))
+        #print(np.max(rddata))
+        #print(np.min(rddata))
         newsize = int(xSize * ySize) #204*300=61200
-        print(self.colors.shape)
+        #print(self.colors.shape)
         newcolorshape = self.colors.reshape(newsize,4)
         self.surface_plot.setData(z=rddata)#, colors = newcolorshape)
 
-
-        self.currentindex = self.currentindex + 1
+        #self.currentindex = self.currentindex + 1 #updated in receive()
 
   
     def change_x_axis(self, state):

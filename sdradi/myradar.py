@@ -206,6 +206,104 @@ def setupalldevices(sdrurl, phaserurl, Rx_CHANNEL, Tx_CHANNEL, fs, center_freq, 
     )
     return sdr, my_phaser, BW, num_steps, ramp_time_s
 
+class RadarData:
+    def __init__(self, datapath='./data/radardata5s-1101fast3move.npy', samplerate=0.6e6, rxbuffersize=1024*16):
+        with open(datapath, 'rb') as f:
+            self.alldata = np.load(f)
+        print(len(self.alldata))
+        self.samplerate = samplerate
+        self.rxbuffersize=rxbuffersize
+        self.totallen=len(self.alldata)
+        self.Ntotalframe=int(self.totallen/rxbuffersize)-1
+        self.signal_freq = 100e3 #100K
+        self.BW = 500e6
+        self.ramp_time = 1e3  # us
+        self.ramp_time_s = self.ramp_time / 1e6
+        self.num_steps = 1000
+        
+    def returnparameters(self):
+        c = 3e8
+        fs= int(self.samplerate)
+        freq = np.linspace(-fs / 2, fs / 2, self.rxbuffersize)
+        self.slope = self.BW / self.ramp_time_s
+        print("Slope: %0.2fMHz/s" % (self.slope / 1e6))
+        self.N_s = int(self.ramp_time_s * fs) #Number ADC sampling points in each chirp, 600
+        self.N_c = int(self.rxbuffersize/self.N_s)-1 #number of chirps in fft_size
+        dist = (freq - self.signal_freq) * c / (4 * self.slope)
+        range_resolution = c / (2 * self.BW) #0.3
+        range_x = (self.signal_freq) * c / (4 * self.slope) #15
+        return c, self.BW, self.num_steps, self.ramp_time_s, self.slope, self.N_c, self.N_s, freq, dist, range_resolution, self.signal_freq, range_x
+
+
+    def receive(self, index):
+        self.currentindex = index
+        if self.currentindex>=self.Ntotalframe:
+            print("Finished one round data")
+            self.currentindex=0
+        start = timer()
+        currentdata = self.alldata[self.currentindex*self.rxbuffersize:(self.currentindex+1)*self.rxbuffersize]
+        rxt = timer()
+        timedelta=rxt-start
+        self.currentindex= self.currentindex+1
+        return currentdata, len(currentdata), self.currentindex
+
+class RadarDevice:
+    def __init__(self, sdrurl, phaserurl, samplerate =0.6e6, rxbuffersize = 1024*16):
+        self.Rx_CHANNEL = 2
+        self.Tx_CHANNEL = 2
+        self.samplerate = samplerate
+        self.center_freq = 2.1e9 #2.1G
+        self.signal_freq = 100e3 #100K
+        self.rxbuffersize=rxbuffersize
+
+        self.sdr, self.phaser, self.BW, self.num_steps, self.ramp_time_s=setupalldevices(sdrurl, phaserurl, self.Rx_CHANNEL, self.Tx_CHANNEL, self.samplerate, \
+                                    self.center_freq, self.signal_freq, self.rxbuffersize)
+
+        self.transmitsetup()
+        self.transmit()
+    
+    def returnparameters(self):
+        c = 3e8
+        fs= int(self.samplerate)
+        freq = np.linspace(-fs / 2, fs / 2, self.rxbuffersize)
+        self.slope = self.BW / self.ramp_time_s
+        print("Slope: %0.2fMHz/s" % (self.slope / 1e6))
+        self.N_s = int(self.ramp_time_s * fs) #Number ADC sampling points in each chirp, 600
+        self.N_c = int(self.rxbuffersize/self.N_s)-1 #number of chirps in fft_size
+        dist = (freq - self.signal_freq) * c / (4 * self.slope)
+        range_resolution = c / (2 * self.BW) #0.3
+        range_x = (self.signal_freq) * c / (4 * self.slope) #15
+        return c, self.BW, self.num_steps, self.ramp_time_s, self.slope, self.N_c, self.N_s, freq, dist, range_resolution, self.signal_freq, range_x
+
+    def transmitsetup(self):
+        fs = int(self.sdr.sample_rate) #0.6MHz
+        print("sample_rate:", fs)
+        N = int(self.sdr.rx_buffer_size)
+        self.iq = createcomplexsinusoid(fs, self.signal_freq, N)
+        iq_300k = createcomplexsinusoid(fs, self.signal_freq*3, N)
+        self.sdr._ctx.set_timeout(0)
+    
+    def transmit(self):
+        self.sdr.tx([self.iq * 0.5, self.iq])  # only send data to the 2nd channel (that's all we need)
+    
+    def receive(self, index):
+        self.currentindex = index
+        start = timer()
+        x = self.sdr.rx() #1024 size array of complex
+        rxt = timer()
+        timedelta=rxt-start
+        if self.Rx_CHANNEL==2:
+            data0=x[0]
+            data1=x[1]
+            data = data0 + data1
+        else:
+            data=x
+        datalen=len(data.real)
+        datarate=datalen*4/timedelta/1e6 #Mbps, complex data is 4bytes
+        print("Data rate at ", datarate, "Mbps.") #7-8Mbps in 10240 points, 10Mbps in 102400points, single channel in 19-20Mbps
+        self.currentindex = self.currentindex +1
+        return data, datalen, self.currentindex
+    
 def main():
     args = parser.parse_args()
     phaserurladdress = args.phaserurladdress #urladdress #"ip:pluto.local"
