@@ -1,5 +1,6 @@
 #!/usr/bin/python
 #https://github.com/pyrf/pyqtgraph_examples/blob/master/plot_fft_3d.py
+#upgraded to pyqt6
 # import all the necessary Libraries
 import sys
 import numpy as np
@@ -7,7 +8,7 @@ import numpy as np
 
 from pyqtgraph.Qt import QtCore, QtGui
 import pyqtgraph.opengl as gl
-
+from PyQt6 import QtWidgets
 #PLOT_SIZE = 128
 
 
@@ -138,7 +139,8 @@ def gaus2d(x=0, y=0, mx=0, my=0, sx=1, sy=1):
 
 
 # Create a GL View widget to display data
-app = QtGui.QApplication([])
+#app = QtGui.QApplication([])
+app = QtWidgets.QApplication([])
 w = gl.GLViewWidget()
 
 w.show()
@@ -246,7 +248,8 @@ timer.start(5)
 ## Start Qt event loop unless running in interactive mode.
 if __name__ == '__main__':
     import sys
-    if (sys.flags.interactive != 1) or not hasattr(QtCore, 'PYQT_VERSION'):
-        QtGui.QApplication.instance().exec_()
+    app.exec()
+    # if (sys.flags.interactive != 1) or not hasattr(QtCore, 'PYQT_VERSION'):
+    #     QtGui.QApplication.instance().exec_()
   
   

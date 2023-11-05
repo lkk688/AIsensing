@@ -1,7 +1,7 @@
 # importing Qt widgets
 #from PyQt5.QtWidgets import *
-import PyQt5
-from PyQt5 import QtWidgets
+import PyQt6
+from PyQt6 import QtWidgets
 # importing system
 import sys
  
@@ -10,8 +10,16 @@ import numpy as np
  
 # importing pyqtgraph as pg
 import pyqtgraph as pg
-from PyQt5.QtGui import *
-from PyQt5.QtCore import *
+#from PyQt6.QtGui import *
+#from PyQt6.QtCore import *
+
+from PyQt6.QtWidgets import (
+    QMainWindow, QApplication,
+    QLabel, QToolBar, QStatusBar,
+    QCheckBox
+)
+from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtCore import QSize, Qt
  
 from collections import namedtuple
 
@@ -27,13 +35,13 @@ class Window(QtWidgets.QMainWindow):
         super().__init__()
  
         # setting title
-        self.setWindowTitle("PyQtGraph")
+        self.setWindowTitle("PyQt6Graph")
  
         # setting geometry
         self.setGeometry(100, 100, 600, 500)
  
         # icon
-        icon = QtWidgets.QIcon("skin.png")
+        icon = QIcon("skin.png")
  
         # setting icon to the window
         self.setWindowIcon(icon)
@@ -45,7 +53,7 @@ class Window(QtWidgets.QMainWindow):
         self.show()
  
         # setting fixed size of window
-        self.setFixedSize(QtWidgets.QSize(800, 600))
+        self.setFixedSize(QSize(800, 600))
  
     # method for components
     def UiComponents(self):
@@ -132,10 +140,11 @@ class Window(QtWidgets.QMainWindow):
  
  
 # create pyqt5 app
-App = PyQt5.QtWidgets.QApplication(sys.argv) #QApplication(sys.argv)
+App = PyQt6.QtWidgets.QApplication(sys.argv) #QApplication(sys.argv)
  
 # create the instance of our Window
 window = Window()
  
 # start the app
-sys.exit(App.exec())
+#sys.exit(App.exec())
+App.exec()
