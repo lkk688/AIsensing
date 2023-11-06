@@ -79,9 +79,9 @@ def create_color_heatmap(powData, PLOT_SIZE=128):
 sample_rate = 0.6e6 #0.6M
 fs = int(sample_rate) #0.6MHz
 rxbuffersize = 1024 * 16 * 15 #fft_size
-UseRadarDevice= False
+UseRadarDevice= True
 if UseRadarDevice == True:
-    sdrurl = "ip:pluto.local" #ip:phaser.local:50901
+    sdrurl = "ip:phaser.local:50901" #"ip:pluto.local" #ip:phaser.local:50901
     phaserurl = "ip:phaser.local"
     radar=RadarDevice(sdrurl="", phaserurl="", samplerate=sample_rate, rxbuffersize=rxbuffersize)
 else:
