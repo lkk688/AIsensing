@@ -389,7 +389,7 @@ def main():
 
 import argparse
 parser = argparse.ArgumentParser(description='MyRadar')
-parser.add_argument('--ad9361urladdress', default="ip:pluto.local", type=str,
+parser.add_argument('--ad9361urladdress', default="ip:phaser.local:50901", type=str,
                     help='urladdress of the device') #ip:pluto.local, ip:phaser.local:50901
 parser.add_argument('--phaserurladdress', default="ip:phaser.local", type=str,
                     help='urladdress of the device')

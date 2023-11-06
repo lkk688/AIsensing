@@ -1,4 +1,7 @@
 # importing the required libraries 
+# import matplotlib
+# matplotlib.use('QtAgg')
+import matplotlib.pyplot as plt
 import PyQt6
 from PyQt6 import QtWidgets
 # importing pyqtgraph as pg
@@ -83,7 +86,7 @@ UseRadarDevice= True
 if UseRadarDevice == True:
     sdrurl = "ip:phaser.local:50901" #"ip:pluto.local" #ip:phaser.local:50901
     phaserurl = "ip:phaser.local"
-    radar=RadarDevice(sdrurl="", phaserurl="", samplerate=sample_rate, rxbuffersize=rxbuffersize)
+    radar=RadarDevice(sdrurl=sdrurl, phaserurl=phaserurl, samplerate=sample_rate, rxbuffersize=rxbuffersize)
 else:
     datapath='./data/radardata5s-1101fast3move.npy'
     radar=RadarData(datapath=datapath, samplerate=sample_rate, rxbuffersize=rxbuffersize)
