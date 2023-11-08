@@ -33,10 +33,10 @@ class Window(QtWidgets.QMainWindow):
         self.setGeometry(100, 100, 600, 500)
  
         # icon
-        icon = QtWidgets.QIcon("skin.png")
+        #icon = QtWidgets.QIcon("skin.png")
  
         # setting icon to the window
-        self.setWindowIcon(icon)
+        #self.setWindowIcon(icon)
  
         # calling method
         self.UiComponents()
@@ -45,7 +45,7 @@ class Window(QtWidgets.QMainWindow):
         self.show()
  
         # setting fixed size of window
-        self.setFixedSize(QtWidgets.QSize(800, 600))
+        self.setFixedSize(PyQt5.QtCore.QSize(800, 600))
  
     # method for components
     def UiComponents(self):
