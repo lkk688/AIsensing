@@ -29,7 +29,7 @@ plt.grid(True)
 
 #We consider 16QAM transmission, i.e. we have μ=4 bits per symbol
 mu = 4 # bits per symbol (i.e. 16QAM)
-payloadBits_per_OFDM = len(dataCarriers)*mu  # number of payload bits per OFDM symbol, 220
+payloadBits_per_OFDM = len(dataCarriers)*mu  # number of payload bits per OFDM symbol, 55*4=220
 
 #mapping from groups of 4 bits to a 16QAM constellation symbol
 mapping_table = {
