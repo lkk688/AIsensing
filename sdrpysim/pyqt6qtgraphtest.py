@@ -1,25 +1,42 @@
 # importing Qt widgets
 #from PyQt5.QtWidgets import *
-import PyQt6
-from PyQt6 import QtWidgets
 # importing system
 import sys
  
 # importing numpy as np
 import numpy as np
+Runtime="Side6"
+if Runtime=="QT5":
+   #from PyQt5.QtWidgets import QApplication, QWidget, QLabel
+   from PyQt5 import QtWidgets
+   from PyQt5.QtGui import QIcon
+   from PyQt5.QtCore import QSize
+   #from PyQt5.QtCore import pyqtSlot
+elif Runtime=="QT6":
+   #from PyQt6.QtWidgets import QApplication, QWidget, QLabel
+   from PyQt6 import QtWidgets
+   from PyQt6.QtGui import QIcon
+   from PyQt6.QtCore import QSize
+elif Runtime=="Side6":
+   #from PySide6 import QtCore, QtGui, QtWidgets
+   #from PySide6.QtWidgets import QApplication, QWidget, QLabel
+   from PySide6 import QtWidgets
+   from PySide6.QtGui import QIcon
+   from PySide6.QtCore import QSize
  
 # importing pyqtgraph as pg
 import pyqtgraph as pg
 #from PyQt6.QtGui import *
 #from PyQt6.QtCore import *
 
-from PyQt6.QtWidgets import (
-    QMainWindow, QApplication,
-    QLabel, QToolBar, QStatusBar,
-    QCheckBox
-)
-from PyQt6.QtGui import QAction, QIcon
-from PyQt6.QtCore import QSize, Qt
+# from PyQt6 import QtWidgets
+# from PyQt6.QtWidgets import (
+#     QMainWindow, QApplication,
+#     QLabel, QToolBar, QStatusBar,
+#     QCheckBox
+# )
+# from PyQt6.QtGui import QAction, QIcon
+# from PyQt6.QtCore import QSize, Qt
  
 from collections import namedtuple
 
@@ -140,11 +157,15 @@ class Window(QtWidgets.QMainWindow):
  
  
 # create pyqt5 app
-App = PyQt6.QtWidgets.QApplication(sys.argv) #QApplication(sys.argv)
+app = QtWidgets.QApplication(sys.argv) #QApplication(sys.argv)
  
 # create the instance of our Window
 window = Window()
  
 # start the app
 #sys.exit(App.exec())
-App.exec()
+if Runtime=="QT5":
+    sys.exit(app.exec_())
+elif Runtime in ["QT6", "Side6"]:
+    app.exec()
+#App.exec()
