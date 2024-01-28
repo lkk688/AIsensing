@@ -1,8 +1,9 @@
 import torch
 import torch.nn.functional as tFunc
 import numpy as np
-
+import random
 import matplotlib.pyplot as plt
+import pandas as pd
 
 save_plots = False
 
@@ -194,7 +195,7 @@ def FFT(TTI):
     return torch.fft.ifft(torch.fft.ifftshift(TTI, dim=1))
 
 #leading_zeros (int): Number of symbols with zero value used for SINR measurement
-def create_OFDM_data(leading_zeros=80, use_sdr=False):
+def create_OFDM_data(TTI_mask_RE, Qm, mapping_table_Qm, pilot_symbols, leading_zeros=80, use_sdr=False):
     pdsch_bits, pdsch_symbols = create_PDSCH_data(TTI_mask_RE, Qm, mapping_table_Qm, power=PDSCH_power) # create PDSCH data and modulate it
     Modulated_TTI = RE_mapping(TTI_mask_RE, pilot_symbols, pdsch_symbols, plotTTI=True) # map the PDSCH and pilot symbols to the TTI
     TD_TTI_IQ = FFT(Modulated_TTI) # perform the FFT
@@ -251,7 +252,7 @@ def apply_multipath_channel(signal, n_taps, max_delay, repeats=0, random_start=T
 
     return convolved_signal
 
-def radio_channel(tx_signal, tx_gain, rx_gain, ch_SINR, use_sdr=False):
+def radio_channel(tx_signal, ch_SINR, n_taps, max_delay, leading_zeros, tx_gain=0, rx_gain = 0, use_sdr=False):
     if use_sdr:
         print("TODO: user SDR")
     else:
@@ -505,10 +506,10 @@ def calculate_BER(pdsch_bits, bits_est):
     error_count = torch.sum(bits_est != pdsch_bits.flatten()).float()  # Count of unequal bits
     error_rate = error_count / bits_est.numel()  # Error rate calculation
     BER = torch.round(error_rate * 1000) / 1000  # Round to 3 decimal places
-    SINR_m = SINR(RX_Samples, symbol_index, leading_zeros=leading_zeros)[0] # calculate the SINR
-    print(f"BER: {BER}, SINR: {SINR_m}dB") # print the BER and SINR
-    return BER, SINR_m
+    #SINR_m = SINR(RX_Samples, symbol_index, leading_zeros=leading_zeros)[0] # calculate the SINR
+    return BER #, SINR_m
 
+    
 def vis_errorbits(TTI_mask_RE, pdsch_bits, bits_est):
     # Create a zero tensor for the overall F subcarriers * S symbols
     TTI_t = np.zeros(TTI_mask_RE.shape)
@@ -519,45 +520,8 @@ def vis_errorbits(TTI_mask_RE, pdsch_bits, bits_est):
     TTI_t[TTI_mask_RE==1] = errors
     plt.imshow(TTI_t)
 
-def oneround_test():
-    print("Test ofdmsim_pytorchlib")
-
-    use_sdr=False
-
-    # OFDM Parameters
-    #Qm (int): Modulation order
-    Qm = 6  # bits per symbol
-
-    mapping_table_Qm, de_mapping_table_Qm = mapping_table(Qm, plot=True) # mapping table for Qm
-
-    #S=14 symbols, first 28 all zero, last 28 all zero, mid F=72 all 1, Sp=2 (2,1,3), yellow bar =3
-    TTI_mask_RE = TTI_mask(S=S,F=F, Fp=Fp, Sp=Sp, FFT_offset=FFT_offset, plotTTI=True)
-
-    pilot_symbols = pilot_set(TTI_mask_RE, Pilot_Power)
-
-    if use_sdr:
-        leading_zeros = 80  # For SDR, Number of symbols with zero value for noise measurement at the beginning of the transmission. Used for SINR estimation.
-    else:
-        leading_zeros = 0
-    pdsch_bits, TX_Samples = create_OFDM_data(leading_zeros=leading_zeros, use_sdr=use_sdr)
-    #pdsch_bits: return bits: [958, 6], symbol: [958] complex, each symbol is 6 bits, 958 is the effective data slots in mask
-    #TX_Samples:(S, CP 20+ FFT_size 128) 14*148 flatten to torch.Size([2072])
-
-    # channel simulation
-    n_taps = 2 
-    max_delay = 6 #samples
-    #ch_SINR (int): Signal-to-Interference-plus-Noise Ratio (SINR) for the CDL-C channel emulation
-    # 3GPP CDL-C Channel Simulation Parameters in case no sdr
-    ch_SINR = 40  # SINR for channel emulation CDL-C
-    tx_gain = 0  # Transmission gain in dB for SDR
-    rx_gain = 10  # Reception gain in dB for SDR
-    RX_Samples = radio_channel(tx_signal = TX_Samples, tx_gain = tx_gain, rx_gain = rx_gain, ch_SINR=ch_SINR) 
-    #RX_Samples: torch.Size([6474]), TX_Samples: torch.Size([2072])
-
-    Fc = int(920e6)  # SDR TX frequency in Hz
-    PSD_plot(TX_Samples, SampleRate, Fc, 'TX')
-    PSD_plot(RX_Samples, SampleRate, Fc, 'RX')
-
+def receiver_process(TX_Samples, RX_Samples, TTI_mask_RE, pilot_symbols, de_mapping_table_Qm, leading_zeros, use_sdr=False):
+    #Receiver process
     symbol_index=sync_TTI(TX_Samples, RX_Samples, leading_zeros=leading_zeros, threshold= 6, plot=True)
     #symbol_index: 1149
     if use_sdr:
@@ -592,10 +556,145 @@ def oneround_test():
 
     bits_est = PS(PS_est) # convert the codewords to the bitstream
     #0 1 bits [5748]
+    return bits_est, SINR_m
 
-    BER, SINR_m = calculate_BER(pdsch_bits, bits_est)
+def oneround_test():
+    print("Test ofdmsim_pytorchlib")
+
+    use_sdr=False
+
+    # OFDM Parameters
+    #Qm (int): Modulation order
+    Qm = 6  # bits per symbol
+
+    mapping_table_Qm, de_mapping_table_Qm = mapping_table(Qm, plot=True) # mapping table for Qm
+
+    #S=14 symbols, first 28 all zero, last 28 all zero, mid F=72 all 1, Sp=2 (2,1,3), yellow bar =3
+    TTI_mask_RE = TTI_mask(S=S,F=F, Fp=Fp, Sp=Sp, FFT_offset=FFT_offset, plotTTI=True)
+
+    pilot_symbols = pilot_set(TTI_mask_RE, Pilot_Power)
+
+    if use_sdr:
+        leading_zeros = 80  # For SDR, Number of symbols with zero value for noise measurement at the beginning of the transmission. Used for SINR estimation.
+    else:
+        leading_zeros = 0
+    pdsch_bits, TX_Samples = create_OFDM_data(TTI_mask_RE, Qm, mapping_table_Qm, pilot_symbols, leading_zeros=leading_zeros, use_sdr=use_sdr)
+    #pdsch_bits: return bits: [958, 6], symbol: [958] complex, each symbol is 6 bits, 958 is the effective data slots in mask
+    #TX_Samples:(S, CP 20+ FFT_size 128) 14*148 flatten to torch.Size([2072])
+
+    # channel simulation
+    n_taps = 2 
+    max_delay = 6 #samples
+    #ch_SINR (int): Signal-to-Interference-plus-Noise Ratio (SINR) for the CDL-C channel emulation
+    # 3GPP CDL-C Channel Simulation Parameters in case no sdr
+    ch_SINR = 40  # SINR for channel emulation CDL-C
+    tx_gain = 0  # Transmission gain in dB for SDR
+    rx_gain = 10  # Reception gain in dB for SDR
+    RX_Samples = radio_channel(tx_signal= TX_Samples, ch_SINR=ch_SINR, n_taps=n_taps, max_delay=max_delay, \
+                  leading_zeros=leading_zeros, tx_gain=0, rx_gain = 0, use_sdr=False)
+    #RX_Samples: torch.Size([6474]), TX_Samples: torch.Size([2072])
+
+    Fc = int(920e6)  # SDR TX frequency in Hz
+    PSD_plot(TX_Samples, SampleRate, Fc, 'TX')
+    PSD_plot(RX_Samples, SampleRate, Fc, 'RX')
+
+    bits_est, SINR_m = receiver_process(TX_Samples=TX_Samples, RX_Samples=RX_Samples, \
+                                        TTI_mask_RE=TTI_mask_RE, pilot_symbols=pilot_symbols, \
+                                            de_mapping_table_Qm=de_mapping_table_Qm, \
+                                                leading_zeros=leading_zeros, use_sdr=use_sdr)
+
+    BER = calculate_BER(pdsch_bits, bits_est)
+    print(f"BER: {BER}, SINR: {SINR_m}dB") # print the BER and SINR
 
     vis_errorbits(TTI_mask_RE, pdsch_bits, bits_est)
+
+def performance_test():
+    # SDR Configuration
+    use_sdr = False # True for SDR or False for CDL-C channel emulation
+    # for SDR
+    SDR_TX_Frequency = int(436e6) # SDR TX frequency
+    tx_gain_min = -50 # sdr tx max gain
+    tx_gain_max = 0 # sdr tx min gain
+    rx_gain = 20 # sdr rx gain
+
+    #Signal-to-Interference-plus-Noise Ratio (SINR) for the CDL-C channel emulation
+    # in case SDR not available, for channel simulation
+    ch_SINR_min = 0 # channel emulation min SINR
+    ch_SINR_max = 50 # channel emulation max SINR
+
+    #Qm (int): Modulation order
+    Qm = 6  # bits per symbol
+
+    mapping_table_QPSK, de_mapping_table_QPSK = mapping_table(2) # mapping table QPSK (e.g. for pilot symbols)
+    mapping_table_Qm, de_mapping_table_Qm = mapping_table(Qm, plot=False) # mapping table for Qm
+
+    TTI_mask_RE = TTI_mask(S=S,F=F, Fp=Fp, Sp=Sp, FFT_offset=FFT_offset, plotTTI=False)
+    pilot_symbols = pilot_set(TTI_mask_RE, Pilot_Power)
+
+    # start the SDR
+    # if use_sdr: 
+    #     SDR_1 = SDR_Pluto.SDR(SDR_TX_IP="ip:192.168.1.10", SDR_TX_FREQ=SDR_TX_Frequency, SDR_TX_GAIN=-80, SDR_RX_GAIN = 0, SDR_TX_SAMPLERATE=SampleRate, SDR_TX_BANDWIDTH=F*SCS*2)
+    #     SDR_1.SDR_TX_start()
+
+    if use_sdr:
+        leading_zeros = 80  # For SDR, Number of symbols with zero value for noise measurement at the beginning of the transmission. Used for SINR estimation.
+    else:
+        leading_zeros = 0
+    pdsch_bits, TX_Samples = create_OFDM_data(TTI_mask_RE, Qm, mapping_table_Qm, pilot_symbols, leading_zeros=leading_zeros, use_sdr=use_sdr)
+    #pdsch_bits: return bits: [958, 6], symbol: [958] complex, each symbol is 6 bits, 958 is the effective data slots in mask
+    #TX_Samples:(S, CP 20+ FFT_size 128) 14*148 flatten to torch.Size([2072])
+
+    # channel simulation
+    n_taps = 2 
+    max_delay = 6 #samples
+    #ch_SINR (int): Signal-to-Interference-plus-Noise Ratio (SINR) for the CDL-C channel emulation
+    # 3GPP CDL-C Channel Simulation Parameters in case no sdr
+    ch_SINR = 40  # SINR for channel emulation CDL-C
+    tx_gain = 0  # Transmission gain in dB for SDR
+    rx_gain = 10  # Reception gain in dB for SDR
+    RX_Samples = radio_channel(tx_signal= TX_Samples, ch_SINR=ch_SINR, n_taps=n_taps, max_delay=max_delay, \
+                  leading_zeros=leading_zeros, tx_gain=0, rx_gain = 0, use_sdr=False)
+    #RX_Samples: torch.Size([6474]), TX_Samples: torch.Size([2072])
+
+    number_of_testcases = 1000
+    SINR2BER_table = np.zeros((number_of_testcases,4))
+
+    for i in range(number_of_testcases):
+        ch_SINR = int(random.uniform(ch_SINR_min, ch_SINR_max))
+        tx_gain_i = int(random.uniform(tx_gain_min, tx_gain_max))
+        RX_Samples = radio_channel(use_sdr=use_sdr, tx_signal = TX_Samples, tx_gain = tx_gain_i, rx_gain = rx_gain, ch_SINR = ch_SINR)
+        
+        bits_est, SINR_m = receiver_process(TX_Samples=TX_Samples, RX_Samples=RX_Samples, \
+                                        TTI_mask_RE=TTI_mask_RE, pilot_symbols=pilot_symbols, \
+                                            de_mapping_table_Qm=de_mapping_table_Qm, \
+                                                leading_zeros=leading_zeros, use_sdr=use_sdr)
+
+        BER = calculate_BER(pdsch_bits, bits_est)
+        print(f"BER: {BER}, SINR: {SINR_m}dB") # print the BER and SINR
+
+        SINR2BER_table[i,0] = round(tx_gain_i,1)
+        SINR2BER_table[i,1] = round(rx_gain,1)
+        SINR2BER_table[i,2] = round(SINR_m,1)
+        SINR2BER_table[i,3] = BER
+    
+    df = pd.DataFrame(SINR2BER_table, columns=['txg', 'rxg', 'SINR', 'BER'])
+    df['SINR_binned'] = pd.cut(df['SINR'], bins=range(-10, 40, 2), labels=range(-9, 39, 2))
+    df_grouped = df.groupby('SINR_binned', observed=False).mean()
+
+    plt.figure(figsize=(8, 4))
+    plt.plot(df['SINR'], df['BER'], 'o', alpha=0.15, markersize=3)
+    plt.xlabel('SINR (dB)')
+    plt.ylabel('Uncoded BER')
+    plt.plot(df_grouped['SINR'], df_grouped['BER'], '-o', color='blue')
+    plt.title(f'OFDM System Uncoded Performance\n Qm={Qm}, FFT_size={FFT_size}, F={F}, S={S}, Fp={Fp}, Sp={Sp}, CP={CP}, SCS={SCS}\nPilot_P={Pilot_Power}, PDSCH_P={PDSCH_power}, freq={SDR_TX_Frequency}Hz')
+    plt.xlim(0, 40)
+    plt.yscale('log')
+    plt.grid()
+    plt.minorticks_on()
+    plt.grid(which='minor', linestyle=':', linewidth='0.5', color='black')
+    if save_plots:
+        plt.savefig('Performance.png')
+    plt.show()
 
 
 if __name__ == '__main__':
