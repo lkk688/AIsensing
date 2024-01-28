@@ -1,6 +1,6 @@
 import sys
-Runtime="Side6"
-if Runtime=="QT5":
+Runtime="QT5"
+if Runtime=="Side6": #"QT5" Side6 and QT5 works in Mac
    from PyQt5.QtWidgets import QApplication, QWidget, QLabel
    #from PyQt5.QtGui import QIcon
    #from PyQt5.QtCore import pyqtSlot
