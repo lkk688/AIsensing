@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as tFunc
+from torch.utils.data import Dataset
 import numpy as np
 import random
 import matplotlib.pyplot as plt
@@ -195,10 +196,10 @@ def FFT(TTI):
     return torch.fft.ifft(torch.fft.ifftshift(TTI, dim=1))
 
 #leading_zeros (int): Number of symbols with zero value used for SINR measurement
-def create_OFDM_data(TTI_mask_RE, Qm, mapping_table_Qm, pilot_symbols, leading_zeros=80, use_sdr=False):
+def create_OFDM_data(TTI_mask_RE, Qm, mapping_table_Qm, pilot_symbols, leading_zeros=80, use_sdr=False, plot=False):
     pdsch_bits, pdsch_symbols = create_PDSCH_data(TTI_mask_RE, Qm, mapping_table_Qm, power=PDSCH_power) # create PDSCH data and modulate it
     #pdsch_bits: [958, 6], pdsch_symbols:[958]
-    Modulated_TTI = RE_mapping(TTI_mask_RE, pilot_symbols, pdsch_symbols, plotTTI=True) # map the PDSCH and pilot symbols to the TTI
+    Modulated_TTI = RE_mapping(TTI_mask_RE, pilot_symbols, pdsch_symbols, plotTTI=plot) # map the PDSCH and pilot symbols to the TTI
     #Modulated_TTI: [14, 128]
     TD_TTI_IQ = FFT(Modulated_TTI) # perform the FFT
     #TD_TTI_IQ: [14, 128]
@@ -562,6 +563,114 @@ def receiver_process(TX_Samples, RX_Samples, TTI_mask_RE, pilot_symbols, de_mapp
     #0 1 bits [5748]
     return bits_est, SINR_m
 
+###########################################
+
+
+# custom dataset
+class CustomDataset(Dataset):
+    def __init__(self):
+        self.pdsch_iq = [] # pdsch symbols
+        #self.pilot_iq = [] # pilot symbols
+        self.labels = [] # original bitstream labels
+        
+    def __len__(self):
+        return len(self.pdsch_iq)
+    
+    def __getitem__(self, index):
+        x1 = self.pdsch_iq[index]
+        #x2 = self.pilot_iq[index] 
+        y = self.labels[index]
+        return x1, y
+    
+    #def add_item(self, new_pdsch_iq, new_pilot_iq, new_label):
+    def add_item(self, new_pdsch_iq,  new_label):
+        self.pdsch_iq.append(new_pdsch_iq) 
+        #self.pilot_iq.append(new_pilot_iq) 
+        self.labels.append(new_label) 
+
+def create_dataset():
+    # SDR Configuration
+    use_sdr = False # True for SDR or False for CDL-C channel emulation
+    # for SDR
+    SDR_TX_Frequency = int(436e6) # SDR TX frequency
+    tx_gain_min = -50 # sdr tx max gain
+    tx_gain_max = 0 # sdr tx min gain
+    rx_gain = 20 # sdr rx gain
+
+    #Signal-to-Interference-plus-Noise Ratio (SINR) for the CDL-C channel emulation
+    # in case SDR not available, for channel simulation
+    ch_SINR_min = 0 # channel emulation min SINR
+    ch_SINR_max = 50 # channel emulation max SINR
+
+    #Qm (int): Modulation order
+    Qm = 6  # bits per symbol
+
+    mapping_table_QPSK, de_mapping_table_QPSK = mapping_table(2) # mapping table QPSK (e.g. for pilot symbols)
+    mapping_table_Qm, de_mapping_table_Qm = mapping_table(Qm, plot=False) # mapping table for Qm
+
+    TTI_mask_RE = TTI_mask(S=S,F=F, Fp=Fp, Sp=Sp, FFT_offset=FFT_offset, plotTTI=False) #[14, 128]
+    pilot_symbols = pilot_set(TTI_mask_RE, Pilot_Power) #[36]
+
+    leading_zeros = 80  # For SDR, Number of symbols with zero value for noise measurement at the beginning of the transmission. Used for SINR estimation.
+    
+
+    dataset = CustomDataset()
+
+    number_of_training_items = 10 #10000
+
+    ch_SINR_min = 25 # channel emulation min SINR
+    ch_SINR_max = 50 # channel emulation max SINR
+    use_random_timing_offset = False
+
+    # channel simulation
+    n_taps = 2 
+    max_delay = 6 #samples
+
+    for i in range(number_of_training_items):
+        if i % 1000 == 0:
+            print(i)
+        ch_SINR = int(random.uniform(ch_SINR_min, ch_SINR_max)) # SINR generation for adding noise to the channel
+        #pdsch_bits, TX_Samples = create_OFDM_data() # data stream
+        pdsch_bits, TX_Samples = create_OFDM_data(TTI_mask_RE, Qm, mapping_table_Qm, pilot_symbols, leading_zeros=leading_zeros, use_sdr=use_sdr, plot=False)
+        #pdsch_bits: return bits: [958, 6], symbol: [958] complex, each symbol is 6 bits, 958 is the effective data slots in mask
+        #TX_Samples:(S, CP 20+ FFT_size 128) 14*148 flatten to torch.Size([2072])
+
+        
+        RX_Samples = apply_multipath_channel(TX_Samples, n_taps=n_taps, max_delay=max_delay, random_start=False, repeats=0, SINR_s=ch_SINR, leading_zeros=0)
+        symbol_index = 1
+        RX_NO_CP = CP_removal(RX_Samples, symbol_index, S, FFT_size, CP, plotsig=False)# remove cyclic prefix and other symbols created by convolution
+        RX_NO_CP = RX_NO_CP / torch.max(torch.abs(RX_NO_CP)) # normalize
+        #torch.Size([14, 128])
+
+        OFDM_demod = DFT(RX_NO_CP, plotDFT=False) # DFT
+        OFDM_demod = OFDM_demod / torch.max(torch.abs(OFDM_demod)) # normalize DFT'd signal for NN input
+        #torch.Size([14, 128])
+        #F is number of carriers
+        pdsch_symbols_map = remove_fft_Offests(OFDM_demod, F, FFT_offset) # remove FFT offsets
+        #[14, 72]
+
+        pdsch_symbols_map = torch.cat((pdsch_symbols_map[:, :F//2], pdsch_symbols_map[:, F//2 + 1:]), dim=1) # remove DC
+        # [14, 71]
+        # create a bit stream matrix, the same shape as TTI mask RE
+        TTI_mask_indices = torch.where(TTI_mask_RE==1) #[14, 128]
+        TTI_3d = torch.zeros((TTI_mask_RE.shape[0], TTI_mask_RE.shape[1], pdsch_bits.shape[1]), dtype=pdsch_bits.dtype)
+        row_indices, col_indices = TTI_mask_indices
+        #TTI_3d: [14, 128, 6]
+        TTI_3d[row_indices, col_indices, :] = pdsch_bits.clone().detach()
+        TTI_3d = remove_fft_Offests(TTI_3d, F, FFT_offset) #[14, 72, 6]
+        TTI_3d = torch.cat((TTI_3d[:, :F//2,:], TTI_3d[:, F//2 + 1:,:]), dim=1)  # remove DC, [14, 71, 6]
+        
+        #dataset.add_item(pdsch_symbols_map, pilot_symbols_map, TTI_3d) # add to dataset
+        dataset.add_item(pdsch_symbols_map, TTI_3d) 
+        # add to dataset pdsch_symbols_map:[14, 71] complex, TTI_3d:[14, 71, 6] bits
+
+    torch.save(dataset, 'output/ofdm_dataset.pth') # save dataset on disk
+    print('Dataset saved')
+
+
+
+###########################################
+
 def oneround_test():
     print("Test ofdmsim_pytorchlib")
 
@@ -688,7 +797,11 @@ def performance_test():
     df.to_pickle("./output/df.pkl")
 
 
+
+
 if __name__ == '__main__':
     #oneround_test()
 
-    performance_test()
+    #performance_test()
+
+    create_dataset()
