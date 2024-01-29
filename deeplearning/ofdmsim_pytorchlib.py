@@ -616,7 +616,7 @@ def create_dataset():
 
     dataset = CustomDataset()
 
-    number_of_training_items = 10 #10000
+    number_of_training_items = 10000 #10000
 
     ch_SINR_min = 25 # channel emulation min SINR
     ch_SINR_max = 50 # channel emulation max SINR
