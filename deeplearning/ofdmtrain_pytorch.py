@@ -113,7 +113,8 @@ def trainmain():
         #num_update_steps_per_epoch = math.ceil(len(train_loader))
         #progress_bar = tqdm(range(num_update_steps_per_epoch))
 
-        for pdsch_iq,  labels in enumerate(tqdm(train_loader)):
+        for index, data_batch in enumerate(tqdm(train_loader)):
+            pdsch_iq,  labels = data_batch
             pdsch_iq,  labels = pdsch_iq.to(device), labels.to(device) #[16, 14, 71], [16, 14, 71, 6]
             optimizer.zero_grad()  # Zero the gradients
             outputs = model((pdsch_iq))  # forward pass [16, 14, 71, 6]
@@ -131,9 +132,10 @@ def trainmain():
 
         # Validation
         model.eval()  # Set the model to evaluation mode
-
+        BER_batch=[]
         with torch.no_grad():
-            for val_pdsch_iq, val_labels in enumerate(tqdm(val_loader)):
+            for index, data_batch in enumerate(tqdm(val_loader)):
+                val_pdsch_iq, val_labels = data_batch
                 val_pdsch_iq, val_labels = val_pdsch_iq.to(device), val_labels.to(device) #[16, 14, 71], [16, 14, 71, 6]
                 val_outputs = model((val_pdsch_iq)) #[16, 14, 71, 6]
                 val_loss = criterion(val_outputs, val_labels)
@@ -145,11 +147,12 @@ def trainmain():
                 error_count = torch.sum(binary_predictions != val_labels).float()  # Count of unequal bits
                 error_rate = error_count / len(val_labels.flatten())  # Error rate calculation
                 BER = torch.round(error_rate * 1000) / 1000  # Round to 3 decimal places
-
+                BER_batch.append(BER.item())
+        print(BER_batch)
         # Save performance details
         train_losses.append(average_loss)
         val_losses.append(val_loss.item())
-        val_BERs.append(BER.item())
+        val_BERs.append(np.mean(BER_batch))#(BER.item())
 
         # Print or log validation loss after each epoch
         print(f"Epoch [{epoch + 1}/{num_epochs}], Loss: {average_loss:.4f}, Val Loss: {val_loss:.4f}, Val BER: {BER:.4f}, learning rate: {scheduler.get_last_lr()[0]:.4f}")

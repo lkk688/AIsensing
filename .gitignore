@@ -161,4 +161,4 @@ cython_debug/
 
 *.npy
 *.pkl
-/output
+/output/*
