@@ -197,13 +197,17 @@ def FFT(TTI):
 #leading_zeros (int): Number of symbols with zero value used for SINR measurement
 def create_OFDM_data(TTI_mask_RE, Qm, mapping_table_Qm, pilot_symbols, leading_zeros=80, use_sdr=False):
     pdsch_bits, pdsch_symbols = create_PDSCH_data(TTI_mask_RE, Qm, mapping_table_Qm, power=PDSCH_power) # create PDSCH data and modulate it
+    #pdsch_bits: [958, 6], pdsch_symbols:[958]
     Modulated_TTI = RE_mapping(TTI_mask_RE, pilot_symbols, pdsch_symbols, plotTTI=True) # map the PDSCH and pilot symbols to the TTI
+    #Modulated_TTI: [14, 128]
     TD_TTI_IQ = FFT(Modulated_TTI) # perform the FFT
+    #TD_TTI_IQ: [14, 128]
     TX_Samples = CP_addition(TD_TTI_IQ, S, FFT_size, CP) # add the CP
+    #TX_Samples: 14*(128+20)=2072
     if use_sdr:
         zeros = torch.zeros(leading_zeros, dtype=TX_Samples.dtype) # create leading zeros for estimating noise floor power
         TX_Samples = torch.cat((zeros, TX_Samples), dim=0) # add leading zeros to TX samples
-    return pdsch_bits, TX_Samples
+    return pdsch_bits, TX_Samples #14*148=2072
 
 
 #signal/TX_Samples 2072 (14*148) complex
@@ -356,6 +360,8 @@ def SINR(rx_signal, index, leading_zeros):
     # Calculate noise power
     rx_noise_0 = rx_signal[index - leading_zeros + 20 : index - 20]
     rx_noise_power_0 = torch.mean(torch.abs(rx_noise_0) ** 2)
+    if rx_noise_power_0==0:
+        rx_noise_power_0 = 0.00001
 
     # Calculate signal power
     rx_signal_0 = rx_signal[index:index + (14 * 72)]
@@ -520,24 +526,22 @@ def vis_errorbits(TTI_mask_RE, pdsch_bits, bits_est):
     TTI_t[TTI_mask_RE==1] = errors
     plt.imshow(TTI_t)
 
-def receiver_process(TX_Samples, RX_Samples, TTI_mask_RE, pilot_symbols, de_mapping_table_Qm, leading_zeros, use_sdr=False):
+def receiver_process(TX_Samples, RX_Samples, TTI_mask_RE, pilot_symbols, de_mapping_table_Qm, leading_zeros, use_sdr=False, plot=False):
     #Receiver process
-    symbol_index=sync_TTI(TX_Samples, RX_Samples, leading_zeros=leading_zeros, threshold= 6, plot=True)
+    symbol_index=sync_TTI(TX_Samples, RX_Samples, leading_zeros=leading_zeros, threshold= 6, plot=plot)
     #symbol_index: 1149
-    if use_sdr:
-        symbol_index = symbol_index + leading_zeros
     
     SINR_m, noise_power, signal_power = SINR(RX_Samples, symbol_index, leading_zeros) # calculate the SINR
 
-    RX_NO_CP = CP_removal(RX_Samples, symbol_index, S, FFT_size, CP, plotsig=True) # remove the cyclic prefix
+    RX_NO_CP = CP_removal(RX_Samples, symbol_index, S, FFT_size, CP, plotsig=plot) # remove the cyclic prefix
     RX_NO_CP = RX_NO_CP / torch.max(torch.abs(RX_NO_CP)) # normalize the signal
     #torch.Size([14, 128])
 
     #Convert the the time domain OFDM signal into frequency domain
-    OFDM_demod = DFT(RX_NO_CP, plotDFT=True) # perform the DFT on the received signal and plot the result
+    OFDM_demod = DFT(RX_NO_CP, plotDFT=plot) # perform the DFT on the received signal and plot the result
     #[14, 128]
 
-    H_estim = channelEstimate_LS(TTI_mask_RE, pilot_symbols, F, FFT_offset, Sp, OFDM_demod, plotEst=True) # estimate the channel using least squares and plot
+    H_estim = channelEstimate_LS(TTI_mask_RE, pilot_symbols, F, FFT_offset, Sp, OFDM_demod, plotEst=plot) # estimate the channel using least squares and plot
 
     OFDM_demod_no_offsets = remove_fft_Offests(OFDM_demod, F, FFT_offset) # remove the FFT offsets and DC carrier from the received signal
     #[14, 72]
@@ -546,7 +550,7 @@ def receiver_process(TX_Samples, RX_Samples, TTI_mask_RE, pilot_symbols, de_mapp
     #[14, 72]
 
     #Payload Symbols extraction
-    QAM_est = get_payload_symbols(TTI_mask_RE, equalized_H_estim, FFT_offset, F, plotQAM=True) # get the payload symbols from
+    QAM_est = get_payload_symbols(TTI_mask_RE, equalized_H_estim, FFT_offset, F, plotQAM=plot) # get the payload symbols from
     #[958]
 
     #Converting OFDM Symbols to Data
@@ -577,7 +581,7 @@ def oneround_test():
     if use_sdr:
         leading_zeros = 80  # For SDR, Number of symbols with zero value for noise measurement at the beginning of the transmission. Used for SINR estimation.
     else:
-        leading_zeros = 0
+        leading_zeros = 80
     pdsch_bits, TX_Samples = create_OFDM_data(TTI_mask_RE, Qm, mapping_table_Qm, pilot_symbols, leading_zeros=leading_zeros, use_sdr=use_sdr)
     #pdsch_bits: return bits: [958, 6], symbol: [958] complex, each symbol is 6 bits, 958 is the effective data slots in mask
     #TX_Samples:(S, CP 20+ FFT_size 128) 14*148 flatten to torch.Size([2072])
@@ -601,7 +605,7 @@ def oneround_test():
     bits_est, SINR_m = receiver_process(TX_Samples=TX_Samples, RX_Samples=RX_Samples, \
                                         TTI_mask_RE=TTI_mask_RE, pilot_symbols=pilot_symbols, \
                                             de_mapping_table_Qm=de_mapping_table_Qm, \
-                                                leading_zeros=leading_zeros, use_sdr=use_sdr)
+                                                leading_zeros=leading_zeros, use_sdr=use_sdr, plot=True)
 
     BER = calculate_BER(pdsch_bits, bits_est)
     print(f"BER: {BER}, SINR: {SINR_m}dB") # print the BER and SINR
@@ -628,18 +632,15 @@ def performance_test():
     mapping_table_QPSK, de_mapping_table_QPSK = mapping_table(2) # mapping table QPSK (e.g. for pilot symbols)
     mapping_table_Qm, de_mapping_table_Qm = mapping_table(Qm, plot=False) # mapping table for Qm
 
-    TTI_mask_RE = TTI_mask(S=S,F=F, Fp=Fp, Sp=Sp, FFT_offset=FFT_offset, plotTTI=False)
-    pilot_symbols = pilot_set(TTI_mask_RE, Pilot_Power)
+    TTI_mask_RE = TTI_mask(S=S,F=F, Fp=Fp, Sp=Sp, FFT_offset=FFT_offset, plotTTI=False) #[14, 128]
+    pilot_symbols = pilot_set(TTI_mask_RE, Pilot_Power) #[36]
 
     # start the SDR
     # if use_sdr: 
     #     SDR_1 = SDR_Pluto.SDR(SDR_TX_IP="ip:192.168.1.10", SDR_TX_FREQ=SDR_TX_Frequency, SDR_TX_GAIN=-80, SDR_RX_GAIN = 0, SDR_TX_SAMPLERATE=SampleRate, SDR_TX_BANDWIDTH=F*SCS*2)
     #     SDR_1.SDR_TX_start()
 
-    if use_sdr:
-        leading_zeros = 80  # For SDR, Number of symbols with zero value for noise measurement at the beginning of the transmission. Used for SINR estimation.
-    else:
-        leading_zeros = 0
+    leading_zeros = 80  # For SDR, Number of symbols with zero value for noise measurement at the beginning of the transmission. Used for SINR estimation.
     pdsch_bits, TX_Samples = create_OFDM_data(TTI_mask_RE, Qm, mapping_table_Qm, pilot_symbols, leading_zeros=leading_zeros, use_sdr=use_sdr)
     #pdsch_bits: return bits: [958, 6], symbol: [958] complex, each symbol is 6 bits, 958 is the effective data slots in mask
     #TX_Samples:(S, CP 20+ FFT_size 128) 14*148 flatten to torch.Size([2072])
@@ -652,8 +653,8 @@ def performance_test():
     ch_SINR = 40  # SINR for channel emulation CDL-C
     tx_gain = 0  # Transmission gain in dB for SDR
     rx_gain = 10  # Reception gain in dB for SDR
-    RX_Samples = radio_channel(tx_signal= TX_Samples, ch_SINR=ch_SINR, n_taps=n_taps, max_delay=max_delay, \
-                  leading_zeros=leading_zeros, tx_gain=0, rx_gain = 0, use_sdr=False)
+    #RX_Samples = radio_channel(tx_signal= TX_Samples, ch_SINR=ch_SINR, n_taps=n_taps, max_delay=max_delay, \
+    #              leading_zeros=leading_zeros, tx_gain=0, rx_gain = 0, use_sdr=False)
     #RX_Samples: torch.Size([6474]), TX_Samples: torch.Size([2072])
 
     number_of_testcases = 1000
@@ -662,12 +663,14 @@ def performance_test():
     for i in range(number_of_testcases):
         ch_SINR = int(random.uniform(ch_SINR_min, ch_SINR_max))
         tx_gain_i = int(random.uniform(tx_gain_min, tx_gain_max))
-        RX_Samples = radio_channel(use_sdr=use_sdr, tx_signal = TX_Samples, tx_gain = tx_gain_i, rx_gain = rx_gain, ch_SINR = ch_SINR)
+        #RX_Samples = radio_channel(use_sdr=use_sdr, tx_signal = TX_Samples, tx_gain = tx_gain_i, rx_gain = rx_gain, ch_SINR = ch_SINR)
+        RX_Samples = radio_channel(tx_signal= TX_Samples, ch_SINR=ch_SINR, n_taps=n_taps, max_delay=max_delay, \
+                  leading_zeros=leading_zeros, tx_gain=0, rx_gain = 0, use_sdr=False)
         
         bits_est, SINR_m = receiver_process(TX_Samples=TX_Samples, RX_Samples=RX_Samples, \
                                         TTI_mask_RE=TTI_mask_RE, pilot_symbols=pilot_symbols, \
                                             de_mapping_table_Qm=de_mapping_table_Qm, \
-                                                leading_zeros=leading_zeros, use_sdr=use_sdr)
+                                                leading_zeros=leading_zeros, use_sdr=use_sdr, plot=False)
 
         BER = calculate_BER(pdsch_bits, bits_est)
         print(f"BER: {BER}, SINR: {SINR_m}dB") # print the BER and SINR
@@ -680,22 +683,12 @@ def performance_test():
     df = pd.DataFrame(SINR2BER_table, columns=['txg', 'rxg', 'SINR', 'BER'])
     df['SINR_binned'] = pd.cut(df['SINR'], bins=range(-10, 40, 2), labels=range(-9, 39, 2))
     df_grouped = df.groupby('SINR_binned', observed=False).mean()
+    df_grouped.dropna(subset=['txg', 'rxg', 'SINR', 'BER'], inplace=True)
 
-    plt.figure(figsize=(8, 4))
-    plt.plot(df['SINR'], df['BER'], 'o', alpha=0.15, markersize=3)
-    plt.xlabel('SINR (dB)')
-    plt.ylabel('Uncoded BER')
-    plt.plot(df_grouped['SINR'], df_grouped['BER'], '-o', color='blue')
-    plt.title(f'OFDM System Uncoded Performance\n Qm={Qm}, FFT_size={FFT_size}, F={F}, S={S}, Fp={Fp}, Sp={Sp}, CP={CP}, SCS={SCS}\nPilot_P={Pilot_Power}, PDSCH_P={PDSCH_power}, freq={SDR_TX_Frequency}Hz')
-    plt.xlim(0, 40)
-    plt.yscale('log')
-    plt.grid()
-    plt.minorticks_on()
-    plt.grid(which='minor', linestyle=':', linewidth='0.5', color='black')
-    if save_plots:
-        plt.savefig('Performance.png')
-    plt.show()
+    df.to_pickle("./output/df.pkl")
 
 
 if __name__ == '__main__':
-    oneround_test()
+    #oneround_test()
+
+    performance_test()
