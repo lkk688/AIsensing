@@ -415,16 +415,16 @@ def torch_interp(x, xp, fp):
 
 def channelEstimate_LS(TTI_mask_RE, pilot_symbols, F, FFT_offset, Sp, OFDM_demod, plotEst=False):
     # Pilot extraction
-    pilots = OFDM_demod[TTI_mask_RE == 2]
+    pilots = OFDM_demod[TTI_mask_RE == 2] #[14,128]=>[36]
 
     # Divide the pilots by the set pilot values
-    H_estim_at_pilots = pilots / pilot_symbols
+    H_estim_at_pilots = pilots / pilot_symbols #[36]/[36]=>[36]
 
     # Interpolation indices
-    pilot_indices = torch.nonzero(TTI_mask_RE[Sp] == 2, as_tuple=False).squeeze()
+    pilot_indices = torch.nonzero(TTI_mask_RE[Sp] == 2, as_tuple=False).squeeze() #[36] 28:30:32...
 
     # Interpolation for magnitude and phase
-    all_indices = torch.arange(FFT_offset, FFT_offset + F)
+    all_indices = torch.arange(FFT_offset, FFT_offset + F) #[72] 28:29:(28+72)
     
     # Linear interpolation for magnitude and phase
     H_estim_abs = torch_interp(all_indices, pilot_indices, torch.abs(H_estim_at_pilots))
@@ -454,7 +454,7 @@ def channelEstimate_LS(TTI_mask_RE, pilot_symbols, F, FFT_offset, Sp, OFDM_demod
             plt.savefig('ChannelEstimate.png')
         plt.show()
 
-    return H_estim
+    return H_estim #[72]
 
 def remove_fft_Offests(RX_NO_CP, F, FFT_offset):
 
@@ -498,11 +498,11 @@ def get_payload_symbols(TTI_mask_RE, equalized, FFT_offset, F, plotQAM=False):
 
 def Demapping(QAM, de_mapping_table):
     # Convert the demapping table keys (constellation points) to a tensor
-    constellation = torch.tensor(list(de_mapping_table.keys())).to(QAM.device)
-    dists = torch.abs(QAM.view(-1, 1) - constellation.view(1, -1))
-    const_index = torch.argmin(dists, dim=1).to(QAM.device)
-    hardDecision = constellation[const_index].to(QAM.device)
-    string_key_table = {str(key.item()): value for key, value in de_mapping_table.items()}
+    constellation = torch.tensor(list(de_mapping_table.keys())).to(QAM.device) #[64]
+    dists = torch.abs(QAM.view(-1, 1) - constellation.view(1, -1)) #[958, 64] #constellation: [64]
+    const_index = torch.argmin(dists, dim=1).to(QAM.device) #[958]
+    hardDecision = constellation[const_index].to(QAM.device) #[958]
+    string_key_table = {str(key.item()): value for key, value in de_mapping_table.items()} #complex to 6bits mapping
     demapped_symbols = torch.tensor([string_key_table[str(c.item())] for c in hardDecision], dtype=torch.int32)
     return demapped_symbols, hardDecision
 
@@ -796,12 +796,29 @@ def performance_test():
 
     df.to_pickle("./output/df.pkl")
 
+def get_device(gpuid='0', useamp=False):
+    if torch.cuda.is_available():
+        device = torch.device('cuda:'+str(gpuid))  # CUDA GPU 0
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+        useamp = False
+    else:
+        device = torch.device("cpu")
+        useamp = False
+    print("Using device:", device)
+    # Test tensor creation on the selected device
+    if device.type != "cpu":
+        x = torch.ones(1, device=device)
+        print(x)
+    if device.type == "mps":
+        device = "cpu" # Force CPU for now, trouble with converting complex tensors to mps with macos M1
 
+    return device, useamp
 
 
 if __name__ == '__main__':
     #oneround_test()
 
-    #performance_test()
+    performance_test()
 
     create_dataset()

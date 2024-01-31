@@ -12,25 +12,6 @@ from signalmodels import RXModel_2
 import math
 from tqdm.auto import tqdm
 
-def get_device(gpuid='0', useamp=False):
-    if torch.cuda.is_available():
-        device = torch.device('cuda:'+str(gpuid))  # CUDA GPU 0
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-        useamp = False
-    else:
-        device = torch.device("cpu")
-        useamp = False
-    print("Using device:", device)
-    # Test tensor creation on the selected device
-    if device.type != "cpu":
-        x = torch.ones(1, device=device)
-        print(x)
-    if device.type == "mps":
-        device = "cpu" # Force CPU for now, trouble with converting complex tensors to mps with macos M1
-
-    return device, useamp
-
 def trainmain():
     device, useamp=get_device(gpuid='0', useamp=False)
 
