@@ -128,7 +128,7 @@ class MultiReceiver():
         PS_est, hardDecision = Demapping(QAM_est, self.de_mapping_table_Qm) # demap the symbols back to codewords
         #PS_est[958, 6] bits
         #hardDecision[958] mapped complex value
-
+        #[958, 6] bits =>[5748]
         binary_predictions = PS(PS_est) # convert the codewords to the bitstream
         #0 1 bits [5748]
         # convert to bits
@@ -147,7 +147,8 @@ class MultiReceiver():
         # [14, 71]
         return pdsch_symbols_map
 
-    def NNinference(self, model, pdsch_symbols_map):
+    def NNinference(self, model, pdsch_symbols_map, device):
+        pdsch_symbols_map=torch.unsqueeze(pdsch_symbols_map, dim=0).to(device) #[14, 71]=>[1, 14, 71]
         test_outputs = model(pdsch_symbols_map) #[1, 14, 71]->[1, 14, 71, 6]
         #binary_predictions = test_outputs.squeeze()[TTI_mask_RE_3d==1] #[91968]
         binary_predictions = test_outputs.squeeze() #[14, 71, 6]
@@ -155,7 +156,7 @@ class MultiReceiver():
         #Fetch the payload
         binary_predictions = binary_predictions[self.index_one] #[5748]
         binary_predictions = torch.round(binary_predictions)
-        return binary_predictions
+        return binary_predictions.cpu()
     
     def evaluate(self, binary_predictions, test_labels):
         test_labels = test_labels.squeeze() #[14, 71, 6]
@@ -204,8 +205,8 @@ def test():
     ZHLS_BER, ZHLS_wrongs = multiprocessor.evaluate(ZHLS_binary_predictions, data_labels)
 
     pdsch_symbols_map = multiprocessor.NNpreprocessing(OFDM_demod) #[14, 71]
-    NN_binary_predictions = multiprocessor.NNinference(model, pdsch_symbols_map)
-    NN_BER, NN_wrongs = multiprocessor.evaluate(ZHLS_binary_predictions, data_labels)
+    NN_binary_predictions = multiprocessor.NNinference(model, pdsch_symbols_map, device)
+    NN_BER, NN_wrongs = multiprocessor.evaluate(NN_binary_predictions, data_labels)
     print(NN_BER)
 
 def evalmain():
@@ -338,4 +339,4 @@ def evalmain():
 
 if __name__ == '__main__':
     test()
-    evalmain()
+    #evalmain()
