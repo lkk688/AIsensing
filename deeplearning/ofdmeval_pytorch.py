@@ -13,6 +13,160 @@ import math
 from tqdm.auto import tqdm
 import pickle
 
+# custom dataset
+class OFDMEvalDataset(Dataset):
+    def __init__(self, Qm=6, S=14, Sp=2, F=72, Fp=2, FFT_size=128, CP=20, ch_SINR_min=25, ch_SINR_max=50, maxdatalen=10000):
+        self.maxdatalen = maxdatalen
+        #Signal-to-Interference-plus-Noise Ratio (SINR) for the CDL-C channel emulation
+        # in case SDR not available, for channel simulation
+        self.ch_SINR_min = ch_SINR_min # channel emulation min SINR
+        self.ch_SINR_max = ch_SINR_max # channel emulation max SINR
+        #Qm (int): Modulation order
+        self.Qm = Qm  # bits per symbol
+        # channel simulation
+        self.n_taps = 2 
+        self.max_delay = 6 #samples
+        self.leading_zeros = 0 #80  # For SDR, Number of symbols with zero value for noise measurement at the beginning of the transmission. Used for SINR estimation.
+        # OFDM Parameters
+        self.S = S  # Number of symbols
+        self.Sp = Sp  # Pilot symbol, 0 for none
+        self.F = F  # Number of subcarriers, including DC
+        self.Fp = Fp  # Pilot subcarrier spacing
+        self.FFT_size = FFT_size  # FFT size
+        self.FFT_offset = int((self.FFT_size - self.F) / 2)  # FFT offset
+        self.CP = CP  # Cyclic prefix
+
+        mapping_table_QPSK, de_mapping_table_QPSK = mapping_table(2) # mapping table QPSK (e.g. for pilot symbols)
+        self.mapping_table_Qm, self.de_mapping_table_Qm = mapping_table(Qm, plot=False) # mapping table for Qm
+
+        self.TTI_mask_RE = TTI_mask(S=self.S,F=self.F, Fp=self.Fp, Sp=self.Sp, FFT_offset=self.FFT_offset, plotTTI=False) #[14, 128]
+        #among TTI_mask, 958 places are 1 (means data)
+        self.pilot_symbols = pilot_set(self.TTI_mask_RE, Pilot_Power) #[36]
+        
+    def __len__(self):
+        return self.maxdatalen
+    
+    def __getitem__(self, index):
+        ch_SINR = int(random.uniform(self.ch_SINR_min, self.ch_SINR_max)) # SINR generation for adding noise to the channel
+        pdsch_bits, TX_Samples = create_OFDM_data(self.TTI_mask_RE, self.Qm, self.mapping_table_Qm, self.pilot_symbols)
+        #pdsch_bits: return bits: [958, 6], symbol: [958] complex, each symbol is 6 bits, 958 is the effective data slots in mask
+        #TX_Samples:(S, CP 20+ FFT_size 128) 14*148 flatten to torch.Size([2072])
+
+        RX_Samples = apply_multipath_channel(TX_Samples, n_taps=self.n_taps, max_delay=self.max_delay, random_start=False, repeats=0, SINR_s=ch_SINR, leading_zeros=self.leading_zeros)
+
+        #Create groundtruth labels:
+        # create a bit stream matrix, the same shape as TTI mask RE
+        TTI_mask_indices = torch.where(self.TTI_mask_RE==1) #[14, 128]
+        TTI_3d = torch.zeros((self.TTI_mask_RE.shape[0], self.TTI_mask_RE.shape[1], pdsch_bits.shape[1]), dtype=pdsch_bits.dtype)
+        row_indices, col_indices = TTI_mask_indices
+        #TTI_3d: [14, 128, 6]
+        TTI_3d[row_indices, col_indices, :] = pdsch_bits.clone().detach()
+        TTI_3d = remove_fft_Offests(TTI_3d, F, FFT_offset) #[14, 72, 6]
+        TTI_3d = torch.cat((TTI_3d[:, :F//2,:], TTI_3d[:, F//2 + 1:,:]), dim=1)  # remove DC, [14, 71, 6]
+        
+        return RX_Samples, TTI_3d
+
+class MultiReceiver():
+    def __init__(self, Qm=6, S=14, Sp=2, F=72, Fp=2, FFT_size=128, CP=20):
+        #Qm (int): Modulation order
+        self.Qm = Qm  # bits per symbol
+        # OFDM Parameters
+        self.S = S  # Number of symbols
+        self.Sp = Sp  # Pilot symbol, 0 for none
+        self.F = F  # Number of subcarriers, including DC
+        self.Fp = Fp  # Pilot subcarrier spacing
+        self.FFT_size = FFT_size  # FFT size
+        self.FFT_offset = int((self.FFT_size - self.F) / 2)  # FFT offset
+        self.CP = CP  # Cyclic prefix
+
+        self.TTI_mask_RE = TTI_mask(S=self.S,F=self.F, Fp=self.Fp, Sp=self.Sp, FFT_offset=self.FFT_offset, plotTTI=False) #[14, 128]
+        #among TTI_mask, 958 places are 1 (means data)
+
+        mapping_table_QPSK, de_mapping_table_QPSK = mapping_table(2) # mapping table QPSK (e.g. for pilot symbols)
+        self.mapping_table_Qm, self.de_mapping_table_Qm = mapping_table(Qm, plot=False) # mapping table for Qm
+
+        #TTI_mask_RE_3d is the payload mapping used for inference
+        # remove DC and FFT offsets from TTI mask_RE and add third dimension size of Qm, and expand TTI mask values into the third dimension
+        TTI_mask_RE_small = self.TTI_mask_RE[:, self.FFT_offset:-self.FFT_offset] #FFT_offset=28 [14, 128]->[14, 72]
+        middle_index = TTI_mask_RE_small.size(1) // 2 #36
+        TTI_mask_RE_small = torch.cat((TTI_mask_RE_small[:, :middle_index], TTI_mask_RE_small[:, middle_index + 1:]), dim=1) #[14, 71]
+        #TTI_mask_RE_3d = TTI_mask_RE_small.unsqueeze(-1).expand(val_batch_size, S, F-1, Qm) #[1, 14, 71, 6]
+        TTI_mask_RE_3d = TTI_mask_RE_small.unsqueeze(-1) #Returns a new tensor with a dimension of size one inserted at the specified position. [14, 71]->[14, 71, 1]
+        self.TTI_mask_RE_3d = TTI_mask_RE_3d.expand(self.S, self.F-1, self.Qm) #[14, 71, 6]
+        self.index_one =  self.TTI_mask_RE_3d==1 #[14, 71, 6]
+
+    #for all receivers
+    def receiver_preprocessing(self, RX_Samples):
+        #step1: CP remove
+        symbol_index = 1 #starting place
+        RX_NO_CP = CP_removal(RX_Samples, symbol_index, self.S, self.FFT_size, self.CP, plotsig=False)# remove cyclic prefix and other symbols created by convolution
+        RX_NO_CP = RX_NO_CP / torch.max(torch.abs(RX_NO_CP)) # normalize
+        #torch.Size([14, 128])
+
+        OFDM_demod = DFT(RX_NO_CP, plotDFT=False) # DFT
+
+    def ZHLSreceiver(self, OFDM_demod):
+        #OFDM_demod [14, 128]
+        H_estim = channelEstimate_LS(self.TTI_mask_RE, self.pilot_symbols, self.F, self.FFT_offset, self.Sp, OFDM_demod, plotEst=False) # estimate the channel using least squares and plot
+
+        OFDM_demod_no_offsets = remove_fft_Offests(OFDM_demod, self.F, self.FFT_offset) # remove the FFT offsets and DC carrier from the received signal
+        #[14, 72]
+        #[14, 128]->[14, 72] (28:28+72)
+
+        # equalize the received signal
+        equalized_H_estim = equalize_ZF(OFDM_demod_no_offsets, H_estim, self.F, self.S) # equalize the channel using ZF
+        #[14, 72]
+
+        #Payload Symbols extraction
+        QAM_est = get_payload_symbols(self.TTI_mask_RE, equalized_H_estim, self.FFT_offset, self.F, plotQAM=False) # get the payload symbols from
+        #[958]
+
+        #Converting OFDM Symbols to Data
+        PS_est, hardDecision = Demapping(QAM_est, self.de_mapping_table_Qm) # demap the symbols back to codewords
+        #PS_est[958, 6] bits
+        #hardDecision[958] mapped complex value
+
+        binary_predictions = PS(PS_est) # convert the codewords to the bitstream
+        #0 1 bits [5748]
+        # convert to bits
+        #binary_predictions = torch.tensor(PS(PS_est).flatten().cpu(), dtype=torch.int8) #[5748]
+        return binary_predictions
+
+
+    def NNpreprocessing(self, OFDM_demod):
+        OFDM_demod = OFDM_demod / torch.max(torch.abs(OFDM_demod)) # normalize DFT'd signal for NN input
+        #torch.Size([14, 128])
+        #F is number of carriers
+        pdsch_symbols_map = remove_fft_Offests(OFDM_demod, self.F, self.FFT_offset) # remove FFT offsets
+        #[14, 72]
+        # remove DC
+        pdsch_symbols_map = torch.cat((pdsch_symbols_map[:, :self.F//2], pdsch_symbols_map[:, self.F//2 + 1:]), dim=1) 
+        # [14, 71]
+        return pdsch_symbols_map
+
+    def NNinference(self, model, pdsch_iq):
+        test_outputs = model(pdsch_iq) #[1, 14, 71]->[1, 14, 71, 6]
+        #binary_predictions = test_outputs.squeeze()[TTI_mask_RE_3d==1] #[91968]
+        binary_predictions = test_outputs.squeeze() #[14, 71, 6]
+        
+        #Fetch the payload
+        binary_predictions = binary_predictions[self.index_one] #[5748]
+        binary_predictions = torch.round(binary_predictions)
+        return binary_predictions
+    
+    def evaluate(self, binary_predictions, test_labels):
+        test_labels = test_labels.squeeze() #[14, 71, 6]
+        #index_one =  TTI_mask_RE_3d==1
+        test_labels = test_labels[self.index_one] #[5748]
+        
+        # Calculate Bit Error Rate (BER) for the NN-receiver
+        error_count = torch.sum(binary_predictions != test_labels).float()  # Count of unequal bits
+
+        new_wrongs = (binary_predictions.flatten() != test_labels.flatten()).float().tolist() #each element is [5748]
+        error_rate = error_count / len(test_labels.flatten())  # Error rate calculation
+        BER_val = torch.round(error_rate * 1000) / 1000  # Round to 3 decimal places
+        return BER_val.item(), new_wrongs
+
 def evalmain():
     device, useamp=get_device(gpuid='0', useamp=False)
 
