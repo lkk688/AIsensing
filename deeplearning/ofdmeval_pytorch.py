@@ -57,10 +57,10 @@ class OFDMEvalDataset(Dataset):
         #Create groundtruth labels:
         # create a bit stream matrix, the same shape as TTI mask RE
         TTI_mask_indices = torch.where(self.TTI_mask_RE==1) #[14, 128]
-        TTI_3d = torch.zeros((self.TTI_mask_RE.shape[0], self.TTI_mask_RE.shape[1], pdsch_bits.shape[1]), dtype=pdsch_bits.dtype)
-        row_indices, col_indices = TTI_mask_indices
+        TTI_3d = torch.zeros((self.TTI_mask_RE.shape[0], self.TTI_mask_RE.shape[1], pdsch_bits.shape[1]), dtype=pdsch_bits.dtype) #[14, 128, 6]
+        row_indices, col_indices = TTI_mask_indices #[958]
         #TTI_3d: [14, 128, 6]
-        TTI_3d[row_indices, col_indices, :] = pdsch_bits.clone().detach()
+        TTI_3d[row_indices, col_indices, :] = pdsch_bits.clone().detach() #[958, 6]->[14, 128, 6]
         TTI_3d = remove_fft_Offests(TTI_3d, F, FFT_offset) #[14, 72, 6]
         TTI_3d = torch.cat((TTI_3d[:, :F//2,:], TTI_3d[:, F//2 + 1:,:]), dim=1)  # remove DC, [14, 71, 6]
         
@@ -81,6 +81,7 @@ class MultiReceiver():
 
         self.TTI_mask_RE = TTI_mask(S=self.S,F=self.F, Fp=self.Fp, Sp=self.Sp, FFT_offset=self.FFT_offset, plotTTI=False) #[14, 128]
         #among TTI_mask, 958 places are 1 (means data)
+        self.pilot_symbols = pilot_set(self.TTI_mask_RE, Pilot_Power) #[36]
 
         mapping_table_QPSK, de_mapping_table_QPSK = mapping_table(2) # mapping table QPSK (e.g. for pilot symbols)
         self.mapping_table_Qm, self.de_mapping_table_Qm = mapping_table(Qm, plot=False) # mapping table for Qm
@@ -103,7 +104,9 @@ class MultiReceiver():
         RX_NO_CP = RX_NO_CP / torch.max(torch.abs(RX_NO_CP)) # normalize
         #torch.Size([14, 128])
 
+        #back into the frequency domain
         OFDM_demod = DFT(RX_NO_CP, plotDFT=False) # DFT
+        return OFDM_demod
 
     def ZHLSreceiver(self, OFDM_demod):
         #OFDM_demod [14, 128]
@@ -144,8 +147,8 @@ class MultiReceiver():
         # [14, 71]
         return pdsch_symbols_map
 
-    def NNinference(self, model, pdsch_iq):
-        test_outputs = model(pdsch_iq) #[1, 14, 71]->[1, 14, 71, 6]
+    def NNinference(self, model, pdsch_symbols_map):
+        test_outputs = model(pdsch_symbols_map) #[1, 14, 71]->[1, 14, 71, 6]
         #binary_predictions = test_outputs.squeeze()[TTI_mask_RE_3d==1] #[91968]
         binary_predictions = test_outputs.squeeze() #[14, 71, 6]
         
@@ -166,6 +169,44 @@ class MultiReceiver():
         error_rate = error_count / len(test_labels.flatten())  # Error rate calculation
         BER_val = torch.round(error_rate * 1000) / 1000  # Round to 3 decimal places
         return BER_val.item(), new_wrongs
+
+def test():
+    device, useamp=get_device(gpuid='0', useamp=False)
+
+    # OFDM Parameters
+    #Qm (int): Modulation order
+    Qm = 6  # bits per symbol
+    S = 14  # Number of symbols
+    Sp = 2  # Pilot symbol, 0 for none
+    F = 72  # Number of subcarriers, including DC
+    model = RXModel_2(Qm, S=S, F=F).to(device)
+    # Load the model architecture and weights
+    checkpoint_path = 'output/rx_model_50.pth'
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
+
+    eval_data = OFDMEvalDataset(Qm=Qm, S=S, Sp=Sp, F=F)
+    RX_Samples, TTI_3d = eval_data[0]
+    test_dataloader = DataLoader(eval_data, batch_size=1, shuffle=True)
+    rx_samples, data_labels = next(iter(test_dataloader))
+    print(f"Feature batch shape: {rx_samples.size()}") #[Batch_size, 2078]
+    print(f"Labels batch shape: {data_labels.size()}") #[Batch_size, 14, 71, 6]
+    rx_samples=rx_samples.squeeze() #[2078]
+    data_labels=data_labels.squeeze() #[14, 71, 6]
+    
+
+    multiprocessor = MultiReceiver(Qm=Qm, S=S, Sp=Sp, F=F)
+    #back into the frequency domain
+    OFDM_demod = multiprocessor.receiver_preprocessing(rx_samples) #[14, 128]
+
+    ZHLS_binary_predictions = multiprocessor.ZHLSreceiver(OFDM_demod)
+    ZHLS_BER, ZHLS_wrongs = multiprocessor.evaluate(ZHLS_binary_predictions, data_labels)
+
+    pdsch_symbols_map = multiprocessor.NNpreprocessing(OFDM_demod) #[14, 71]
+    NN_binary_predictions = multiprocessor.NNinference(model, pdsch_symbols_map)
+    NN_BER, NN_wrongs = multiprocessor.evaluate(ZHLS_binary_predictions, data_labels)
+    print(NN_BER)
 
 def evalmain():
     device, useamp=get_device(gpuid='0', useamp=False)
@@ -296,4 +337,5 @@ def evalmain():
         print('dictionary saved successfully to file')
 
 if __name__ == '__main__':
+    test()
     evalmain()
