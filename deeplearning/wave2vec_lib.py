@@ -103,7 +103,7 @@ class Wav2Vec2FeatureEncoder(nn.Module):
         self._requires_grad = False
 
     def forward(self, input_values):
-        hidden_states = input_values[:, None]
+        hidden_states = input_values[:, None] #[1, 86699]->[1, 1, 86699]
 
         # make sure hidden_states require grad for gradient_checkpointing
         if self._requires_grad and self.training:
@@ -116,7 +116,7 @@ class Wav2Vec2FeatureEncoder(nn.Module):
                     hidden_states,
                 )
             else:
-                hidden_states = conv_layer(hidden_states)
+                hidden_states = conv_layer(hidden_states) #[1, 1, 86699]->[1, 512, 17338]->(stride=2)[1, 512, 8668]->[1, 512, 4333]->[1, 512, 2166]_>[1, 512, 1082]->[1, 512, 541]->[1, 512, 270]
 
         return hidden_states
 
@@ -167,21 +167,21 @@ class Wav2Vec2Encoder(nn.Module):
                 attention_mask.shape[0], 1, attention_mask.shape[-1], attention_mask.shape[-1]
             )
 
-        position_embeddings = self.pos_conv_embed(hidden_states)
+        position_embeddings = self.pos_conv_embed(hidden_states)#[1, 270, 768] -> [1, 270, 768]
         hidden_states = hidden_states + position_embeddings
         hidden_states = self.layer_norm(hidden_states)
         hidden_states = self.dropout(hidden_states)
 
         deepspeed_zero3_is_enabled = False #is_deepspeed_zero3_enabled()
 
-        for layer in self.layers:
-            if output_hidden_states:
+        for layer in self.layers: #Wav2Vec2EncoderLayer
+            if output_hidden_states: #False
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
             # add LayerDrop (see https://arxiv.org/abs/1909.11556 for description)
             dropout_probability = torch.rand([])
 
-            skip_the_layer = True if self.training and (dropout_probability < self.config.layerdrop) else False
+            skip_the_layer = True if self.training and (dropout_probability < self.config.layerdrop) else False #False
             if not skip_the_layer or deepspeed_zero3_is_enabled:
                 # under deepspeed zero3 all gpus must run in sync
                 if self.gradient_checkpointing and self.training:
@@ -193,9 +193,9 @@ class Wav2Vec2Encoder(nn.Module):
                     )
                 else:
                     layer_outputs = layer(
-                        hidden_states, attention_mask=attention_mask, output_attentions=output_attentions
-                    )
-                hidden_states = layer_outputs[0]
+                        hidden_states,  attention_mask=attention_mask, output_attentions=output_attentions
+                    )#[1, 270, 768]
+                hidden_states = layer_outputs[0] #[1, 270, 768]
 
             if skip_the_layer:
                 layer_outputs = (None, None)
@@ -287,7 +287,7 @@ os.environ['HF_HOME'] = mycache_dir
 os.environ['HF_DATASETS_CACHE'] = mycache_dir
 if __name__ == '__main__':
     model_name = "facebook/wav2vec2-base-960h"
-    processor = AutoProcessor.from_pretrained(model_name, cache_dir=mycache_dir)
+    processor = AutoProcessor.from_pretrained(model_name, cache_dir=mycache_dir) #Wav2Vec2FeatureExtractor
     sampling_rate = processor.feature_extractor.sampling_rate
 
     dataset = load_dataset("PolyAI/minds14", "en-US", split="train", cache_dir=mycache_dir)
@@ -318,4 +318,4 @@ if __name__ == '__main__':
         outputs = model(**inputs)
     
     last_hidden_states = outputs.last_hidden_state
-    print(list(last_hidden_states.shape))
+    print(list(last_hidden_states.shape)) #[1, 270, 768]
