@@ -212,11 +212,26 @@ class MultiReceiver():
         binary_predictions = torch.round(binary_predictions)
         return binary_predictions.cpu()
     
-    def evaluate(self, binary_predictions, test_labels):
+    def NNevaluate(self, binary_predictions, test_labels):
         binary_predictions = binary_predictions.squeeze() #[14, 71, 6]
         test_labels = test_labels.squeeze() #[14, 71, 6]
         #index_one =  TTI_mask_RE_3d==1
-        #test_labels = test_labels[self.index_one] #[5748]
+        test_labels = test_labels[self.index_one] #[5748]
+        binary_predictions = binary_predictions[self.index_one] #[5748]
+        
+        # Calculate Bit Error Rate (BER) for the NN-receiver
+        error_count = torch.sum(binary_predictions != test_labels).float()  # Count of unequal bits
+
+        new_wrongs = (binary_predictions.flatten() != test_labels.flatten()).float().tolist() #each element is [5748]
+        error_rate = error_count / len(test_labels.flatten())  # Error rate calculation
+        BER_val = torch.round(error_rate * 1000) / 1000  # Round to 3 decimal places
+        return BER_val.item(), new_wrongs
+    
+    def evaluate(self, binary_predictions, test_labels):
+        #binary_predictions: [5748]
+        test_labels = test_labels.squeeze() #[14, 71, 6]
+        #index_one =  TTI_mask_RE_3d==1
+        test_labels = test_labels[self.index_one] #[5748]
         
         # Calculate Bit Error Rate (BER) for the NN-receiver
         error_count = torch.sum(binary_predictions != test_labels).float()  # Count of unequal bits
@@ -236,7 +251,7 @@ def trainmain():
     S = 14  # Number of symbols
     Sp = 2  # Pilot symbol, 0 for none
     F = 72  # Number of subcarriers, including DC
-    train_data = OFDMDataset(Qm=Qm, S=S, Sp=Sp, F=F, training=True)
+    train_data = OFDMDataset(Qm=Qm, S=S, Sp=Sp, F=F, ch_SINR_min=5, ch_SINR_max=50, training=True)
     onebatch = train_data[0]
 
     batch_size = 16
@@ -277,7 +292,10 @@ def trainmain():
     criterion = nn.BCELoss()
 
     saved_model_path = "" #'data/rx_model_168.pth'
-    performance_csv_path = 'output/performance_res2d2.csv'
+    trainoutput=os.path.join('output','exp0131')
+    os.makedirs(trainoutput, exist_ok=True)
+    print("Trainoutput folder:", trainoutput)
+    performance_csv_path = os.path.join(trainoutput, 'performance.csv')#'output/performance_res2d2.csv'
 
     # Check if a saved model exists
     if os.path.exists(saved_model_path):
@@ -299,7 +317,7 @@ def trainmain():
     if not os.path.exists(performance_csv_path):
         # Create a new CSV file and write headers
         with open(performance_csv_path, mode='w', newline='') as csv_file:
-            fieldnames = ['Epoch', 'Training_Loss', 'Validation_Loss', 'Validation_BER']
+            fieldnames = ['Epoch', 'Training_Loss', 'Validation_Loss', 'Validation_BER', 'LS_BER']
             writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
             writer.writeheader()
 
@@ -345,8 +363,8 @@ def trainmain():
 
                 # Calculate Bit Error Rate (BER)
                 labels = labels.cpu().squeeze() #[1, 14, 71, 6]
-                BER, NN_wrongs = multiprocessor.evaluate(binary_predictions.cpu(), labels)
-                BER_batch.append(BER.item())
+                BER, NN_wrongs = multiprocessor.NNevaluate(binary_predictions.cpu(), labels)
+                BER_batch.append(BER)
 
                 rx_samples=rx_samples.squeeze().cpu()
                 #back into the frequency domain
@@ -368,7 +386,7 @@ def trainmain():
         # Save performance details in the CSV file
         with open(performance_csv_path, mode='a', newline='') as csv_file:
             writer = csv.writer(csv_file)
-            writer.writerow([epoch + 1, average_loss, val_loss.item(), BER.item()])
+            writer.writerow([epoch + 1, average_loss, val_loss.item(), BER_batch_mean, LSBER_batch_mean])
 
         if (epoch + 1) % 2 == 0:
             # Save model along with the current epoch
@@ -376,7 +394,8 @@ def trainmain():
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
             }
-            torch.save(checkpoint, f'output/res2d_model_{epoch + 1}.pth')
+            modelsave_path = os.path.join(trainoutput, f'res2d_model_{epoch + 1}.pth')
+            torch.save(checkpoint, modelsave_path)
             print(f"Model saved at epoch {epoch + 1}")
     
     # Save the final trained model
@@ -384,7 +403,9 @@ def trainmain():
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
     }
-    torch.save(checkpoint, 'output/res2d_model.pth')
+    #torch.save(checkpoint, 'output/res2d_model.pth')
+    modelsave_path = os.path.join(trainoutput, 'res2d_model.pth')
+    torch.save(checkpoint, modelsave_path)
 
 if __name__ == '__main__':
     trainmain()
