@@ -242,7 +242,7 @@ class MultiReceiver():
         return BER_val.item(), new_wrongs
 
 
-def trainmain():
+def trainmain(args):
     device, useamp=get_device(gpuid='0', useamp=False)
 
     # OFDM Parameters
@@ -413,5 +413,77 @@ def trainmain():
     modelsave_path = os.path.join(trainoutput, 'res2d_model.pth')
     torch.save(checkpoint, modelsave_path)
 
+import pandas as pd
+import matplotlib.pyplot as plt
+def draw_trainresults(csv_path = '../output/performance_details.csv', save_plots =  True):
+    # Load CSV data
+    df = pd.read_csv(csv_path)
+    
+    # Plot Training Loss and Validation Loss
+    plt.figure(figsize=(7, 3))
+    plt.plot(df['Epoch'], df['Training_Loss'], label='Training Loss')
+    plt.plot(df['Epoch'], df['Validation_Loss'], label='Validation Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.title('Training and Validation Loss Over Epochs')
+    plt.grid(True)
+    if save_plots:
+        plt.savefig('training_loss.png')
+    plt.show()
+
+    # Plot Validation BER
+    plt.figure(figsize=(7, 3))
+    plt.plot(df['Epoch'], df['Validation_BER'], label='Validation BER')
+    plt.plot(df['Epoch'], df['LS_BER'], label='LS BER')
+    plt.xlabel('Epochs')
+    plt.ylabel('BER')
+    plt.legend()
+    plt.title('Bit Error Rate (BER) on validation set')
+    plt.grid(True)
+    #plt.ylim(0,0.06)
+    if save_plots:
+        plt.savefig('training_ber.png')
+    plt.show(block=True)
+
+import json
+def savedict2file(data_dict, filename):
+    # save vocab dict to be loaded into tokenizer
+    with open(filename, "w") as file:
+        json.dump(data_dict, file)
+
+def saveargs2file(args, trainoutput):
+    args_dict={}
+    args_str=' '
+    for k, v in vars(args).items():
+        args_dict[k]=v
+        args_str.join(f'{k}={v}, ')
+    print(args_str)
+    savedict2file(data_dict=args_dict, filename=os.path.join(trainoutput,'args.json'))
+
 if __name__ == '__main__':
-    trainmain()
+    import argparse
+    parser = argparse.ArgumentParser(description='OFDM training job')
+    #data related arguments
+    parser.add_argument('--mode', default="Evaluate", choices=['Train','Evaluate', 'Visualization'], help='Running mode')
+    parser.add_argument('--traintag', type=str, default='exp0202b',
+                    help='Train rag name, used for output folder')
+    parser.add_argument('--data_type', type=str, default="OFDMsim",
+                    help='data type name')
+    parser.add_argument('--data_name', type=str, default="",
+                    help='data name')
+    parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
+    parser.add_argument('--outputdir', type=str, default="./output",
+                    help='outputpath') #r"E:\output"
+    
+    args = parser.parse_args()
+    print(' '.join(f'{k}={v}' for k, v in vars(args).items())) #get the arguments as a dict by calling vars(args)
+
+    trainoutput=os.path.join(args.outputdir, args.traintag)
+    os.makedirs(trainoutput, exist_ok=True)
+    print("Trainoutput folder:", trainoutput)
+
+    if args.mode == "Evaluate":
+        draw_trainresults(csv_path=os.path.join(trainoutput, 'performance.csv'), save_plots=True)
+    elif args.mode == "Train":
+        trainmain(args)
