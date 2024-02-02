@@ -152,3 +152,33 @@ class ResModel_simple1_2D(nn.Module):
         z = self.linear(z) #[16, 14, 71, 6]
         z = nn.Sigmoid()(z) #[16, 14, 71, 6]
         return z
+
+from transformers import Wav2Vec2Config
+from wave2vec_lib import Wav2Vec2Encoder
+class MyWave2vec(nn.Module):
+
+    def __init__(self, num_bits_per_symbol, num_ch=4, S = 14, F = 72):
+        super(MyWave2vec, self).__init__()
+        configuration = Wav2Vec2Config()
+        configuration.num_hidden_layers =1
+        #print(configuration.hidden_size) #768
+        configuration.hidden_size = 12*4 #head=12
+        self.encoder = Wav2Vec2Encoder(configuration)
+        self.linear=nn.Linear(in_features=num_ch, out_features=configuration.hidden_size)
+        self.flatten = nn.Flatten(1,2)
+        self.unflatten=nn.Unflatten(1, (S, F-1))
+        self.outlinear=nn.Linear(in_features=configuration.hidden_size, out_features=num_bits_per_symbol)
+        self.activation = nn.ReLU()
+    
+    def forward(self, inputs):
+        feature_2d = inputs.permute(0,2,3, 1) #[1, 4, 14, 71]->[1, 14, 71, 4]
+        feature_2d=self.linear(feature_2d) ##[1, 14, 71, 48]
+        feature_2d=self.flatten(feature_2d) #[1, 14*71, 48] [1, 994, 48]
+        encoder_outputs = self.encoder(
+            feature_2d, #[1, 994, 48]
+        ) #only one element: last_hidden_state
+        hidden_states = encoder_outputs[0] #[1, 994, 48]
+        output=self.unflatten(hidden_states) #[1, 14*71, 48] =>[1, 14, 71, 48]
+        output=self.outlinear(output) #[1, 14, 71, 6]
+        output = nn.Sigmoid()(output) #[1, 14, 71, 6]
+        return output

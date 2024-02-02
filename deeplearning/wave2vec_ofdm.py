@@ -51,15 +51,27 @@ def testwave2vec():
 
     hidden_states, extract_features = feature_projection(extract_features) #[1, 270, 768] 
 
-    print(configuration.num_hidden_layers)
+    print(configuration.num_hidden_layers) #12
     configuration.num_hidden_layers =1
+    print(configuration.hidden_size) #768
+    configuration.hidden_size = 12*4 #head=12
     encoder = Wav2Vec2Encoder(configuration)
 
     #feature_2d [1, 4, 14, 71]
+    feature_2d = feature_2d.permute(0,2,3, 1) #[1, 4, 14, 71]->[1, 14, 71, 4]
+    linear=nn.Linear(in_features=4, out_features=configuration.hidden_size)
+    feature_2d=linear(feature_2d) ##[1, 14, 71, 48]
+    flatten = nn.Flatten(1,2)
+    feature_2d=flatten(feature_2d) #[1, 14*71, 48] [1, 994, 48]
     encoder_outputs = encoder(
-            hidden_states, #[1, 270, 768] 
+            feature_2d, #[1, 994, 48]
         ) #only one element: last_hidden_state
-    hidden_states = encoder_outputs[0] #[1, 270, 768]
+    hidden_states = encoder_outputs[0] #[1, 994, 48]
+    unflatten=nn.Unflatten(1, (14, 71))
+    output=unflatten(hidden_states) #[1, 14*71, 48] =>[1, 14, 71, 48]
+    outlinear=nn.Linear(in_features=configuration.hidden_size, out_features=6)
+    output=outlinear(output) #[1, 14, 71, 6]
+    print(output.shape) #[1, 14, 71, 6]
     
 if __name__ == '__main__':
     testwave2vec()
