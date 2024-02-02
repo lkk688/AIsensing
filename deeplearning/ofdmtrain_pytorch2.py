@@ -8,7 +8,7 @@ import torch.nn.functional as tFunc # usually F, but that is reserved for other 
 import csv
 import os
 from ofdmsim_pytorchlib import *
-from signalmodels import ResModel_2D
+from signalmodels import ResModel_2D, ResModel_simple1_2D
 import math
 from tqdm.auto import tqdm
 import pickle
@@ -52,7 +52,7 @@ class OFDMDataset(Dataset):
         pdsch_bits, TX_Samples = create_OFDM_data(self.TTI_mask_RE, self.Qm, self.mapping_table_Qm, self.pilot_symbols)
         #pdsch_bits: return bits: [958, 6], symbol: [958] complex, each symbol is 6 bits, 958 is the effective data slots in mask
         #TX_Samples:(S, CP 20+ FFT_size 128) 14*148 flatten to torch.Size([2072])
-
+        #[2072]->[2078]
         RX_Samples = apply_multipath_channel(TX_Samples, n_taps=self.n_taps, max_delay=self.max_delay, random_start=False, repeats=0, SINR_s=ch_SINR, leading_zeros=self.leading_zeros)
 
         #Create groundtruth labels:
@@ -67,11 +67,11 @@ class OFDMDataset(Dataset):
         
         batch={}
         if self.training:
-            OFDM_demod = self.receiver_preprocessing(RX_Samples) #[14, 128]
+            OFDM_demod = self.receiver_preprocessing(RX_Samples) #[2078]->[14, 128]
             pdsch_symbols_map = self.NNpreprocessing(OFDM_demod) #[14, 128] ->[14, 71]
             feature_2d = self.create_2Dfeature(pdsch_symbols_map, simple_stack=False)
-            batch['feature_2d']= feature_2d #[x, 14, 71]
-        batch['samples']=RX_Samples
+            batch['feature_2d']= feature_2d #[4, 14, 71]
+        batch['samples']=RX_Samples #[2078]
         batch['labels']=TTI_3d #[14, 71, 6]
         return batch #RX_Samples, TTI_3d
     
@@ -251,7 +251,11 @@ def trainmain():
     S = 14  # Number of symbols
     Sp = 2  # Pilot symbol, 0 for none
     F = 72  # Number of subcarriers, including DC
-    train_data = OFDMDataset(Qm=Qm, S=S, Sp=Sp, F=F, ch_SINR_min=5, ch_SINR_max=50, training=True)
+    #5-50 0331exp
+    #-10 20 exp0201
+    #-10 40 exp0201b
+    # exp0201c ResModel_simple1_2D
+    train_data = OFDMDataset(Qm=Qm, S=S, Sp=Sp, F=F, ch_SINR_min=-10, ch_SINR_max=40, training=True)
     onebatch = train_data[0]
 
     batch_size = 16
@@ -273,7 +277,8 @@ def trainmain():
     print(f"Feature batch shape: {feature_2d.size()}") #[16, 4, 14, 71]
     print(f"Labels batch shape: {data_labels.size()}") #[16, 14, 71, 6]
 
-    model =  ResModel_2D(num_bits_per_symbol=Qm, num_ch=4, S=S, F=F).to(device)
+    #model =  ResModel_2D(num_bits_per_symbol=Qm, num_ch=4, S=S, F=F).to(device)
+    model = ResModel_simple1_2D(num_bits_per_symbol=Qm, num_ch=4, S=S, F=F).to(device)
 
     multiprocessor = MultiReceiver(Qm=Qm, S=S, Sp=Sp, F=F)
 
@@ -292,7 +297,7 @@ def trainmain():
     criterion = nn.BCELoss()
 
     saved_model_path = "" #'data/rx_model_168.pth'
-    trainoutput=os.path.join('output','exp0131')
+    trainoutput=os.path.join('output','exp0201c')
     os.makedirs(trainoutput, exist_ok=True)
     print("Trainoutput folder:", trainoutput)
     performance_csv_path = os.path.join(trainoutput, 'performance.csv')#'output/performance_res2d2.csv'

@@ -11,6 +11,7 @@ class ResidualBlock(nn.Module):
     def __init__(self, S = 14, F = 72):
         super(ResidualBlock, self).__init__()
 
+        #https://pytorch.org/docs/stable/generated/torch.nn.LayerNorm.html
         self.layer_norm_1 = nn.LayerNorm(normalized_shape=(S,F-1))
         self.conv2d_1 = nn.Conv2d(in_channels=128, out_channels=128, kernel_size=(3, 3), padding='same', bias=False)
 
@@ -109,4 +110,45 @@ class ResModel_2D(nn.Module):
         z = z.permute(0,2, 3, 1) #[16, 14, 71, 6]
         z = nn.Sigmoid()(z) #[16, 14, 71, 6]
 
+        return z
+
+class ResModel_simple1_2D(nn.Module):
+
+    def __init__(self, num_bits_per_symbol, num_ch=4, S = 14, F = 72):
+        super(ResModel_simple1_2D, self).__init__()
+
+        # Input convolution
+        #https://pytorch.org/docs/stable/generated/torch.nn.Conv2d.html (N, C_in, H, W) => (N, C_out, H, W)
+        self.layer_norm = nn.LayerNorm([128, S, F-1])
+        self.input_conv2d = nn.Conv2d(in_channels=num_ch, out_channels=128, kernel_size=(1, 1), padding='same')
+        # Output conv
+        self.output_conv2d = nn.Conv2d(in_channels=128, out_channels=num_bits_per_symbol, kernel_size=(3, 3), padding='same')
+        self.activation = nn.ReLU()
+        self.linear=nn.Linear(in_features=6, out_features=6)
+
+        # Residual blocks
+        self.res_block_1 = ResidualBlock(S = S, F = F)
+        self.res_block_2 = ResidualBlock(S = S, F = F)
+        self.res_block_3 = ResidualBlock(S = S, F = F)
+        self.res_block_4 = ResidualBlock(S = S, F = F)
+        self.res_block_5 = ResidualBlock(S = S, F = F)
+
+    def forward(self, inputs):
+        y = inputs #[16, 4, 14, 71]
+        z = self.input_conv2d(y) #[16, 128, 14, 71]
+        z = self.layer_norm(z)
+        z = self.activation(z)
+
+        # Residual blocks
+        z = self.res_block_1(z) #[16, 128, 14, 71]
+        z = self.res_block_2(z) #[16, 128, 14, 71]
+        z = self.res_block_3(z) #[16, 128, 14, 71]
+        z = self.res_block_4(z)
+        z = self.res_block_5(z) #[16, 128, 14, 71]
+        z = self.output_conv2d(z) #[16, 6, 14, 71]
+        
+        # Reshape 
+        z = z.permute(0,2, 3, 1) #[16, 14, 71, 6]
+        z = self.linear(z) #[16, 14, 71, 6]
+        z = nn.Sigmoid()(z) #[16, 14, 71, 6]
         return z
