@@ -55,7 +55,7 @@ def testwave2vec():
     configuration.num_hidden_layers =1
     encoder = Wav2Vec2Encoder(configuration)
 
-    #[1, 4, 14, 71]
+    #feature_2d [1, 4, 14, 71]
     encoder_outputs = encoder(
             hidden_states, #[1, 270, 768] 
         ) #only one element: last_hidden_state
