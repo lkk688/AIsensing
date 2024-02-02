@@ -160,7 +160,7 @@ class MyWave2vec(nn.Module):
     def __init__(self, num_bits_per_symbol, num_ch=4, S = 14, F = 72):
         super(MyWave2vec, self).__init__()
         configuration = Wav2Vec2Config()
-        configuration.num_hidden_layers =1
+        configuration.num_hidden_layers =3
         #print(configuration.hidden_size) #768
         configuration.hidden_size = 12*4 #head=12
         self.encoder = Wav2Vec2Encoder(configuration)

@@ -298,7 +298,7 @@ def trainmain():
     criterion = nn.BCELoss()
 
     saved_model_path = "" #'data/rx_model_168.pth'
-    trainoutput=os.path.join('output','exp0202a')
+    trainoutput=os.path.join('output','exp0202b')
     os.makedirs(trainoutput, exist_ok=True)
     print("Trainoutput folder:", trainoutput)
     performance_csv_path = os.path.join(trainoutput, 'performance.csv')#'output/performance_res2d2.csv'
