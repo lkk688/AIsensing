@@ -2,7 +2,7 @@
 # Import TensorFlow and NumPy
 import tensorflow as tf
 # Avoid warnings from TensorFlow
-#tf.get_logger().setLevel('ERROR')
+tf.get_logger().setLevel('ERROR')
 import numpy as np
 
 # For plotting
@@ -269,6 +269,16 @@ def show(points, num_bits_per_symbol, labels=True, figsize=(7,7)):
             )
     return fig
 
+def plotcomplex(y):
+    plt.figure(figsize=(8,8))
+    plt.axes().set_aspect(1)
+    plt.grid(True)
+    plt.title('Channel output')
+    plt.xlabel('Real Part')
+    plt.ylabel('Imaginary Part')
+    #plt.scatter(tf.math.real(y), tf.math.imag(y))
+    plt.scatter(np.real(y), np.imag(y))
+    plt.tight_layout()
 
 def BinarySource(shape):
     """BinarySource(dtype=tf.float32, seed=None, **kwargs)
@@ -419,15 +429,17 @@ class MyDemapper:
         
         # Reshape constellation points to [1,...1,num_points]
         #points_shape = [1]*y.shape.rank + self.points.shape
-        points_shape = [1]*len(y.shape) +list(points.shape) #[1,1]+[4] = [1, 1, 4]
+        points_shape = [1]*len(y.shape) +list(self.points.shape) #[1,1]+[4] = [1, 1, 4]
         #points = tf.reshape(self.constellation.points, points_shape)
-        points_reshape =np.reshape(points, points_shape) #(1, 1, 4)
+        points_reshape =np.reshape(self.points, points_shape) #(1, 1, 4)
 
         # Compute squared distances from y to all points
         # shape [...,n,num_points]
         #squared_dist = tf.pow(tf.abs(tf.expand_dims(y, axis=-1) - points_reshape), 2)
         ynew=np.expand_dims(y, axis=-1) #(64, 512, 1)
-        squared_dist=((ynew-points_reshape)**2) #(64, 512, 4)
+        #squared_dist=((ynew-points_reshape)**2) #(64, 512, 4)
+        dist = np.abs(ynew-points_reshape) #(64, 512, 4) float32
+        squared_dist = dist **2
         
         # Compute exponents
         exponents = -squared_dist/no
@@ -436,12 +448,82 @@ class MyDemapper:
             llr = self._logits2llrs([exponents, prior])
         else:
             exponents = tf.convert_to_tensor(exponents)
-            llr = self._logits2llrs(exponents)
-        return llr
+            llr = self._logits2llrs(exponents) #(64, 512, 2)
+        
+        # Reshape LLRs to [...,n*num_bits_per_symbol]
+        print(tf.shape(y)) #[64, 512]
+        print(tf.shape(y)[:-1]) # [64]
+        print(y.shape[-1]) #512
+        out_shape = tf.concat([tf.shape(y)[:-1],
+                               [y.shape[-1] * \
+                                self.num_bits_per_symbol]], 0)
+        llr_reshaped = tf.reshape(llr, out_shape) #(64, 1024)
 
-from sionna_tf import Demapper, SymbolLogits2LLRs
+        return llr_reshaped
 
-if __name__ == '__main__':
+def calculate_BER(bits, bits_est):
+    errors = (bits != bits_est).sum()
+    N = len(bits.flatten())
+    BER = 1.0 * errors / N
+    # error_count = torch.sum(bits_est != bits.flatten()).float()  # Count of unequal bits
+    # error_rate = error_count / bits_est.numel()  # Error rate calculation
+    # BER = torch.round(error_rate * 1000) / 1000  # Round to 3 decimal places
+    return BER
+
+class UncodedSystemAWGN:
+    def __init__(self, num_bits_per_symbol, BATCH_SIZE=64, Blocklength = 1024, constellation_type="qam", demapping_method="app", data_type=np.complex64):
+        self.points = CreateConstellation(constellation_type, num_bits_per_symbol)
+        print(self.points.shape) #(4,) complex64
+        self.shape = ([BATCH_SIZE, Blocklength])# Blocklength [64, 1024]
+        self.constellation_type = constellation_type
+        self.num_bits_per_symbol = num_bits_per_symbol
+        self.data_type = data_type
+        self.demapper = MyDemapper("app", constellation_type=constellation_type, num_bits_per_symbol=num_bits_per_symbol)
+
+    
+    def process(self, ebno_db=10.0):
+        bits = BinarySource(self.shape)
+        print("Shape of bits: ", bits.shape) #(64, 1024)
+    
+        mapper=Mapper(constellation_type="qam", num_bits_per_symbol=2)
+        x=mapper.create_symbol(bits) #(64, 512) complex64
+
+        n0=ebnodb2no(ebno_db=ebno_db, num_bits_per_symbol=self.num_bits_per_symbol, coderate=1.0) #scalar 0.05
+
+        noise=complex_normal(x.shape, 1.0) #(64, 512) complex128
+        #print(noise.dtype)
+        noise = noise.astype(self.data_type)
+        noise *= np.sqrt(n0) #tf.cast(tf.sqrt(n0), noise.dtype)
+        y=x+noise #(64, 512)
+
+        llr = self.demapper.demap([y, n0])
+        #print("Shape of llr: ", llr.shape) #(64, 1024)
+        b_hat = hard_decisions(llr, tf.int32) #(64, 1024) 0,1
+        ber = calculate_BER(bits, b_hat.numpy())
+        print(ber)
+        return ber
+    
+    def simulation(self, EBN0_DB_MIN=0, EBN0_DB_MAX=20):
+        ebno_dbs=np.linspace(EBN0_DB_MIN, EBN0_DB_MAX, 20)
+        BER=[]
+        for enbo in ebno_dbs:
+            ber=self.process(enbo)
+            BER.append(ber)
+        
+        plt.plot(ebno_dbs, BER, 'bo', ebno_dbs, BER, 'k')
+        plt.axis([0, 10, 1e-6, 0.1])
+        plt.xscale('linear')
+        plt.yscale('log')
+        plt.xlabel('EbNo(dB)')
+        plt.ylabel('BER')
+        plt.grid(True)
+        plt.title('BPSK Modulation')
+        plt.show()
+
+
+from sionna_tf import Demapper, SymbolLogits2LLRs, hard_decisions, count_errors, count_block_errors
+
+def test():
     data_type = np.complex64# Complex64 number (real and imaginary parts are float32)
     NUM_BITS_PER_SYMBOL = 2 # QPSK
     #constellation = sn.mapping.Constellation("qam", NUM_BITS_PER_SYMBOL)
@@ -457,14 +539,15 @@ if __name__ == '__main__':
     print("Shape of bits: ", bits.shape) #(64, 1024)
 
     mapper=Mapper(constellation_type="qam", num_bits_per_symbol=2)
-    signal_symbol=mapper.create_symbol(bits) #(64, 512) complex64
-
-    noise=complex_normal(signal_symbol.shape, 1.0) #(64, 512) complex128
-    print(noise.dtype)
-    noise = noise.astype(data_type)
-    y=signal_symbol+noise #(64, 512)
+    x=mapper.create_symbol(bits) #(64, 512) complex64
 
     n0=ebnodb2no(ebno_db=10.0, num_bits_per_symbol=NUM_BITS_PER_SYMBOL, coderate=1.0) #scalar 0.05
+
+    noise=complex_normal(x.shape, 1.0) #(64, 512) complex128
+    print(noise.dtype)
+    noise = noise.astype(data_type)
+    noise *= np.sqrt(n0) #tf.cast(tf.sqrt(n0), noise.dtype)
+    y=x+noise #(64, 512)
 
     # The demapper uses the same constellation object as the mapper
     #demapper = Demapper("app", num_bits_per_symbol=NUM_BITS_PER_SYMBOL, points=points) 
@@ -473,4 +556,33 @@ if __name__ == '__main__':
 
     #y_tensor = tf.convert_to_tensor(y)
     #llr = demapper([y, n0])
-    print("Shape of llr: ", llr.shape)
+    print("Shape of llr: ", llr.shape) #(64, 1024)
+
+    num_samples = 8 # how many samples shall be printed
+    num_symbols = int(num_samples/NUM_BITS_PER_SYMBOL)
+    print(f"First {num_samples} transmitted bits: {bits[0,:num_samples]}")
+    print(f"First {num_symbols} transmitted symbols: {np.round(x[0,:num_symbols], 2)}")
+    print(f"First {num_symbols} received symbols: {np.round(y[0,:num_symbols], 2)}")
+    print(f"First {num_samples} demapped llrs: {np.round(llr[0,:num_samples], 2)}") #positive is 1, negative is 0
+
+    plotcomplex(y)
+    b_hat = hard_decisions(llr, tf.int32) #(64, 1024) 0,1
+
+
+    ber = calculate_BER(bits, b_hat.numpy())
+    print(ber)
+
+    # count errors
+    b = tf.convert_to_tensor(bits)  #(64, 1024)
+    bit_e = count_errors(b, b_hat)
+    print(bit_e)
+    block_e = count_block_errors(b, b_hat)
+    print(block_e)
+
+    llr_np = llr.numpy() 
+
+
+if __name__ == '__main__':
+    simulate = UncodedSystemAWGN(num_bits_per_symbol=2)
+    ber = simulate.process(ebno_db=10.0)
+    simulate.simulation()

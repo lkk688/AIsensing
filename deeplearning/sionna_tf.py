@@ -200,16 +200,16 @@ class SymbolLogits2LLRs(Layer):
         self._hard_out = hard_out
         self._num_bits_per_symbol = num_bits_per_symbol
         self._with_prior = with_prior
-        num_points = int(2**num_bits_per_symbol)
+        num_points = int(2**num_bits_per_symbol) #4
 
         # Array composed of binary representations of all symbols indices
-        a = np.zeros([num_points, num_bits_per_symbol])
+        a = np.zeros([num_points, num_bits_per_symbol]) #4,2, each symbol map to 2 bits, total 4 symbols
         for i in range(0, num_points):
             a[i,:] = np.array(list(np.binary_repr(i, num_bits_per_symbol)),
                               dtype=np.int16)
 
         # Compute symbol indices for which the bits are 0 or 1
-        c0 = np.zeros([int(num_points/2), num_bits_per_symbol])
+        c0 = np.zeros([int(num_points/2), num_bits_per_symbol]) #2,2
         c1 = np.zeros([int(num_points/2), num_bits_per_symbol])
         for i in range(num_bits_per_symbol-1,-1,-1):
             c0[:,i] = np.where(a[:,i]==0)[0]
@@ -240,7 +240,7 @@ class SymbolLogits2LLRs(Layer):
             logits = inputs
 
         # Compute exponents
-        exponents = logits #(64, 512, 4) tf complex
+        exponents = logits #(64, 512, 4) tf float32
 
         # Gather exponents for all bits
         # shape [...,n,num_points/2,num_bits_per_symbol]
@@ -273,7 +273,10 @@ class SymbolLogits2LLRs(Layer):
             llr = self._reduce(exp_ps1 + exp1, axis=-2)\
                     - self._reduce(exp_ps0 + exp0, axis=-2)
         else:
-            llr = self._reduce(exp1, axis=-2) - self._reduce(exp0, axis=-2)
+            #llr = self._reduce(exp1, axis=-2) - self._reduce(exp0, axis=-2)
+            reduce1=self._reduce(exp1, axis=-2) #(64, 512, 2)
+            reduce2=self._reduce(exp0, axis=-2) #(64, 512, 2)
+            llr = reduce1-reduce2
 
         if self._hard_out:
             return hard_decisions(llr)
@@ -465,3 +468,197 @@ class Demapper(Layer):
         llr_reshaped = tf.reshape(llr, out_shape)
 
         return llr_reshaped
+    
+def hard_decisions(llr, datatype):
+    """Transforms LLRs into hard decisions.
+
+    Positive values are mapped to :math:`1`.
+    Nonpositive values are mapped to :math:`0`.
+
+    Input
+    -----
+    llr : any non-complex tf.DType
+        Tensor of LLRs.
+
+    Output
+    ------
+    : Same shape and dtype as ``llr``
+        The hard decisions.
+    """
+    zero = tf.constant(0, dtype=llr.dtype)
+
+    #return tf.cast(tf.math.greater(llr, zero), dtype=llr.dtype)
+    return tf.cast(tf.math.greater(llr, zero), dtype=datatype)
+
+from tensorflow.keras.metrics import Metric
+class BitErrorRate(Metric):
+    """BitErrorRate(name="bit_error_rate", **kwargs)
+
+    Computes the average bit error rate (BER) between two binary tensors.
+
+    This class implements a Keras metric for the bit error rate
+    between two tensors of bits.
+
+    Input
+    -----
+        b : tf.float32
+            A tensor of arbitrary shape filled with ones and
+            zeros.
+
+        b_hat : tf.float32
+            A tensor of the same shape as ``b`` filled with
+            ones and zeros.
+
+    Output
+    ------
+        : tf.float32
+            A scalar, the BER.
+    """
+    def __init__(self, name="bit_error_rate", **kwargs):
+        super().__init__(name, **kwargs)
+        self.ber = self.add_weight(name="ber",
+                                   initializer="zeros",
+                                   dtype=tf.float64)
+        self.counter = self.add_weight(name="counter",
+                                       initializer="zeros",
+                                       dtype=tf.float64)
+
+    def update_state(self, b, b_hat):
+        self.counter.assign_add(1)
+        self.ber.assign_add(compute_ber(b, b_hat))
+
+    def result(self):
+        #cast results of computer_ber for compatibility with tf.float32
+        return tf.cast(tf.math.divide_no_nan(self.ber, self.counter),
+                       dtype=tf.float32)
+
+    def reset_state(self):
+        self.ber.assign(0.0)
+        self.counter.assign(0.0)
+
+def compute_ber(b, b_hat):
+    """Computes the bit error rate (BER) between two binary tensors.
+
+    Input
+    -----
+        b : tf.float32
+            A tensor of arbitrary shape filled with ones and
+            zeros.
+
+        b_hat : tf.float32
+            A tensor of the same shape as ``b`` filled with
+            ones and zeros.
+
+    Output
+    ------
+        : tf.float64
+            A scalar, the BER.
+    """
+    ber = tf.not_equal(b, b_hat)
+    ber = tf.cast(ber, tf.float64) # tf.float64 to suport large batch-sizes
+    return tf.reduce_mean(ber)
+
+def compute_ser(s, s_hat):
+    """Computes the symbol error rate (SER) between two integer tensors.
+
+    Input
+    -----
+        s : tf.int
+            A tensor of arbitrary shape filled with integers indicating
+            the symbol indices.
+
+        s_hat : tf.int
+            A tensor of the same shape as ``s`` filled with integers indicating
+            the estimated symbol indices.
+
+    Output
+    ------
+        : tf.float64
+            A scalar, the SER.
+    """
+    ser = tf.not_equal(s, s_hat)
+    ser = tf.cast(ser, tf.float64) # tf.float64 to suport large batch-sizes
+    return tf.reduce_mean(ser)
+
+def compute_bler(b, b_hat):
+    """Computes the block error rate (BLER) between two binary tensors.
+
+    A block error happens if at least one element of ``b`` and ``b_hat``
+    differ in one block. The BLER is evaluated over the last dimension of
+    the input, i. e., all elements of the last dimension are considered to
+    define a block.
+
+    This is also sometimes referred to as `word error rate` or `frame error
+    rate`.
+
+    Input
+    -----
+        b : tf.float32
+            A tensor of arbitrary shape filled with ones and
+            zeros.
+
+        b_hat : tf.float32
+            A tensor of the same shape as ``b`` filled with
+            ones and zeros.
+
+    Output
+    ------
+        : tf.float64
+            A scalar, the BLER.
+    """
+    bler = tf.reduce_any(tf.not_equal(b, b_hat), axis=-1)
+    bler = tf.cast(bler, tf.float64) # tf.float64 to suport large batch-sizes
+    return tf.reduce_mean(bler)
+
+def count_errors(b, b_hat):
+    """Counts the number of bit errors between two binary tensors.
+
+    Input
+    -----
+        b : tf.float32
+            A tensor of arbitrary shape filled with ones and
+            zeros.
+
+        b_hat : tf.float32
+            A tensor of the same shape as ``b`` filled with
+            ones and zeros.
+
+    Output
+    ------
+        : tf.int64
+            A scalar, the number of bit errors.
+    """
+    errors = tf.not_equal(b,b_hat) #(64, 1024) bool
+    errors = tf.cast(errors, tf.int64)
+    return tf.reduce_sum(errors)
+
+def count_block_errors(b, b_hat):
+    """Counts the number of block errors between two binary tensors.
+
+    A block error happens if at least one element of ``b`` and ``b_hat``
+    differ in one block. The BLER is evaluated over the last dimension of
+    the input, i. e., all elements of the last dimension are considered to
+    define a block.
+
+    This is also sometimes referred to as `word error rate` or `frame error
+    rate`.
+
+    Input
+    -----
+        b : tf.float32
+            A tensor of arbitrary shape filled with ones and
+            zeros.
+
+        b_hat : tf.float32
+            A tensor of the same shape as ``b`` filled with
+            ones and zeros.
+
+    Output
+    ------
+        : tf.int64
+            A scalar, the number of block errors.
+    """
+    errors = tf.reduce_any(tf.not_equal(b,b_hat), axis=-1) #(64,)
+    errors = tf.cast(errors, tf.int64)
+    return tf.reduce_sum(errors)
+
