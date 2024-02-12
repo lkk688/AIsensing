@@ -280,7 +280,7 @@ def plotcomplex(y):
     plt.scatter(np.real(y), np.imag(y))
     plt.tight_layout()
 
-def BinarySource(shape):
+def BinarySource(shape, backend='numpy'):
     """BinarySource(dtype=tf.float32, seed=None, **kwargs)
 
     Layer generating random binary tensors.
@@ -305,8 +305,12 @@ def BinarySource(shape):
     : ``shape``, ``dtype``
         Tensor filled with random binary values.
     """
-    #tf.cast(tf.random.uniform(inputs, 0, 2, tf.int32), dtype=super().dtype)
-    return np.random.randint(2, size=shape)
+    if backend == "numpy":
+        
+        return np.random.randint(2, size=shape).astype(np.float32)
+    elif backend == "tf":
+        return tf.cast(tf.random.uniform(shape, 0, 2, tf.int32), tf.float32)
+    
     #https://numpy.org/doc/stable/reference/random/generated/numpy.random.randint.html#numpy.random.randint
 
 def complex_normal(shape, var=1.0):
@@ -365,6 +369,7 @@ class Mapper:
         # Convert the last dimension to an integer
         int_rep = reinputs_reshaped * self.binary_base #(64, 512, 2)
         int_rep = np.sum(int_rep, axis=-1) #(64, 512)
+        int_rep = int_rep.astype(np.int32)
         print(int_rep.shape)
         # Map integers to constellation symbols
         #x = tf.gather(self.points, int_rep, axis=0)
@@ -478,7 +483,7 @@ class UncodedSystemAWGN:
         self.constellation_type = constellation_type
         self.num_bits_per_symbol = num_bits_per_symbol
         self.data_type = data_type
-        self.demapper = MyDemapper("app", constellation_type=constellation_type, num_bits_per_symbol=num_bits_per_symbol)
+        self.demapper = MyDemapper(demapping_method, constellation_type=constellation_type, num_bits_per_symbol=num_bits_per_symbol)
 
     
     def process(self, ebno_db=10.0):
@@ -520,6 +525,71 @@ class UncodedSystemAWGN:
         plt.title('BPSK Modulation')
         plt.show()
 
+class CodedSystemAWGN:
+    def __init__(self, num_bits_per_symbol, BATCH_SIZE=64, n = 1024, constellation_type="qam", demapping_method="app", coderate=0.5, data_type=np.complex64):
+        self.points = CreateConstellation(constellation_type, num_bits_per_symbol)
+        print(self.points.shape) #(4,) complex64
+        self.constellation_type = constellation_type
+        self.num_bits_per_symbol = num_bits_per_symbol
+        self.data_type = data_type
+        self.mapper = Mapper(constellation_type=constellation_type, num_bits_per_symbol=num_bits_per_symbol)
+        self.demapper = MyDemapper(demapping_method, constellation_type=constellation_type, num_bits_per_symbol=num_bits_per_symbol)
+        self.n = n
+        self.k = int(n*coderate)
+        self.coderate = coderate
+        self.shape = ([BATCH_SIZE, self.k])# Blocklength [64, 1024]
+        self.encoder = LDPC5GEncoder(self.k, self.n)
+        self.decoder = LDPC5GDecoder(self.encoder, hard_out=True)
+    
+    def process(self, ebno_db=10.0, test_flag=True):
+        bits = BinarySource(self.shape)
+        print("Shape of bits: ", bits.shape) #(64, 1024)
+        codewords = self.encoder(bits)#numpy to tf.tensor float32
+    
+        x=self.mapper.create_symbol(codewords) #(64, 512) complex64
+
+        n0=ebnodb2no(ebno_db=ebno_db, num_bits_per_symbol=self.num_bits_per_symbol, coderate=1.0) #scalar 0.05
+
+        noise=complex_normal(x.shape, 1.0) #(64, 512) complex128
+        #print(noise.dtype)
+        noise = noise.astype(self.data_type)
+        noise *= np.sqrt(n0) #tf.cast(tf.sqrt(n0), noise.dtype)
+        y=x+noise #(64, 512)
+
+        llr = self.demapper.demap([y, n0])
+        #print("Shape of llr: ", llr.shape) #(64, 1024)
+        #b_hat = hard_decisions(llr, tf.int32) #(64, 1024) 0,1
+
+        b_hat = self.decoder(llr)
+        if test_flag == True:
+            num_samples = 8 # how many samples shall be printed
+            num_symbols = int(num_samples/self.num_bits_per_symbol)
+            print(f"First {num_samples} original bits: {bits[0,:num_samples]}")
+            print(f"First {num_samples} transmitted symbol: {x[0,:num_samples]}")
+            print(f"First {num_samples} demapped llrs: {np.round(llr[0,:num_samples], 2)}") #positive is 1, negative is 0
+            print(f"First {num_samples} decoded bits: {b_hat[0,:num_samples]}")
+        
+        ber = calculate_BER(bits, b_hat.numpy())
+        print(ber)
+        return ber
+    
+    def simulation(self, EBN0_DB_MIN=-20, EBN0_DB_MAX=20):
+        ebno_dbs=np.linspace(EBN0_DB_MIN, EBN0_DB_MAX, 20)
+        BER=[]
+        for enbo in ebno_dbs:
+            ber=self.process(enbo, test_flag=False)
+            BER.append(ber)
+        
+        plt.plot(ebno_dbs, BER, 'bo', ebno_dbs, BER, 'k')
+        #plt.axis([0, 10, 1e-6, 0.1])
+        plt.xscale('linear')
+        plt.yscale('log')
+        plt.xlabel('EbNo(dB)')
+        plt.ylabel('BER')
+        plt.grid(True)
+        plt.title('BPSK Modulation')
+        plt.show()
+        return ebno_dbs, BER
 
 from sionna_tf import Demapper, SymbolLogits2LLRs, hard_decisions, count_errors, count_block_errors
 
@@ -581,8 +651,57 @@ def test():
 
     llr_np = llr.numpy() 
 
+from ldpc.encoding import LDPC5GEncoder
+from ldpc.decoding import LDPC5GDecoder
+def testencoding():
+    #k = 12
+    #n = 20
+    BATCH_SIZE = 10 # samples per scenario
+    num_basestations = 4 
+    num_users = 5 # users per basestation
+    n = 1000 # codeword length per transmitted codeword
+    coderate = 0.5 # coderate
+    k = int(coderate * n) # number of info bits per codeword
+
+    # instantiate a new encoder for codewords of length n
+    encoder = LDPC5GEncoder(k, n)
+
+    decoder = LDPC5GDecoder(encoder, hard_out=True)
+    # the decoder must be linked to the encoder (to know the exact code parameters used for encoding)
+    # decoder = LDPC5GDecoder(encoder, hard_out=True, # binary output or provide soft-estimates
+    #                                 return_infobits=True, # or also return (decoded) parity bits
+    #                                 num_iter=20, # number of decoding iterations
+    #                                 cn_type="boxplus-phi") # also try "minsum" decoding
+
+    #BATCH_SIZE = 1 # one codeword in parallel
+    #u = binary_source([BATCH_SIZE, k])
+    #u = BinarySource([BATCH_SIZE, k], backend='tf')
+    # draw random bits to encode
+    u = BinarySource([BATCH_SIZE, num_basestations, num_users, k], backend='tf')
+    print("Shape of u: ", u.shape) #(10, 4, 5, 500)
+    #print("Input bits are: \n", u.numpy())
+
+    # We can immediately encode u for all users, basetation and samples 
+    # This all happens with a single line of code
+    c = encoder(u)
+    print("Shape of c: ", c.shape) #(10, 4, 5, 1000)
+    #print("Encoded bits are: \n", c.numpy())
+
+    print("Total number of processed bits: ", np.prod(c.shape)) #200000
+
+    d = decoder(c)
+    print("Shape of d: ", d.shape) #(10, 4, 5, 500)
+
+    ber = calculate_BER(u.numpy(), d.numpy())
+    print(ber)
 
 if __name__ == '__main__':
-    simulate = UncodedSystemAWGN(num_bits_per_symbol=2)
-    ber = simulate.process(ebno_db=10.0)
-    simulate.simulation()
+
+    testencoding()
+
+    #simulate = UncodedSystemAWGN(num_bits_per_symbol=2)
+    simulate = CodedSystemAWGN(num_bits_per_symbol=2, BATCH_SIZE=2000, n = 2048)
+    ber = simulate.process(ebno_db=-10)
+    ebno_dbs, BER = simulate.simulation()
+    print(ebno_dbs)
+    print(BER)
