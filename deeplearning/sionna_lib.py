@@ -484,14 +484,14 @@ class UncodedSystemAWGN:
         self.num_bits_per_symbol = num_bits_per_symbol
         self.data_type = data_type
         self.demapper = MyDemapper(demapping_method, constellation_type=constellation_type, num_bits_per_symbol=num_bits_per_symbol)
-
+        self.mapper=Mapper(constellation_type=constellation_type, num_bits_per_symbol=num_bits_per_symbol)
     
     def process(self, ebno_db=10.0):
         bits = BinarySource(self.shape)
         print("Shape of bits: ", bits.shape) #(64, 1024)
     
-        mapper=Mapper(constellation_type="qam", num_bits_per_symbol=2)
-        x=mapper.create_symbol(bits) #(64, 512) complex64
+        
+        x=self.mapper.create_symbol(bits) #(64, 512) complex64
 
         n0=ebnodb2no(ebno_db=ebno_db, num_bits_per_symbol=self.num_bits_per_symbol, coderate=1.0) #scalar 0.05
 
@@ -695,7 +695,65 @@ def testencoding():
     ber = calculate_BER(u.numpy(), d.numpy())
     print(ber)
 
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset
+from torch.utils.data import DataLoader
+class ComplexDataset(Dataset):
+    def __init__(self, num_bits_per_symbol, BATCH_SIZE=64, Blocklength = 1024, DB_MIN=-10, DB_MAX=20, totaldbs=2000, constellation_type="qam", data_type=np.complex64):
+        self.points = CreateConstellation(constellation_type, num_bits_per_symbol)
+        print(self.points.shape) #(4,) complex64
+        self.shape = ([BATCH_SIZE, Blocklength])# Blocklength [64, 1024]
+        self.constellation_type = constellation_type
+        self.num_bits_per_symbol = num_bits_per_symbol
+        self.data_type = data_type
+        self.mapper=Mapper(constellation_type=constellation_type, num_bits_per_symbol=num_bits_per_symbol)
+
+        ebno_dbs=np.linspace(DB_MIN, DB_MAX, totaldbs)
+        np.random.shuffle(ebno_dbs)
+        self.ebno_dbs = ebno_dbs
+    
+    def __getitem__(self, index):
+        ebno_db = self.ebno_dbs[index]
+
+        bits = BinarySource(self.shape)
+        print("Shape of bits: ", bits.shape) #(64, 1024)
+
+        x=self.mapper.create_symbol(bits) #(64, 512) complex64
+
+        n0=ebnodb2no(ebno_db=ebno_db, num_bits_per_symbol=self.num_bits_per_symbol, coderate=1.0) #scalar 0.05
+        noise=complex_normal(x.shape, 1.0) #(64, 512) complex128
+        #print(noise.dtype)
+        noise = noise.astype(self.data_type)
+        noise *= np.sqrt(n0) 
+        y=x+noise #(64, 512)
+        signal_complex = torch.from_numpy(y)
+        return signal_complex
+    
+    def __len__(self):
+        return len(self.ebno_dbs)
+
+def test_dataset():
+    NUM_BITS_PER_SYMBOL = 2
+    BATCH_SIZE = 64
+    Blocklength = 1024
+    dataset = ComplexDataset(num_bits_per_symbol=NUM_BITS_PER_SYMBOL, BATCH_SIZE=BATCH_SIZE, Blocklength=Blocklength, DB_MIN=-10, DB_MAX=20, totaldbs=2000)
+    onesample = dataset[0] #
+    # train, validation and test split
+    train_size = int(0.8 * len(dataset)) 
+    val_size = len(dataset) - train_size
+    train_set, val_set= torch.utils.data.random_split(dataset, [train_size, val_size])
+
+    # dataloaders
+    train_loader = DataLoader(dataset=train_set, batch_size=BATCH_SIZE, shuffle=True, pin_memory=True, num_workers=4)
+    val_loader = DataLoader(dataset=val_set, batch_size=1, shuffle=True, pin_memory=True, num_workers=4)
+
+    onebatch = next(iter(train_loader))
+    print(onebatch.shape)#torch.Size([64, 64, 512])
+
 if __name__ == '__main__':
+
+    test_dataset()
 
     testencoding()
 
