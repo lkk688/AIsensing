@@ -751,6 +751,16 @@ def test_dataset():
     onebatch = next(iter(train_loader))
     print(onebatch.shape)#torch.Size([64, 64, 512])
 
+    #print the size and shape of the data
+    print('Train set size:', len(train_set))
+    print('Validation set size:', len(val_set))
+    print('Test set size:', len(dataset) - len(train_set) - len(val_set))
+
+    #print the first 10 elements of the train set
+    print('First 10 elements of the train set:')
+    for i in range(10):
+        print(train_set[i])
+
 if __name__ == '__main__':
 
     test_dataset()
