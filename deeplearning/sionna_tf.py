@@ -1592,23 +1592,23 @@ class PilotPattern():
             List of matplot figure objects showing each the pilot pattern
             from a specific transmitter and stream.
         """
-        mask = self.mask.numpy()
-        pilots = self.pilots.numpy()
+        mask = self.mask.numpy() #(1, 1, 14, 76)
+        pilots = self.pilots.numpy() #(1, 1, 152)
 
         if tx_ind is None:
-            tx_ind = range(0, self.num_tx)
+            tx_ind = range(0, self.num_tx) #range(0,1)
         elif not isinstance(tx_ind, list):
             tx_ind = [tx_ind]
 
         if stream_ind is None:
-            stream_ind = range(0, self.num_streams_per_tx)
+            stream_ind = range(0, self.num_streams_per_tx) #range(0,1)
         elif not isinstance(stream_ind, list):
             stream_ind = [stream_ind]
 
         figs = []
-        for i in tx_ind:
-            for j in stream_ind:
-                q = np.zeros_like(mask[0,0])
+        for i in tx_ind: #range(0,1)
+            for j in stream_ind: #range(0,1)
+                q = np.zeros_like(mask[0,0]) #(14, 76)
                 q[np.where(mask[i,j])] = (np.abs(pilots[i,j])==0) + 1
                 legend = ["Data", "Pilots", "Masked"]
                 fig = plt.figure()
@@ -1857,16 +1857,16 @@ class ResourceGrid():
                  dtype=tf.complex64):
         super().__init__()
         self._dtype = dtype
-        self._num_ofdm_symbols = num_ofdm_symbols
-        self._fft_size = fft_size
-        self._subcarrier_spacing = subcarrier_spacing
-        self._cyclic_prefix_length = int(cyclic_prefix_length)
-        self._num_tx = num_tx
-        self._num_streams_per_tx = num_streams_per_tx
-        self._num_guard_carriers = np.array(num_guard_carriers)
-        self._dc_null = dc_null
-        self._pilot_ofdm_symbol_indices = pilot_ofdm_symbol_indices
-        self.pilot_pattern = pilot_pattern
+        self._num_ofdm_symbols = num_ofdm_symbols #14
+        self._fft_size = fft_size #76
+        self._subcarrier_spacing = subcarrier_spacing #30000
+        self._cyclic_prefix_length = int(cyclic_prefix_length) #6
+        self._num_tx = num_tx #1
+        self._num_streams_per_tx = num_streams_per_tx #1
+        self._num_guard_carriers = np.array(num_guard_carriers) #(0,0)
+        self._dc_null = dc_null #False
+        self._pilot_ofdm_symbol_indices = pilot_ofdm_symbol_indices #[2,11]
+        self.pilot_pattern = pilot_pattern #'kronecker'
         self._check_settings()
 
     @property
@@ -2048,18 +2048,18 @@ class ResourceGrid():
             the resource elements of the corresponding resource grid.
             The type can be one of [0,1,2,3] as explained above.
         """
-        shape = [self._num_tx, self._num_streams_per_tx, self._num_ofdm_symbols]
-        gc_l = 2*tf.ones(shape+[self._num_guard_carriers[0]], tf.int32)
-        gc_r = 2*tf.ones(shape+[self._num_guard_carriers[1]], tf.int32)
-        dc   = 3*tf.ones(shape + [tf.cast(self._dc_null, tf.int32)], tf.int32)
-        mask = self.pilot_pattern.mask
-        split_ind = self.dc_ind-self._num_guard_carriers[0]
+        shape = [self._num_tx, self._num_streams_per_tx, self._num_ofdm_symbols] #[1,1,14]
+        gc_l = 2*tf.ones(shape+[self._num_guard_carriers[0]], tf.int32) #(1, 1, 14, 0)
+        gc_r = 2*tf.ones(shape+[self._num_guard_carriers[1]], tf.int32) #(1, 1, 14, 0)
+        dc   = 3*tf.ones(shape + [tf.cast(self._dc_null, tf.int32)], tf.int32) #(1, 1, 14, 0)
+        mask = self.pilot_pattern.mask #(1, 1, 14, 76)
+        split_ind = self.dc_ind-self._num_guard_carriers[0] #38-0=38
         rg_type = tf.concat([gc_l,                 # Left Guards
                              mask[...,:split_ind], # Data & pilots
                              dc,                   # DC
                              mask[...,split_ind:], # Data & pilots
                              gc_r], -1)            # Right guards
-        return rg_type
+        return rg_type #(1, 1, 14, 76) #38+38
 
     def show(self, tx_ind=0, tx_stream_ind=0):
         """Visualizes the resource grid for a specific transmitter and stream.
@@ -2078,7 +2078,7 @@ class ResourceGrid():
             A handle to a matplot figure object.
         """
         fig = plt.figure()
-        data = self.build_type_grid()[tx_ind, tx_stream_ind]
+        data = self.build_type_grid()[tx_ind, tx_stream_ind] #0,0 =>[14,76]
         cmap = colors.ListedColormap([[60/256,8/256,72/256],
                               [45/256,91/256,128/256],
                               [45/256,172/256,111/256],
@@ -2097,6 +2097,72 @@ class ResourceGrid():
         plt.xticks(range(0, data.shape[0]))
 
         return fig
+
+class ResourceGridMapper(Layer):
+    # pylint: disable=line-too-long
+    r"""ResourceGridMapper(resource_grid, dtype=tf.complex64, **kwargs)
+
+    Maps a tensor of modulated data symbols to a ResourceGrid.
+
+    This layer takes as input a tensor of modulated data symbols
+    and maps them together with pilot symbols onto an
+    OFDM :class:`~sionna.ofdm.ResourceGrid`. The output can be
+    converted to a time-domain signal with the
+    :class:`~sionna.ofdm.Modulator` or further processed in the
+    frequency domain.
+
+    Parameters
+    ----------
+    resource_grid : ResourceGrid
+        An instance of :class:`~sionna.ofdm.ResourceGrid`.
+
+    dtype : tf.Dtype
+        Datatype for internal calculations and the output dtype.
+        Defaults to `tf.complex64`.
+
+    Input
+    -----
+    : [batch_size, num_tx, num_streams_per_tx, num_data_symbols], tf.complex
+        The modulated data symbols to be mapped onto the resource grid.
+
+    Output
+    ------
+    : [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size], tf.complex
+        The full OFDM resource grid in the frequency domain.
+    """
+    def __init__(self, resource_grid, dtype=tf.complex64, **kwargs):
+        super().__init__(dtype=dtype, **kwargs)
+        self._resource_grid = resource_grid
+
+    def build(self, input_shape): # pylint: disable=unused-argument
+        """Precompute a tensor of shape
+        [num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size]
+        which is prefilled with pilots and stores indices
+        to scatter data symbols.
+        """
+        self._rg_type = self._resource_grid.build_type_grid()
+        self._pilot_ind = tf.where(self._rg_type==1)
+        self._data_ind = tf.where(self._rg_type==0)
+
+    def call(self, inputs):
+        # Map pilots on empty resource grid
+        pilots = flatten_last_dims(self._resource_grid.pilot_pattern.pilots, 3)
+        template = tf.scatter_nd(self._pilot_ind,
+                                 pilots,
+                                 self._rg_type.shape)
+        template = tf.expand_dims(template, -1)
+
+        # Broadcast the resource grid template to batch_size
+        batch_size = tf.shape(inputs)[0]
+        new_shape = tf.concat([tf.shape(template)[:-1], [batch_size]], 0)
+        template = tf.broadcast_to(template, new_shape)
+
+        # Flatten the inputs and put batch_dim last for scatter update
+        inputs = tf.transpose(flatten_last_dims(inputs, 3))
+        rg = tf.tensor_scatter_nd_update(template, self._data_ind, inputs)
+        rg = tf.transpose(rg, [4, 0, 1, 2, 3])
+
+        return rg
 
 #https://github.com/NVlabs/sionna/blob/main/sionna/mimo/stream_management.py
 class StreamManagement():
@@ -2127,8 +2193,8 @@ class StreamManagement():
                  num_streams_per_tx):
 
         super().__init__()
-        self._num_streams_per_tx = int(num_streams_per_tx)
-        self.rx_tx_association = rx_tx_association
+        self._num_streams_per_tx = int(num_streams_per_tx) #1
+        self.rx_tx_association = rx_tx_association #(1,1)
 
     @property
     def rx_tx_association(self):
@@ -2338,12 +2404,14 @@ class StreamManagement():
         # which they were transmitted.
         self._stream_ind = np.argsort(np.reshape(self._rx_stream_ids, [-1]))
 
+from ldpc.encoding import LDPC5GEncoder
+from ldpc.decoding import LDPC5GDecoder
 if __name__ == '__main__':
     # Define the number of UT and BS antennas
     NUM_UT = 1
     NUM_BS = 1
     NUM_UT_ANT = 1
-    NUM_BS_ANT = 4
+    NUM_BS_ANT = 1 #4
 
     # The number of transmitted streams is equal to the number of UT antennas
     # in both uplink and downlink
@@ -2351,6 +2419,10 @@ if __name__ == '__main__':
 
     RX_TX_ASSOCIATION = np.array([[1]])
 
+    # Instantiate a StreamManagement object
+    # This determines which data streams are determined for which receiver.
+    # In this simple setup, this is fairly easy. However, it can get more involved
+    # for simulations with many transmitters and receivers.
     STREAM_MANAGEMENT = StreamManagement(RX_TX_ASSOCIATION, NUM_STREAMS_PER_TX)
 
     RESOURCE_GRID = ResourceGrid( num_ofdm_symbols=14,
@@ -2363,5 +2435,40 @@ if __name__ == '__main__':
                                       pilot_ofdm_symbol_indices=[2,11])
     RESOURCE_GRID.show();
     RESOURCE_GRID.pilot_pattern.show();
+
+    rg = ResourceGrid(num_ofdm_symbols=14,
+                  fft_size=128,
+                  subcarrier_spacing=15e3,
+                  num_tx=1,
+                  num_streams_per_tx=1,
+                  cyclic_prefix_length=6,
+                  num_guard_carriers=[15,16],
+                  dc_null=True,
+                  pilot_pattern="kronecker",
+                  pilot_ofdm_symbol_indices=[2])
+    rg.show()
+
+    NUM_BITS_PER_SYMBOL = 2 # QPSK
+    CODERATE = 0.5
+
+    # Number of coded bits in a resource grid
+    n = int(RESOURCE_GRID.num_data_symbols*NUM_BITS_PER_SYMBOL)
+    # Number of information bits in a resource groud
+    k = int(n*CODERATE)
+
+    # The binary source will create batches of information bits
+    binary_source = BinarySource()
+
+    # The encoder maps information bits to coded bits
+    encoder = LDPC5GEncoder(k, n)
+
+    # The mapper maps blocks of information bits to constellation symbols
+    mapper = Mapper("qam", NUM_BITS_PER_SYMBOL)
+
+    # The resource grid mapper maps symbols onto an OFDM resource grid
+    rg_mapper = ResourceGridMapper(RESOURCE_GRID)
+
+    # Frequency domain channel
+    channel = OFDMChannel(CDL, RESOURCE_GRID, add_awgn=True, normalize_channel=True, return_channel=True)
 
 #https://nvlabs.github.io/sionna/examples/MIMO_OFDM_Transmissions_over_CDL.html
