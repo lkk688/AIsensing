@@ -3,6 +3,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras.layers import Layer
 import matplotlib.pyplot as plt
+from abc import ABC, abstractmethod
 
 def insert_dims(tensor, num_dims, axis=-1):
     """Adds multiple length-one dimensions to a tensor.
@@ -403,7 +404,7 @@ class Demapper(Layer):
     """
     def __init__(self,
                  demapping_method,
-                 points=None, #constellation
+                 constellation_type=None,
                  num_bits_per_symbol=None,
                  constellation=None,
                  hard_out=False,
@@ -415,14 +416,12 @@ class Demapper(Layer):
 
 
         # Create constellation object
-        # self._constellation = Constellation.create_or_check_constellation(
-        #                                                 constellation_type,
-        #                                                 num_bits_per_symbol,
-        #                                                 constellation,
-        #                                                 dtype=dtype)
-        #num_bits_per_symbol = self._constellation.num_bits_per_symbol
-        self.num_bits_per_symbol = num_bits_per_symbol
-        self.points = points
+        self._constellation = Constellation.create_or_check_constellation(
+                                                        constellation_type,
+                                                        num_bits_per_symbol,
+                                                        constellation,
+                                                        dtype=dtype)
+        num_bits_per_symbol = self._constellation.num_bits_per_symbol
 
         self._logits2llrs = SymbolLogits2LLRs(demapping_method,
                                               num_bits_per_symbol,
@@ -431,9 +430,9 @@ class Demapper(Layer):
                                               dtype.real_dtype,
                                               **kwargs)
 
-    # @property
-    # def constellation(self):
-    #     return self._constellation
+    @property
+    def constellation(self):
+        return self._constellation
 
     def call(self, inputs):
         if self._with_prior:
@@ -442,8 +441,8 @@ class Demapper(Layer):
             y, no = inputs
 
         # Reshape constellation points to [1,...1,num_points]
-        points_shape = [1]*y.shape.rank + self.points.shape
-        points = tf.reshape(self.points, points_shape)
+        points_shape = [1]*y.shape.rank + self.constellation.points.shape
+        points = tf.reshape(self.constellation.points, points_shape)
 
         # Compute squared distances from y to all points
         # shape [...,n,num_points]
@@ -2098,6 +2097,38 @@ class ResourceGrid():
 
         return fig
 
+def flatten_last_dims(tensor, num_dims=2):
+    """
+    Flattens the last `n` dimensions of a tensor.
+
+    This operation flattens the last ``num_dims`` dimensions of a ``tensor``.
+    It is a simplified version of the function ``flatten_dims``.
+
+    Args:
+        tensor : A tensor.
+        num_dims (int): The number of dimensions
+            to combine. Must be greater than or equal to two and less or equal
+            than the rank of ``tensor``.
+
+    Returns:
+        A tensor of the same type as ``tensor`` with ``num_dims``-1 lesser
+        dimensions, but the same number of elements.
+    """
+    msg = "`num_dims` must be >= 2"
+    tf.debugging.assert_greater_equal(num_dims, 2, msg)
+
+    msg = "`num_dims` must <= rank(`tensor`)"
+    tf.debugging.assert_less_equal(num_dims, tf.rank(tensor), msg)
+
+    if num_dims==len(tensor.shape):
+        new_shape = [-1]
+    else:
+        shape = tf.shape(tensor)
+        last_dim = tf.reduce_prod(tensor.shape[-num_dims:])
+        new_shape = tf.concat([shape[:-num_dims], [last_dim]], 0)
+
+    return tf.reshape(tensor, new_shape)
+
 class ResourceGridMapper(Layer):
     # pylint: disable=line-too-long
     r"""ResourceGridMapper(resource_grid, dtype=tf.complex64, **kwargs)
@@ -2164,6 +2195,34 @@ class ResourceGridMapper(Layer):
 
         return rg
 
+class RemoveNulledSubcarriers(Layer):
+    # pylint: disable=line-too-long
+    r"""RemoveNulledSubcarriers(resource_grid, **kwargs)
+
+    Removes nulled guard and/or DC subcarriers from a resource grid.
+
+    Parameters
+    ----------
+    resource_grid : ResourceGrid
+        An instance of :class:`~sionna.ofdm.ResourceGrid`.
+
+    Input
+    -----
+    : [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size], tf.complex64
+        Full resource grid.
+
+    Output
+    ------
+    : [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, num_effective_subcarriers], tf.complex64
+        Resource grid without nulled subcarriers.
+    """
+    def __init__(self, resource_grid, **kwargs):
+        self._sc_ind = resource_grid.effective_subcarrier_ind
+        super().__init__(**kwargs)
+
+    def call(self, inputs):
+        return tf.gather(inputs, self._sc_ind, axis=-1)
+    
 #https://github.com/NVlabs/sionna/blob/main/sionna/mimo/stream_management.py
 class StreamManagement():
     """Class for management of streams in multi-cell MIMO networks.
@@ -2404,8 +2463,1174 @@ class StreamManagement():
         # which they were transmitted.
         self._stream_ind = np.argsort(np.reshape(self._rx_stream_ids, [-1]))
 
+class RemoveNulledSubcarriers(Layer):
+    # pylint: disable=line-too-long
+    r"""RemoveNulledSubcarriers(resource_grid, **kwargs)
+
+    Removes nulled guard and/or DC subcarriers from a resource grid.
+
+    Parameters
+    ----------
+    resource_grid : ResourceGrid
+        An instance of :class:`~sionna.ofdm.ResourceGrid`.
+
+    Input
+    -----
+    : [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size], tf.complex64
+        Full resource grid.
+
+    Output
+    ------
+    : [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, num_effective_subcarriers], tf.complex64
+        Resource grid without nulled subcarriers.
+    """
+    def __init__(self, resource_grid, **kwargs):
+        self._sc_ind = resource_grid.effective_subcarrier_ind
+        super().__init__(**kwargs)
+
+    def call(self, inputs):
+        return tf.gather(inputs, self._sc_ind, axis=-1)
+
+def flatten_dims(tensor, num_dims, axis):
+    """
+    Flattens a specified set of dimensions of a tensor.
+
+    This operation flattens ``num_dims`` dimensions of a ``tensor``
+    starting at a given ``axis``.
+
+    Args:
+        tensor : A tensor.
+        num_dims (int): The number of dimensions
+            to combine. Must be larger than two and less or equal than the
+            rank of ``tensor``.
+        axis (int): The index of the dimension from which to start.
+
+    Returns:
+        A tensor of the same type as ``tensor`` with ``num_dims``-1 lesser
+        dimensions, but the same number of elements.
+    """
+    msg = "`num_dims` must be >= 2"
+    tf.debugging.assert_greater_equal(num_dims, 2, msg)
+
+    msg = "`num_dims` must <= rank(`tensor`)"
+    tf.debugging.assert_less_equal(num_dims, tf.rank(tensor), msg)
+
+    msg = "0<= `axis` <= rank(tensor)-1"
+    tf.debugging.assert_less_equal(axis, tf.rank(tensor)-1, msg)
+    tf.debugging.assert_greater_equal(axis, 0, msg)
+
+    msg ="`num_dims`+`axis` <= rank(`tensor`)"
+    tf.debugging.assert_less_equal(num_dims + axis, tf.rank(tensor), msg)
+
+    if num_dims==len(tensor.shape):
+        new_shape = [-1]
+    elif axis==0:
+        shape = tf.shape(tensor)
+        new_shape = tf.concat([[-1], shape[axis+num_dims:]], 0)
+    else:
+        shape = tf.shape(tensor)
+        flat_dim = tf.reduce_prod(tensor.shape[axis:axis+num_dims])
+        new_shape = tf.concat([shape[:axis],
+                               [flat_dim],
+                               shape[axis+num_dims:]], 0)
+
+    return tf.reshape(tensor, new_shape)
+
+class Config():
+    """The Sionna configuration class.
+
+    This class is used to define global configuration variables
+    that can be accessed from all modules and functions. It
+    is instantiated in ``sionna.__init__()`` and its properties can be
+    accessed as ``sionna.config.desired_property``.
+    """
+    def __init__(self):
+        self.xla_compat = False
+
+    @property
+    def xla_compat(self):
+        """Ensure that functions execute in an XLA compatible way.
+
+        Not all TensorFlow ops support the three execution modes for
+        all dtypes: Eager, Graph, and Graph with XLA. For this reason,
+        some functions are implemented differently depending on the
+        execution mode. As it is currently impossible to programmatically
+        determine if a function is executed in Graph or Graph with XLA mode,
+        the ``xla_compat`` property can be used to indicate which execution
+        mode is desired. Note that most functions will work in all execution
+        modes independently of the value of this property.
+
+        This property can be used like this:
+
+        .. code-block:: python
+
+            import sionna
+            sionna.config.xla_compat=True
+            @tf.function(jit_compile=True)
+            def func()
+                # Implementation
+
+            func()
+
+        :type: bool
+        """
+        return self._xla_compat
+
+    @xla_compat.setter
+    def xla_compat(self, value):
+        self._xla_compat = bool(value)
+
+# Instantiate global configuration object
+config = Config()
+
+def matrix_inv(tensor):
+    r""" Computes the inverse of a Hermitian matrix.
+
+    Given a batch of Hermitian positive definite matrices
+    :math:`\mathbf{A}`, the function
+    returns :math:`\mathbf{A}^{-1}`, such that
+    :math:`\mathbf{A}^{-1}\mathbf{A}=\mathbf{I}`.
+
+    The two inner dimensions are assumed to correspond to the matrix rows
+    and columns, respectively.
+
+    Args:
+        tensor ([..., M, M]) : A tensor of rank greater than or equal
+            to two.
+
+    Returns:
+        A tensor of the same shape and type as ``tensor``, containing
+        the inverse of its last two dimensions.
+
+    Note:
+        If you want to use this function in Graph mode with XLA, i.e., within
+        a function that is decorated with ``@tf.function(jit_compile=True)``,
+        you must set ``sionna.Config.xla_compat=true``.
+        See :py:attr:`~sionna.Config.xla_compat`.
+    """
+    if tensor.dtype in [tf.complex64, tf.complex128] \
+                    and config.xla_compat \
+                    and not tf.executing_eagerly():
+        s, u = tf.linalg.eigh(tensor)
+
+        # Compute inverse of eigenvalues
+        s = tf.abs(s)
+        tf.debugging.assert_positive(s, "Input must be positive definite.")
+        s = 1/s
+        s = tf.cast(s, u.dtype)
+
+        # Matrix multiplication
+        s = tf.expand_dims(s, -2)
+        return tf.matmul(u*s, u, adjoint_b=True)
+    else:
+        return tf.linalg.inv(tensor)
+
+def matrix_pinv(tensor):
+    r""" Computes the Moore–Penrose (or pseudo) inverse of a matrix.
+
+    Given a batch of :math:`M \times K` matrices :math:`\mathbf{A}` with rank
+    :math:`K` (i.e., linearly independent columns), the function returns
+    :math:`\mathbf{A}^+`, such that
+    :math:`\mathbf{A}^{+}\mathbf{A}=\mathbf{I}_K`.
+
+    The two inner dimensions are assumed to correspond to the matrix rows
+    and columns, respectively.
+
+    Args:
+        tensor ([..., M, K]) : A tensor of rank greater than or equal
+            to two.
+
+    Returns:
+        A tensor of shape ([..., K,K]) of the same type as ``tensor``,
+        containing the pseudo inverse of its last two dimensions.
+
+    Note:
+        If you want to use this function in Graph mode with XLA, i.e., within
+        a function that is decorated with ``@tf.function(jit_compile=True)``,
+        you must set ``sionna.config.xla_compat=true``.
+        See :py:attr:`~sionna.config.xla_compat`.
+    """
+    inv = matrix_inv(tf.matmul(tensor, tensor, adjoint_a=True))
+    return tf.matmul(inv, tensor, adjoint_b=True)
+
+
+def zero_forcing_precoder(x, h, return_precoding_matrix=False):
+    # pylint: disable=line-too-long
+    r"""Zero-Forcing (ZF) Precoder
+
+    This function implements ZF precoding for a MIMO link, assuming the
+    following model:
+
+    .. math::
+
+        \mathbf{y} = \mathbf{H}\mathbf{G}\mathbf{x} + \mathbf{n}
+
+    where :math:`\mathbf{y}\in\mathbb{C}^K` is the received signal vector,
+    :math:`\mathbf{H}\in\mathbb{C}^{K\times M}` is the known channel matrix,
+    :math:`\mathbf{G}\in\mathbb{C}^{M\times K}` is the precoding matrix,
+    :math:`\mathbf{x}\in\mathbb{C}^K` is the symbol vector to be precoded,
+    and :math:`\mathbf{n}\in\mathbb{C}^K` is a noise vector. It is assumed that
+    :math:`K\le M`.
+
+    The precoding matrix :math:`\mathbf{G}` is defined as (Eq. 4.37) [BHS2017]_ :
+
+    .. math::
+
+        \mathbf{G} = \mathbf{V}\mathbf{D}
+
+    where
+
+    .. math::
+
+        \mathbf{V} &= \mathbf{H}^{\mathsf{H}}\left(\mathbf{H} \mathbf{H}^{\mathsf{H}}\right)^{-1}\\
+        \mathbf{D} &= \mathop{\text{diag}}\left( \lVert \mathbf{v}_{k} \rVert_2^{-1}, k=0,\dots,K-1 \right).
+
+    This ensures that each stream is precoded with a unit-norm vector,
+    i.e., :math:`\mathop{\text{tr}}\left(\mathbf{G}\mathbf{G}^{\mathsf{H}}\right)=K`.
+    The function returns the precoded vector :math:`\mathbf{G}\mathbf{x}`.
+
+    Input
+    -----
+    x : [...,K], tf.complex
+        1+D tensor containing the symbol vectors to be precoded.
+
+    h : [...,K,M], tf.complex
+        2+D tensor containing the channel matrices
+
+    return_precoding_matrices : bool
+        Indicates if the precoding matrices should be returned or not.
+        Defaults to False.
+
+    Output
+    -------
+    x_precoded : [...,M], tf.complex
+        Tensor of the same shape and dtype as ``x`` apart from the last
+        dimensions that has changed from `K` to `M`. It contains the
+        precoded symbol vectors.
+
+    g : [...,M,K], tf.complex
+        2+D tensor containing the precoding matrices. It is only returned
+        if ``return_precoding_matrices=True``.
+
+    Note
+    ----
+    If you want to use this function in Graph mode with XLA, i.e., within
+    a function that is decorated with ``@tf.function(jit_compile=True)``,
+    you must set ``sionna.Config.xla_compat=true``.
+    See :py:attr:`~sionna.Config.xla_compat`.
+    """
+
+    # Compute pseudo inverse for precoding
+    g = tf.matmul(h, h, adjoint_b=True)
+    g = tf.matmul(h, matrix_inv(g), adjoint_a=True)
+
+    # Normalize each column to unit power
+    norm = tf.sqrt(tf.reduce_sum(tf.abs(g)**2, axis=-2, keepdims=True))
+    g = g/tf.cast(norm, g.dtype)
+
+    # Expand last dim of `x` for precoding
+    x_precoded = tf.expand_dims(x, -1)
+
+    # Precode
+    x_precoded = tf.squeeze(tf.matmul(g, x_precoded), -1)
+
+    if return_precoding_matrix:
+        return (x_precoded, g)
+    else:
+        return x_precoded
+    
+class ZFPrecoder(Layer):
+    # pylint: disable=line-too-long
+    r"""ZFPrecoder(resource_grid, stream_management, return_effective_channel=False, dtype=tf.complex64, **kwargs)
+
+    Zero-forcing precoding for multi-antenna transmissions.
+
+    This layer precodes a tensor containing OFDM resource grids using
+    the :meth:`~sionna.mimo.zero_forcing_precoder`. For every
+    transmitter, the channels to all intended receivers are gathered
+    into a channel matrix, based on the which the precoding matrix
+    is computed and the input tensor is precoded. The layer also outputs
+    optionally the effective channel after precoding for each stream.
+
+    Parameters
+    ----------
+    resource_grid : ResourceGrid
+        An instance of :class:`~sionna.ofdm.ResourceGrid`.
+
+    stream_management : StreamManagement
+        An instance of :class:`~sionna.mimo.StreamManagement`.
+
+    return_effective_channel : bool
+        Indicates if the effective channel after precoding should be returned.
+
+    dtype : tf.Dtype
+        Datatype for internal calculations and the output dtype.
+        Defaults to `tf.complex64`.
+
+    Input
+    -----
+    (x, h) :
+        Tuple:
+
+    x : [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size], tf.complex
+        Tensor containing the resource grid to be precoded.
+
+    h : [batch_size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm, fft_size], tf.complex
+        Tensor containing the channel knowledge based on which the precoding
+        is computed.
+
+    Output
+    ------
+    x_precoded : [batch_size, num_tx, num_tx_ant, num_ofdm_symbols, fft_size], tf.complex
+        The precoded resource grids.
+
+    h_eff : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm, num_effective_subcarriers], tf.complex
+        Only returned if ``return_effective_channel=True``.
+        The effectice channels for all streams after precoding. Can be used to
+        simulate perfect channel state information (CSI) at the receivers.
+        Nulled subcarriers are automatically removed to be compliant with the
+        behavior of a channel estimator.
+
+    Note
+    ----
+    If you want to use this layer in Graph mode with XLA, i.e., within
+    a function that is decorated with ``@tf.function(jit_compile=True)``,
+    you must set ``sionna.Config.xla_compat=true``.
+    See :py:attr:`~sionna.Config.xla_compat`.
+    """
+    def __init__(self,
+                 resource_grid,
+                 stream_management,
+                 return_effective_channel=False,
+                 dtype=tf.complex64,
+                 **kwargs):
+        super().__init__(dtype=dtype, **kwargs)
+        assert isinstance(resource_grid, ResourceGrid)
+        assert isinstance(stream_management, StreamManagement)
+        self._resource_grid = resource_grid
+        self._stream_management = stream_management
+        self._return_effective_channel = return_effective_channel
+        self._remove_nulled_scs = RemoveNulledSubcarriers(self._resource_grid)
+
+    def _compute_effective_channel(self, h, g):
+        """Compute effective channel after precoding"""
+
+        # Input dimensions:
+        # h: [batch_size, num_rx, num_rx_ant, num_tx, num_tx_ant,...
+        #     ..., num_ofdm, fft_size]
+        # g: [batch_size, num_tx, num_ofdm_symbols, fft_size, num_tx_ant,
+        #     ..., num_streams_per_tx]
+
+        # Transpose h to shape:
+        # [batch_size, num_rx, num_tx, num_ofdm, fft_size, num_rx_ant,...
+        #  ..., num_tx_ant]
+        h = tf.transpose(h, [0, 1, 3, 5, 6, 2, 4])
+        h = tf.cast(h, g.dtype)
+
+        # Add one dummy dimension to g to be broadcastable to h:
+        # [batch_size, 1, num_tx, num_ofdm_symbols, fft_size, num_tx_ant,...
+        #  ..., num_streams_per_tx]
+        g = tf.expand_dims(g, 1)
+
+        # Compute post precoding channel:
+        # [batch_size, num_rx, num_tx, num_ofdm, fft_size, num_rx_ant,...
+        #  ..., num_streams_per_tx]
+        h_eff = tf.matmul(h, g)
+
+        # Permute dimensions to common format of channel tensors:
+        # [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx,...
+        #  ..., num_ofdm, fft_size]
+        h_eff = tf.transpose(h_eff, [0, 1, 5, 2, 6, 3, 4])
+
+        # Remove nulled subcarriers:
+        # [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx,...
+        #  ..., num_ofdm, num_effective_subcarriers]
+        h_eff = self._remove_nulled_scs(h_eff)
+
+        return h_eff
+
+    def call(self, inputs):
+
+        x, h = inputs
+        # x has shape
+        # [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size]
+        #
+        # h has shape
+        # [batch_size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm,...
+        # ..., fft_size]
+
+        ###
+        ### Transformations to bring h and x in the desired shapes
+        ###
+
+        # Transpose x:
+        #[batch_size, num_tx, num_ofdm_symbols, fft_size, num_streams_per_tx]
+        x_precoded = tf.transpose(x, [0, 1, 3, 4, 2])
+        x_precoded = tf.cast(x_precoded, self._dtype)
+
+        # Transpose h:
+        # [num_tx, num_rx, num_rx_ant, num_tx_ant, num_ofdm_symbols,...
+        #  ..., fft_size, batch_size]
+        h_pc = tf.transpose(h, [3, 1, 2, 4, 5, 6, 0])
+
+        # Gather desired channel for precoding:
+        # [num_tx, num_rx_per_tx, num_rx_ant, num_tx_ant, num_ofdm_symbols,...
+        #  ..., fft_size, batch_size]
+        h_pc_desired = tf.gather(h_pc, self._stream_management.precoding_ind,
+                                 axis=1, batch_dims=1)
+
+        # Flatten dims 2,3:
+        # [num_tx, num_rx_per_tx * num_rx_ant, num_tx_ant, num_ofdm_symbols,...
+        #  ..., fft_size, batch_size]
+        h_pc_desired = flatten_dims(h_pc_desired, 2, axis=1)
+
+        # Transpose:
+        # [batch_size, num_tx, num_ofdm_symbols, fft_size,...
+        #  ..., num_streams_per_tx, num_tx_ant]
+        h_pc_desired = tf.transpose(h_pc_desired, [5, 0, 3, 4, 1, 2])
+        h_pc_desired = tf.cast(h_pc_desired, self._dtype)
+
+        ###
+        ### ZF precoding
+        ###
+        x_precoded, g = zero_forcing_precoder(x_precoded,
+                                              h_pc_desired,
+                                              return_precoding_matrix=True)
+
+        # Transpose output to desired shape:
+        #[batch_size, num_tx, num_tx_ant, num_ofdm_symbols, fft_size]
+        x_precoded = tf.transpose(x_precoded, [0, 1, 4, 2, 3])
+
+        if self._return_effective_channel:
+            h_eff = self._compute_effective_channel(h, g)
+            return (x_precoded, h_eff)
+        else:
+            return x_precoded
+
+
+def ebnodb2no(ebno_db, num_bits_per_symbol, coderate, resource_grid=None):
+    r"""Compute the noise variance `No` for a given `Eb/No` in dB.
+
+    The function takes into account the number of coded bits per constellation
+    symbol, the coderate, as well as possible additional overheads related to
+    OFDM transmissions, such as the cyclic prefix and pilots.
+
+    The value of `No` is computed according to the following expression
+
+    .. math::
+        N_o = \left(\frac{E_b}{N_o} \frac{r M}{E_s}\right)^{-1}
+
+    where :math:`2^M` is the constellation size, i.e., :math:`M` is the
+    average number of coded bits per constellation symbol,
+    :math:`E_s=1` is the average energy per constellation per symbol,
+    :math:`r\in(0,1]` is the coderate,
+    :math:`E_b` is the energy per information bit,
+    and :math:`N_o` is the noise power spectral density.
+    For OFDM transmissions, :math:`E_s` is scaled
+    according to the ratio between the total number of resource elements in
+    a resource grid with non-zero energy and the number
+    of resource elements used for data transmission. Also the additionally
+    transmitted energy during the cyclic prefix is taken into account, as
+    well as the number of transmitted streams per transmitter.
+
+    Input
+    -----
+    ebno_db : float
+        The `Eb/No` value in dB.
+
+    num_bits_per_symbol : int
+        The number of bits per symbol.
+
+    coderate : float
+        The coderate used.
+
+    resource_grid : ResourceGrid
+        An (optional) instance of :class:`~sionna.ofdm.ResourceGrid`
+        for OFDM transmissions.
+
+    Output
+    ------
+    : float
+        The value of :math:`N_o` in linear scale.
+    """
+
+    if tf.is_tensor(ebno_db):
+        dtype = ebno_db.dtype
+    else:
+        dtype = tf.float32
+
+    ebno = tf.math.pow(tf.cast(10., dtype), ebno_db/10.)
+
+    energy_per_symbol = 1
+    if resource_grid is not None:
+        # Divide energy per symbol by the number of transmitted streams
+        energy_per_symbol /= resource_grid.num_streams_per_tx
+
+        # Number of nonzero energy symbols.
+        # We do not account for the nulled DC and guard carriers.
+        cp_overhead = resource_grid.cyclic_prefix_length \
+                      / resource_grid.fft_size
+        num_syms = resource_grid.num_ofdm_symbols * (1 + cp_overhead) \
+                    * resource_grid.num_effective_subcarriers
+        energy_per_symbol *= num_syms / resource_grid.num_data_symbols
+
+    no = 1/(ebno * coderate * tf.cast(num_bits_per_symbol, dtype) \
+          / tf.cast(energy_per_symbol, dtype))
+
+    return no
+
+from channel import ChannelModel
+class CIRDataset(ChannelModel):
+    # pylint: disable=line-too-long
+    r"""CIRDataset(cir_generator, batch_size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps, dtype=tf.complex64)
+
+    Creates a channel model from a dataset that can be used with classes such as
+    :class:`~sionna.channel.TimeChannel` and :class:`~sionna.channel.OFDMChannel`.
+    The dataset is defined by a `generator <https://wiki.python.org/moin/Generators>`_.
+
+    The batch size is configured when instantiating the dataset or through the :attr:`~sionna.channel.CIRDataset.batch_size` property.
+    The number of time steps (`num_time_steps`) and sampling frequency (`sampling_frequency`) can only be set when instantiating the dataset.
+    The specified values must be in accordance with the data.
+
+    Example
+    --------
+
+    The following code snippet shows how to use this class as a channel model.
+
+    >>> my_generator = MyGenerator(...)
+    >>> channel_model = sionna.channel.CIRDataset(my_generator,
+    ...                                           batch_size,
+    ...                                           num_rx,
+    ...                                           num_rx_ant,
+    ...                                           num_tx,
+    ...                                           num_tx_ant,
+    ...                                           num_paths,
+    ...                                           num_time_steps+l_tot-1)
+    >>> channel = sionna.channel.TimeChannel(channel_model, bandwidth, num_time_steps)
+
+    where ``MyGenerator`` is a generator
+
+    >>> class MyGenerator:
+    ...
+    ...     def __call__(self):
+    ...         ...
+    ...         yield a, tau
+
+    that returns complex-valued path coefficients ``a`` with shape
+    `[num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]`
+    and real-valued path delays ``tau`` (in second)
+    `[num_rx, num_tx, num_paths]`.
+
+    Parameters
+    ----------
+    cir_generator : `generator <https://wiki.python.org/moin/Generators>`_
+        Generator that returns channel impulse responses ``(a, tau)`` where
+        ``a`` is the tensor of channel coefficients of shape
+        `[num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]`
+        and dtype ``dtype``, and ``tau`` the tensor of path delays
+        of shape  `[num_rx, num_tx, num_paths]` and dtype ``dtype.
+        real_dtype``.
+
+    batch_size : int
+        Batch size
+
+    num_rx : int
+        Number of receivers (:math:`N_R`)
+
+    num_rx_ant : int
+        Number of antennas per receiver (:math:`N_{RA}`)
+
+    num_tx : int
+        Number of transmitters (:math:`N_T`)
+
+    num_tx_ant : int
+        Number of antennas per transmitter (:math:`N_{TA}`)
+
+    num_paths : int
+        Number of paths (:math:`M`)
+
+    num_time_steps : int
+        Number of time steps
+
+    dtype : tf.DType
+        Complex datatype to use for internal processing and output.
+        Defaults to `tf.complex64`.
+
+    Output
+    -------
+    a : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps], tf.complex
+        Path coefficients
+
+    tau : [batch size, num_rx, num_tx, num_paths], tf.float
+        Path delays [s]
+    """
+
+    def __init__(self, cir_generator, batch_size, num_rx, num_rx_ant, num_tx,
+        num_tx_ant, num_paths, num_time_steps, dtype=tf.complex64):
+
+        self._cir_generator = cir_generator
+        self._batch_size = batch_size
+        self._num_time_steps = num_time_steps
+
+        # TensorFlow dataset
+        output_signature = (tf.TensorSpec(shape=[num_rx,
+                                                 num_rx_ant,
+                                                 num_tx,
+                                                 num_tx_ant,
+                                                 num_paths,
+                                                 num_time_steps],
+                                          dtype=dtype),
+                            tf.TensorSpec(shape=[num_rx,
+                                                 num_tx,
+                                                 num_paths],
+                                          dtype=dtype.real_dtype))
+        dataset = tf.data.Dataset.from_generator(cir_generator,
+                                            output_signature=output_signature)
+        dataset = dataset.shuffle(32, reshuffle_each_iteration=True)
+        self._dataset = dataset.repeat(None)
+        self._batched_dataset = self._dataset.batch(batch_size)
+        # Iterator for sampling the dataset
+        self._iter = iter(self._batched_dataset)
+
+    @property
+    def batch_size(self):
+        """Batch size"""
+        return self._batch_size
+
+    @batch_size.setter
+    def batch_size(self, value):
+        """Set the batch size"""
+        self._batched_dataset = self._dataset.batch(value)
+        self._iter = iter(self._batched_dataset)
+        self._batch_size = value
+
+    def __call__(self, batch_size=None,
+                       num_time_steps=None,
+                       sampling_frequency=None):
+
+#         if ( (batch_size is not None)
+#                 and tf.not_equal(batch_size, self._batch_size) ):
+#             tf.print("Warning: The value of `batch_size` specified when calling \
+# the CIRDataset is different from the one configured for the dataset. \
+# The value specified when calling is ignored. Use the `batch_size` property \
+# of CIRDataset to use a batch size different from the one set when \
+# instantiating.")
+
+#         if ( (num_time_steps is not None)
+#             and tf.not_equal(num_time_steps, self._num_time_steps) ):
+#             tf.print("Warning: The value of `num_time_steps` specified when \
+# calling the CIRDataset is different from the one speficied when instantiating \
+# the dataset. The value specified when calling is ignored.")
+
+        return next(self._iter)
+
+def split_dim(tensor, shape, axis):
+    """Reshapes a dimension of a tensor into multiple dimensions.
+
+    This operation splits the dimension ``axis`` of a ``tensor`` into
+    multiple dimensions according to ``shape``.
+
+    Args:
+        tensor : A tensor.
+        shape (list or TensorShape): The shape to which the dimension should
+            be reshaped.
+        axis (int): The index of the axis to be reshaped.
+
+    Returns:
+        A tensor of the same type as ``tensor`` with len(``shape``)-1
+        additional dimensions, but the same number of elements.
+    """
+    msg = "0<= `axis` <= rank(tensor)-1"
+    tf.debugging.assert_less_equal(axis, tf.rank(tensor)-1, msg)
+    tf.debugging.assert_greater_equal(axis, 0, msg)
+
+    s = tf.shape(tensor)
+    new_shape = tf.concat([s[:axis], shape, s[axis+1:]], 0)
+    output = tf.reshape(tensor, new_shape)
+
+    return output
+
+class OFDMEqualizer(Layer):
+    # pylint: disable=line-too-long
+    r"""OFDMEqualizer(equalizer, resource_grid, stream_management, dtype=tf.complex64, **kwargs)
+
+    Layer that wraps a MIMO equalizer for use with the OFDM waveform.
+
+    The parameter ``equalizer`` is a callable (e.g., a function) that
+    implements a MIMO equalization algorithm for arbitrary batch dimensions.
+
+    This class pre-processes the received resource grid ``y`` and channel
+    estimate ``h_hat``, and computes for each receiver the
+    noise-plus-interference covariance matrix according to the OFDM and stream
+    configuration provided by the ``resource_grid`` and
+    ``stream_management``, which also accounts for the channel
+    estimation error variance ``err_var``. These quantities serve as input
+    to the equalization algorithm that is implemented by the callable ``equalizer``.
+    This layer computes soft-symbol estimates together with effective noise
+    variances for all streams which can, e.g., be used by a
+    :class:`~sionna.mapping.Demapper` to obtain LLRs.
+
+    Note
+    -----
+    The callable ``equalizer`` must take three inputs:
+
+    * **y** ([...,num_rx_ant], tf.complex) -- 1+D tensor containing the received signals.
+    * **h** ([...,num_rx_ant,num_streams_per_rx], tf.complex) -- 2+D tensor containing the channel matrices.
+    * **s** ([...,num_rx_ant,num_rx_ant], tf.complex) -- 2+D tensor containing the noise-plus-interference covariance matrices.
+
+    It must generate two outputs:
+
+    * **x_hat** ([...,num_streams_per_rx], tf.complex) -- 1+D tensor representing the estimated symbol vectors.
+    * **no_eff** (tf.float) -- Tensor of the same shape as ``x_hat`` containing the effective noise variance estimates.
+
+    Parameters
+    ----------
+    equalizer : Callable
+        Callable object (e.g., a function) that implements a MIMO equalization
+        algorithm for arbitrary batch dimensions
+
+    resource_grid : ResourceGrid
+        Instance of :class:`~sionna.ofdm.ResourceGrid`
+
+    stream_management : StreamManagement
+        Instance of :class:`~sionna.mimo.StreamManagement`
+
+    dtype : tf.Dtype
+        Datatype for internal calculations and the output dtype.
+        Defaults to `tf.complex64`.
+
+    Input
+    -----
+    (y, h_hat, err_var, no) :
+        Tuple:
+
+    y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], tf.complex
+        Received OFDM resource grid after cyclic prefix removal and FFT
+
+    h_hat : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols, num_effective_subcarriers], tf.complex
+        Channel estimates for all streams from all transmitters
+
+    err_var : [Broadcastable to shape of ``h_hat``], tf.float
+        Variance of the channel estimation error
+
+    no : [batch_size, num_rx, num_rx_ant] (or only the first n dims), tf.float
+        Variance of the AWGN
+
+    Output
+    ------
+    x_hat : [batch_size, num_tx, num_streams, num_data_symbols], tf.complex
+        Estimated symbols
+
+    no_eff : [batch_size, num_tx, num_streams, num_data_symbols], tf.float
+        Effective noise variance for each estimated symbol
+    """
+    def __init__(self,
+                 equalizer,
+                 resource_grid,
+                 stream_management,
+                 dtype=tf.complex64,
+                 **kwargs):
+        super().__init__(dtype=dtype, **kwargs)
+        assert callable(equalizer)
+        assert isinstance(resource_grid, ResourceGrid)
+        assert isinstance(stream_management, StreamManagement)
+        self._equalizer = equalizer
+        self._resource_grid = resource_grid
+        self._stream_management = stream_management
+        self._removed_nulled_scs = RemoveNulledSubcarriers(self._resource_grid)
+
+        # Precompute indices to extract data symbols
+        mask = resource_grid.pilot_pattern.mask
+        num_data_symbols = resource_grid.pilot_pattern.num_data_symbols
+        data_ind = tf.argsort(flatten_last_dims(mask), direction="ASCENDING")
+        self._data_ind = data_ind[...,:num_data_symbols]
+
+    def call(self, inputs):
+
+        y, h_hat, err_var, no = inputs
+        # y has shape:
+        # [batch_size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size]
+
+        # h_hat has shape:
+        # [batch_size, num_rx, num_rx_ant, num_tx, num_streams,...
+        #  ..., num_ofdm_symbols, num_effective_subcarriers]
+
+        # err_var has a shape that is broadcastable to h_hat
+
+        # no has shape [batch_size, num_rx, num_rx_ant]
+        # or just the first n dimensions of this
+
+        # Remove nulled subcarriers from y (guards, dc). New shape:
+        # [batch_size, num_rx, num_rx_ant, ...
+        #  ..., num_ofdm_symbols, num_effective_subcarriers]
+        y_eff = self._removed_nulled_scs(y)
+
+        ####################################################
+        ### Prepare the observation y for MIMO detection ###
+        ####################################################
+        # Transpose y_eff to put num_rx_ant last. New shape:
+        # [batch_size, num_rx, num_ofdm_symbols,...
+        #  ..., num_effective_subcarriers, num_rx_ant]
+        y_dt = tf.transpose(y_eff, [0, 1, 3, 4, 2])
+        y_dt = tf.cast(y_dt, self._dtype)
+
+        ##############################################
+        ### Prepare the err_var for MIMO detection ###
+        ##############################################
+        # New shape is:
+        # [batch_size, num_rx, num_ofdm_symbols,...
+        #  ..., num_effective_subcarriers, num_rx_ant, num_tx*num_streams]
+        err_var_dt = tf.broadcast_to(err_var, tf.shape(h_hat))
+        err_var_dt = tf.transpose(err_var_dt, [0, 1, 5, 6, 2, 3, 4])
+        err_var_dt = flatten_last_dims(err_var_dt, 2)
+        err_var_dt = tf.cast(err_var_dt, self._dtype)
+
+        ###############################
+        ### Construct MIMO channels ###
+        ###############################
+
+        # Reshape h_hat for the construction of desired/interfering channels:
+        # [num_rx, num_tx, num_streams_per_tx, batch_size, num_rx_ant, ,...
+        #  ..., num_ofdm_symbols, num_effective_subcarriers]
+        perm = [1, 3, 4, 0, 2, 5, 6]
+        h_dt = tf.transpose(h_hat, perm)
+
+        # Flatten first tthree dimensions:
+        # [num_rx*num_tx*num_streams_per_tx, batch_size, num_rx_ant, ...
+        #  ..., num_ofdm_symbols, num_effective_subcarriers]
+        h_dt = flatten_dims(h_dt, 3, 0)
+
+        # Gather desired and undesired channels
+        ind_desired = self._stream_management.detection_desired_ind
+        ind_undesired = self._stream_management.detection_undesired_ind
+        h_dt_desired = tf.gather(h_dt, ind_desired, axis=0)
+        h_dt_undesired = tf.gather(h_dt, ind_undesired, axis=0)
+
+        # Split first dimension to separate RX and TX:
+        # [num_rx, num_streams_per_rx, batch_size, num_rx_ant, ...
+        #  ..., num_ofdm_symbols, num_effective_subcarriers]
+        h_dt_desired = split_dim(h_dt_desired,
+                                 [self._stream_management.num_rx,
+                                  self._stream_management.num_streams_per_rx],
+                                 0)
+        h_dt_undesired = split_dim(h_dt_undesired,
+                                   [self._stream_management.num_rx, -1], 0)
+
+        # Permutate dims to
+        # [batch_size, num_rx, num_ofdm_symbols, num_effective_subcarriers,..
+        #  ..., num_rx_ant, num_streams_per_rx(num_Interfering_streams_per_rx)]
+        perm = [2, 0, 4, 5, 3, 1]
+        h_dt_desired = tf.transpose(h_dt_desired, perm)
+        h_dt_desired = tf.cast(h_dt_desired, self._dtype)
+        h_dt_undesired = tf.transpose(h_dt_undesired, perm)
+
+        ##################################
+        ### Prepare the noise variance ###
+        ##################################
+        # no is first broadcast to [batch_size, num_rx, num_rx_ant]
+        # then the rank is expanded to that of y
+        # then it is transposed like y to the final shape
+        # [batch_size, num_rx, num_ofdm_symbols,...
+        #  ..., num_effective_subcarriers, num_rx_ant]
+        no_dt = expand_to_rank(no, 3, -1)
+        no_dt = tf.broadcast_to(no_dt, tf.shape(y)[:3])
+        no_dt = expand_to_rank(no_dt, tf.rank(y), -1)
+        no_dt = tf.transpose(no_dt, [0,1,3,4,2])
+        no_dt = tf.cast(no_dt, self._dtype)
+
+        ##################################################
+        ### Compute the interference covariance matrix ###
+        ##################################################
+        # Covariance of undesired transmitters
+        s_inf = tf.matmul(h_dt_undesired, h_dt_undesired, adjoint_b=True)
+
+        #Thermal noise
+        s_no = tf.linalg.diag(no_dt)
+
+        # Channel estimation errors
+        # As we have only error variance information for each element,
+        # we simply sum them across transmitters and build a
+        # diagonal covariance matrix from this
+        s_csi = tf.linalg.diag(tf.reduce_sum(err_var_dt, -1))
+
+        # Final covariance matrix
+        s = s_inf + s_no + s_csi
+        s = tf.cast(s, self._dtype)
+
+        ############################################################
+        ### Compute symbol estimate and effective noise variance ###
+        ############################################################
+        # [batch_size, num_rx, num_ofdm_symbols, num_effective_subcarriers,...
+        #  ..., num_stream_per_rx]
+        x_hat, no_eff = self._equalizer(y_dt, h_dt_desired, s)
+
+        ################################################
+        ### Extract data symbols for all detected TX ###
+        ################################################
+        # Transpose tensor to shape
+        # [num_rx, num_streams_per_rx, num_ofdm_symbols,...
+        #  ..., num_effective_subcarriers, batch_size]
+        x_hat = tf.transpose(x_hat, [1, 4, 2, 3, 0])
+        no_eff = tf.transpose(no_eff, [1, 4, 2, 3, 0])
+
+        # Merge num_rx amd num_streams_per_rx
+        # [num_rx * num_streams_per_rx, num_ofdm_symbols,...
+        #  ...,num_effective_subcarriers, batch_size]
+        x_hat = flatten_dims(x_hat, 2, 0)
+        no_eff = flatten_dims(no_eff, 2, 0)
+
+        # Put first dimension into the right ordering
+        stream_ind = self._stream_management.stream_ind
+        x_hat = tf.gather(x_hat, stream_ind, axis=0)
+        no_eff = tf.gather(no_eff, stream_ind, axis=0)
+
+        # Reshape first dimensions to [num_tx, num_streams] so that
+        # we can compared to the way the streams were created.
+        # [num_tx, num_streams, num_ofdm_symbols, num_effective_subcarriers,...
+        #  ..., batch_size]
+        num_streams = self._stream_management.num_streams_per_tx
+        num_tx = self._stream_management.num_tx
+        x_hat = split_dim(x_hat, [num_tx, num_streams], 0)
+        no_eff = split_dim(no_eff, [num_tx, num_streams], 0)
+
+        # Flatten resource grid dimensions
+        # [num_tx, num_streams, num_ofdm_symbols*num_effective_subcarriers,...
+        #  ..., batch_size]
+        x_hat = flatten_dims(x_hat, 2, 2)
+        no_eff = flatten_dims(no_eff, 2, 2)
+
+        # Broadcast no_eff to the shape of x_hat
+        no_eff = tf.broadcast_to(no_eff, tf.shape(x_hat))
+
+        # Gather data symbols
+        # [num_tx, num_streams, num_data_symbols, batch_size]
+        x_hat = tf.gather(x_hat, self._data_ind, batch_dims=2, axis=2)
+        no_eff = tf.gather(no_eff, self._data_ind, batch_dims=2, axis=2)
+
+        # Put batch_dim first
+        # [batch_size, num_tx, num_streams, num_data_symbols]
+        x_hat = tf.transpose(x_hat, [3, 0, 1, 2])
+        no_eff = tf.transpose(no_eff, [3, 0, 1, 2])
+
+        return (x_hat, no_eff)
+
+from channel import whiten_channel
+def lmmse_equalizer(y, h, s, whiten_interference=True):
+    # pylint: disable=line-too-long
+    r"""MIMO LMMSE Equalizer
+
+    This function implements LMMSE equalization for a MIMO link, assuming the
+    following model:
+
+    .. math::
+
+        \mathbf{y} = \mathbf{H}\mathbf{x} + \mathbf{n}
+
+    where :math:`\mathbf{y}\in\mathbb{C}^M` is the received signal vector,
+    :math:`\mathbf{x}\in\mathbb{C}^K` is the vector of transmitted symbols,
+    :math:`\mathbf{H}\in\mathbb{C}^{M\times K}` is the known channel matrix,
+    and :math:`\mathbf{n}\in\mathbb{C}^M` is a noise vector.
+    It is assumed that :math:`\mathbb{E}\left[\mathbf{x}\right]=\mathbb{E}\left[\mathbf{n}\right]=\mathbf{0}`,
+    :math:`\mathbb{E}\left[\mathbf{x}\mathbf{x}^{\mathsf{H}}\right]=\mathbf{I}_K` and
+    :math:`\mathbb{E}\left[\mathbf{n}\mathbf{n}^{\mathsf{H}}\right]=\mathbf{S}`.
+
+    The estimated symbol vector :math:`\hat{\mathbf{x}}\in\mathbb{C}^K` is given as
+    (Lemma B.19) [BHS2017]_ :
+
+    .. math::
+
+        \hat{\mathbf{x}} = \mathop{\text{diag}}\left(\mathbf{G}\mathbf{H}\right)^{-1}\mathbf{G}\mathbf{y}
+
+    where
+
+    .. math::
+
+        \mathbf{G} = \mathbf{H}^{\mathsf{H}} \left(\mathbf{H}\mathbf{H}^{\mathsf{H}} + \mathbf{S}\right)^{-1}.
+
+    This leads to the post-equalized per-symbol model:
+
+    .. math::
+
+        \hat{x}_k = x_k + e_k,\quad k=0,\dots,K-1
+
+    where the variances :math:`\sigma^2_k` of the effective residual noise
+    terms :math:`e_k` are given by the diagonal elements of
+
+    .. math::
+
+        \mathop{\text{diag}}\left(\mathbb{E}\left[\mathbf{e}\mathbf{e}^{\mathsf{H}}\right]\right)
+        = \mathop{\text{diag}}\left(\mathbf{G}\mathbf{H} \right)^{-1} - \mathbf{I}.
+
+    Note that the scaling by :math:`\mathop{\text{diag}}\left(\mathbf{G}\mathbf{H}\right)^{-1}`
+    is important for the :class:`~sionna.mapping.Demapper` although it does
+    not change the signal-to-noise ratio.
+
+    The function returns :math:`\hat{\mathbf{x}}` and
+    :math:`\boldsymbol{\sigma}^2=\left[\sigma^2_0,\dots, \sigma^2_{K-1}\right]^{\mathsf{T}}`.
+
+    Input
+    -----
+    y : [...,M], tf.complex
+        1+D tensor containing the received signals.
+
+    h : [...,M,K], tf.complex
+        2+D tensor containing the channel matrices.
+
+    s : [...,M,M], tf.complex
+        2+D tensor containing the noise covariance matrices.
+
+    whiten_interference : bool
+        If `True` (default), the interference is first whitened before equalization.
+        In this case, an alternative expression for the receive filter is used that
+        can be numerically more stable. Defaults to `True`.
+
+    Output
+    ------
+    x_hat : [...,K], tf.complex
+        1+D tensor representing the estimated symbol vectors.
+
+    no_eff : tf.float
+        Tensor of the same shape as ``x_hat`` containing the effective noise
+        variance estimates.
+
+    Note
+    ----
+    If you want to use this function in Graph mode with XLA, i.e., within
+    a function that is decorated with ``@tf.function(jit_compile=True)``,
+    you must set ``sionna.Config.xla_compat=true``.
+    See :py:attr:`~sionna.Config.xla_compat`.
+    """
+
+    # We assume the model:
+    # y = Hx + n, where E[nn']=S.
+    # E[x]=E[n]=0
+    #
+    # The LMMSE estimate of x is given as:
+    # x_hat = diag(GH)^(-1)Gy
+    # with G=H'(HH'+S)^(-1).
+    #
+    # This leads us to the per-symbol model;
+    #
+    # x_hat_k = x_k + e_k
+    #
+    # The elements of the residual noise vector e have variance:
+    # diag(E[ee']) = diag(GH)^(-1) - I
+    if not whiten_interference:
+        # Compute G
+        g = tf.matmul(h, h, adjoint_b=True) + s
+        g = tf.matmul(h, matrix_inv(g), adjoint_a=True)
+
+    else:
+        # Whiten channel
+        y, h  = whiten_channel(y, h, s, return_s=False) # pylint: disable=unbalanced-tuple-unpacking
+
+        # Compute G
+        i = expand_to_rank(tf.eye(h.shape[-1], dtype=s.dtype), tf.rank(s), 0)
+        g = tf.matmul(h, h, adjoint_a=True) + i
+        g = tf.matmul(matrix_inv(g), h, adjoint_b=True)
+
+    # Compute Gy
+    y = tf.expand_dims(y, -1)
+    gy = tf.squeeze(tf.matmul(g, y), axis=-1)
+
+    # Compute GH
+    gh = tf.matmul(g, h)
+
+    # Compute diag(GH)
+    d = tf.linalg.diag_part(gh)
+
+    # Compute x_hat
+    x_hat = gy/d
+
+    # Compute residual error variance
+    one = tf.cast(1, dtype=d.dtype)
+    no_eff = tf.math.real(one/d - one)
+
+    return x_hat, no_eff
+
+class LMMSEEqualizer(OFDMEqualizer):
+    # pylint: disable=line-too-long
+    """LMMSEEqualizer(resource_grid, stream_management, whiten_interference=True, dtype=tf.complex64, **kwargs)
+
+    LMMSE equalization for OFDM MIMO transmissions.
+
+    This layer computes linear minimum mean squared error (LMMSE) equalization
+    for OFDM MIMO transmissions. The OFDM and stream configuration are provided
+    by a :class:`~sionna.ofdm.ResourceGrid` and
+    :class:`~sionna.mimo.StreamManagement` instance, respectively. The
+    detection algorithm is the :meth:`~sionna.mimo.lmmse_equalizer`. The layer
+    computes soft-symbol estimates together with effective noise variances
+    for all streams which can, e.g., be used by a
+    :class:`~sionna.mapping.Demapper` to obtain LLRs.
+
+    Parameters
+    ----------
+    resource_grid : ResourceGrid
+        Instance of :class:`~sionna.ofdm.ResourceGrid`
+
+    stream_management : StreamManagement
+        Instance of :class:`~sionna.mimo.StreamManagement`
+
+    whiten_interference : bool
+        If `True` (default), the interference is first whitened before equalization.
+        In this case, an alternative expression for the receive filter is used which
+        can be numerically more stable.
+
+    dtype : tf.Dtype
+        Datatype for internal calculations and the output dtype.
+        Defaults to `tf.complex64`.
+
+    Input
+    -----
+    (y, h_hat, err_var, no) :
+        Tuple:
+
+    y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], tf.complex
+        Received OFDM resource grid after cyclic prefix removal and FFT
+
+    h_hat : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols, num_effective_subcarriers], tf.complex
+        Channel estimates for all streams from all transmitters
+
+    err_var : [Broadcastable to shape of ``h_hat``], tf.float
+        Variance of the channel estimation error
+
+    no : [batch_size, num_rx, num_rx_ant] (or only the first n dims), tf.float
+        Variance of the AWGN
+
+    Output
+    ------
+    x_hat : [batch_size, num_tx, num_streams, num_data_symbols], tf.complex
+        Estimated symbols
+
+    no_eff : [batch_size, num_tx, num_streams, num_data_symbols], tf.float
+        Effective noise variance for each estimated symbol
+
+    Note
+    ----
+    If you want to use this layer in Graph mode with XLA, i.e., within
+    a function that is decorated with ``@tf.function(jit_compile=True)``,
+    you must set ``sionna.Config.xla_compat=true``.
+    See :py:attr:`~sionna.Config.xla_compat`.
+    """
+    def __init__(self,
+                 resource_grid,
+                 stream_management,
+                 whiten_interference=True,
+                 dtype=tf.complex64,
+                 **kwargs):
+
+        def equalizer(y, h, s):
+            return lmmse_equalizer(y, h, s, whiten_interference)
+
+        super().__init__(equalizer=equalizer,
+                         resource_grid=resource_grid,
+                         stream_management=stream_management,
+                         dtype=dtype, **kwargs)
+
+
 from ldpc.encoding import LDPC5GEncoder
 from ldpc.decoding import LDPC5GDecoder
+from channel import OFDMChannel
 if __name__ == '__main__':
     # Define the number of UT and BS antennas
     NUM_UT = 1
@@ -2469,6 +3694,6 @@ if __name__ == '__main__':
     rg_mapper = ResourceGridMapper(RESOURCE_GRID)
 
     # Frequency domain channel
-    channel = OFDMChannel(CDL, RESOURCE_GRID, add_awgn=True, normalize_channel=True, return_channel=True)
+    #channel = OFDMChannel(CDL, RESOURCE_GRID, add_awgn=True, normalize_channel=True, return_channel=True)
 
 #https://nvlabs.github.io/sionna/examples/MIMO_OFDM_Transmissions_over_CDL.html

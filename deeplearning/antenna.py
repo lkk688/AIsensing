@@ -758,3 +758,26 @@ class AntennaArray(PanelArray):
                          element_vertical_spacing=vertical_spacing,
                          element_horizontal_spacing=horizontal_spacing,
                          dtype=dtype)
+
+if __name__ == '__main__':
+    NUM_BS_ANT = 4
+
+    CARRIER_FREQUENCY = 2.6e9 # Carrier frequency in Hz.
+                            # This is needed here to define the antenna element spacing.
+
+    UT_ARRAY = Antenna(  polarization="single",
+                                            polarization_type="V", 
+                                            antenna_pattern="38.901",
+                                            carrier_frequency=CARRIER_FREQUENCY)
+    UT_ARRAY.show();
+
+    BS_ARRAY = AntennaArray( num_rows=1,
+                                                num_cols=int(NUM_BS_ANT/2),
+                                                polarization="dual",
+                                                polarization_type="cross",
+                                                antenna_pattern="38.901", # Try 'omni'
+                                                carrier_frequency=CARRIER_FREQUENCY)
+    BS_ARRAY.show();
+
+    BS_ARRAY.show_element_radiation_pattern();
+    print("End")
