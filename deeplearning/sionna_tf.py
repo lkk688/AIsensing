@@ -3069,8 +3069,8 @@ class CIRDataset(ChannelModel):
         num_tx_ant, num_paths, num_time_steps, dtype=tf.complex64):
 
         self._cir_generator = cir_generator
-        self._batch_size = batch_size
-        self._num_time_steps = num_time_steps
+        self._batch_size = batch_size #64
+        self._num_time_steps = num_time_steps #1
 
         # TensorFlow dataset
         output_signature = (tf.TensorSpec(shape=[num_rx,
@@ -3085,7 +3085,7 @@ class CIRDataset(ChannelModel):
                                                  num_paths],
                                           dtype=dtype.real_dtype))
         dataset = tf.data.Dataset.from_generator(cir_generator,
-                                            output_signature=output_signature)
+                                            output_signature=output_signature) #specifies the expected output signature of the generator function
         dataset = dataset.shuffle(32, reshuffle_each_iteration=True)
         self._dataset = dataset.repeat(None)
         self._batched_dataset = self._dataset.batch(batch_size)

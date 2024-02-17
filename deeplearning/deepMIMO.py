@@ -71,10 +71,10 @@ class DeepMIMOSionnaAdapter:
                          self.num_tx, 
                          self.num_tx_ant, 
                          self.num_paths, 
-                         self.num_time_steps) #(1, 1, 1, 16, 10, 1)
+                         self.num_time_steps) #(rx=1, rx_ant=1, tx=1, tx_ant=16, paths=10, timestesp=1)
         
         # The required path delay shape for Sionna
-        self.t_shape = (self.num_rx, self.num_tx, self.num_paths) #(1,1,10)
+        self.t_shape = (self.num_rx, self.num_tx, self.num_paths) #(rx=1,tx=1,paths=10)
     
     # Verify the index values given as input
     def _verify_idx(self, idx):
@@ -124,7 +124,7 @@ class DeepMIMOSionnaAdapter:
                         a[i_ch, :, j_ch, :, :, 0] = self.dataset[i_bs]['user']['channel'][i_ue]
                         tau[i_ch, j_ch, :self.dataset[i_bs]['user']['paths'][i_ue]['num_paths']] = self.dataset[i_bs]['user']['paths'][i_ue]['ToA'] 
                 #(9231, 1, 16, 10)
-                yield (a, tau) # yield this sample #(1, 1, 1, 16, 10, 1), (1,1,10)
+                yield (a, tau) # yield this sample h=(num_rx=1, 1, num_tx=1, 16, 10, 1), tau=(num_rx=1,num_tx=1,ToA=10)
 
 
 
@@ -143,19 +143,24 @@ if __name__ == '__main__':
     parameters['num_paths'] = 10
 
     # To activate only the first basestation, set
-    #parameters['active_BS'] = np.array([1])
+    parameters['active_BS'] = np.array([1])
     # To activate the basestations 6, set
-    parameters['active_BS'] = np.array([6])
+    #parameters['active_BS'] = np.array([6])
+
+    parameters['OFDM']['bandwidth'] = 0.05 # 50 MHz
+    print(parameters['OFDM']['subcarriers']) #512
+    #parameters['OFDM']['subcarriers'] = 512 # OFDM with 512 subcarriers
+    #parameters['OFDM']['subcarriers_limit'] = 64 # Keep only first 64 subcarriers
 
     # To activate the user rows 1-5, set
-    parameters['user_row_first'] = 400 # First user row to be included in the dataset
-    parameters['user_row_last'] = 450 # Last user row to be included in the dataset
+    parameters['user_row_first'] = 1 #400 # First user row to be included in the dataset
+    parameters['user_row_last'] = 100 #450 # Last user row to be included in the dataset
 
     # Consider 3 active basestations
     #parameters['active_BS'] = np.array([1, 5, 8])
     # Configuration of the antenna arrays
     parameters['bs_antenna']['shape'] = np.array([16, 1, 1]) # BS antenna shape through [x, y, z] axes
-    parameters['ue_antenna']['shape'] = np.array([1, 1, 1]) # UE antenna shape through [x, y, z] axes
+    parameters['ue_antenna']['shape'] = np.array([1, 1, 1]) # UE antenna shape through [x, y, z] axes, single antenna
 
     # The OFDM_channels parameter allows choosing between the generation of channel impulse
     # responses (if set to 0) or frequency domain channels (if set to 1).
@@ -172,7 +177,8 @@ if __name__ == '__main__':
     active_bs_idx = 0 # Select the first active basestation in the dataset
     print(DeepMIMO_dataset[active_bs_idx]['user'].keys()) #['paths', 'LoS', 'location', 'distance', 'pathloss', 'channel']
     print(DeepMIMO_dataset[active_bs_idx]['user']['location'].shape) #(9231, 3)  num_ue_locations: 9231
-    print(DeepMIMO_dataset[active_bs_idx]['user']['channel'].shape) #(9231, 1, 16, 10)
+    j=0 #user j
+    print(DeepMIMO_dataset[active_bs_idx]['user']['location'][j]) #The Euclidian location of the user in the form of [x, y, z].
 
     # Number of basestations
     print(len(DeepMIMO_dataset)) #1
@@ -182,12 +188,45 @@ if __name__ == '__main__':
     print(DeepMIMO_dataset[0]['user'].keys()) #['paths', 'LoS', 'location', 'distance', 'pathloss', 'channel']
     # Number of UEs
     print(len(DeepMIMO_dataset[0]['user']['channel'])) #9231
+    print(DeepMIMO_dataset[active_bs_idx]['user']['channel'].shape) #(num_ue_locations=9231, 1, bs_antenna=16, strongest_path=10) 
     # Shape of the channel matrix
     print(DeepMIMO_dataset[0]['user']['channel'].shape) #(9231, 1, 16, 10)
+
+    i=0
+    j=0
+    #The channel matrix between basestation i and user j
+    DeepMIMO_dataset[i]['user']['channel'][j]
+    #Float matrix of size (number of RX antennas) x (number of TX antennas) x (number of OFDM subcarriers)
+
     # Shape of BS 0 - UE 0 channel
-    print(DeepMIMO_dataset[0]['user']['channel'][0].shape) #(1, 16, 10)
+    print(DeepMIMO_dataset[i]['user']['channel'][0].shape) #(1, 16, 10)
+    
     # Path properties of BS 0 - UE 0
-    print(DeepMIMO_dataset[0]['user']['paths'][0])
+    print(DeepMIMO_dataset[i]['user']['paths'][j]) #Ray-tracing Path Parameters in dictionary
+    #Azimuth and zenith angle-of-arrivals – degrees (DoA_phi, DoA_theta)
+    # Azimuth and zenith angle-of-departure – degrees (DoD_phi, DoD_theta)
+    # Time of arrival – seconds (ToA)
+    # Phase – degrees (phase)
+    # Power – watts (power)
+    # Number of paths (num_paths)
+
+    print(DeepMIMO_dataset[i]['user']['LoS'][j]) #Integer of values {-1, 0, 1} indicates the existence of the LOS path in the channel.
+    # (1): The LoS path exists.
+    # (0): Only NLoS paths exist. The LoS path is blocked (LoS blockage).
+    # (-1): No paths exist between the transmitter and the receiver (Full blockage).
+
+    print(DeepMIMO_dataset[i]['user']['distance'][j])
+    #The Euclidian distance between the RX and TX locations in meters.
+
+    print(DeepMIMO_dataset[i]['user']['pathloss'][j])
+    #The combined path-loss of the channel between the RX and TX in dB.
+
+
+    print(DeepMIMO_dataset[i]['location'])
+    #Basestation Location [x, y, z].
+    print(DeepMIMO_dataset[i]['user']['location'][j])
+    #The Euclidian location of the user in the form of [x, y, z].
+
 
     plt.scatter(DeepMIMO_dataset[active_bs_idx]['user']['location'][:, 1], # y-axis location of the users
             DeepMIMO_dataset[active_bs_idx]['user']['location'][:, 0], # x-axis location of the users
@@ -343,10 +382,10 @@ if __name__ == '__main__':
     x = mapper(c) #[64,1,1,912]
     x_rg = rg_mapper(x) ##[64,1,1,14,76] 14*76=1064
     # Generate the OFDM channel
-    h_freq = ofdm_channel() #(64, 1, 1, 1, 16, 1, 76)
+    h_freq = ofdm_channel() #h: [64, 1, 1, 1, 16, 10, 1], tau: [64, 1, 1, 10] => (64, 1, 1, 1, 16, 1, 76) 
     #h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm_symbols, num_subcarriers], tf.complex
 
-    # Precoding
+    # Precoding: (num_rx, num_rx_ant merged to tx?)
     #Input: Tensor containing the resource grid to be precoded. x : [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size], tf.complex
     # h : [batch_size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm, fft_size], tf.complex
     #Tensor containing the channel knowledge based on which the precoding is computed.

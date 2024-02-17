@@ -354,13 +354,13 @@ class ApplyOFDMChannel(tf.keras.layers.Layer):
     def call(self, inputs):
 
         if self._add_awgn:
-            x, h_freq, no = inputs
+            x, h_freq, no = inputs #x: [64, 1, 16, 14, 76], h_freq: [64, 1, 1, 1, 16, 1, 76]
         else:
-            x, h_freq = inputs
+            x, h_freq = inputs 
 
         # Apply the channel response
-        x = expand_to_rank(x, h_freq.shape.rank, axis=1)
-        y = tf.reduce_sum(tf.reduce_sum(h_freq*x, axis=4), axis=3)
+        x = expand_to_rank(x, h_freq.shape.rank, axis=1) #[64, 1(added), 1, 1, 16, 14, 76]
+        y = tf.reduce_sum(tf.reduce_sum(h_freq*x, axis=4), axis=3) #[64, 1, 1, 14, 76] (16 removed)
 
         # Add AWGN if requested
         if self._add_awgn:
@@ -636,13 +636,13 @@ class GenerateOFDMChannel:
 
         # Sample channel impulse responses
         h, tau = self._cir_sampler( batch_size,
-                                    self._num_ofdm_symbols,
-                                    self._sampling_frequency)
-
+                                    self._num_ofdm_symbols, #14
+                                    self._sampling_frequency)#60000
+        #h: [64, 1, 1, 1, 16, 10, 1], tau: [64, 1, 1, 10]
         h_freq = cir_to_ofdm_channel(self._frequencies, h, tau,
                                      self._normalize_channel)
-
-        return h_freq
+        #Channel frequency responses at ``frequencies`` 
+        return h_freq #[64, 1, 1, 1, 16, 1, 76]
     
 class OFDMChannel(Layer):
     # pylint: disable=line-too-long
