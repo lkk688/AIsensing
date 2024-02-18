@@ -621,16 +621,16 @@ class GenerateOFDMChannel:
         self._cir_sampler = channel_model
 
         # We need those in call()
-        self._num_ofdm_symbols = resource_grid.num_ofdm_symbols
-        self._subcarrier_spacing = resource_grid.subcarrier_spacing
-        self._num_subcarriers = resource_grid.fft_size
-        self._normalize_channel = normalize_channel
-        self._sampling_frequency = 1./resource_grid.ofdm_symbol_duration
+        self._num_ofdm_symbols = resource_grid.num_ofdm_symbols #14
+        self._subcarrier_spacing = resource_grid.subcarrier_spacing #60000
+        self._num_subcarriers = resource_grid.fft_size #76
+        self._normalize_channel = normalize_channel #True
+        self._sampling_frequency = 1./resource_grid.ofdm_symbol_duration #60000
 
         # Frequencies of the subcarriers
         self._frequencies = subcarrier_frequencies(self._num_subcarriers,
                                                    self._subcarrier_spacing,
-                                                   dtype)
+                                                   dtype) #[76]
 
     def __call__(self, batch_size=None):
 

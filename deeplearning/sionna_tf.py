@@ -26,21 +26,21 @@ def insert_dims(tensor, num_dims, axis=-1):
         dimensions inserted at the index specified by ``axis``.
     """
     msg = "`num_dims` must be nonnegative."
-    tf.debugging.assert_greater_equal(num_dims, 0, msg)
+    tf.debugging.assert_greater_equal(num_dims, 0, msg) #7
 
-    rank = tf.rank(tensor)
+    rank = tf.rank(tensor) #1
     msg = "`axis` is out of range `[-(D+1), D]`)"
     tf.debugging.assert_less_equal(axis, rank, msg)
     tf.debugging.assert_greater_equal(axis, -(rank+1), msg)
 
-    axis = axis if axis>=0 else rank+axis+1
-    shape = tf.shape(tensor)
+    axis = axis if axis>=0 else rank+axis+1 #0
+    shape = tf.shape(tensor) #(1,)
     new_shape = tf.concat([shape[:axis],
                            tf.ones([num_dims], tf.int32),
-                           shape[axis:]], 0)
-    output = tf.reshape(tensor, new_shape)
+                           shape[axis:]], 0) #(8,) [1, 1, 1, 1, 1, 1, 1, 76]
+    output = tf.reshape(tensor, new_shape) #tensor:(76,) new_shape: (8,)
 
-    return output
+    return output #[1, 1, 1, 1, 1, 1, 1, 76]
 
 def expand_to_rank(tensor, target_rank, axis=-1):
     """Inserts as many axes to a tensor as needed to achieve a desired rank.
@@ -2485,10 +2485,10 @@ class RemoveNulledSubcarriers(Layer):
         Resource grid without nulled subcarriers.
     """
     def __init__(self, resource_grid, **kwargs):
-        self._sc_ind = resource_grid.effective_subcarrier_ind
+        self._sc_ind = resource_grid.effective_subcarrier_ind #range(0, 76)
         super().__init__(**kwargs)
 
-    def call(self, inputs):
+    def call(self, inputs): #(64, 1, 1, 1, 16, 1, 76)
         return tf.gather(inputs, self._sc_ind, axis=-1)
 
 def flatten_dims(tensor, num_dims, axis):
