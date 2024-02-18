@@ -35,101 +35,6 @@ from torch.utils.data import DataLoader
 # by stacking the data of channels from the basestations (0 and 1), (2 and 3), 
 # and (4 and 5) to the UEs.
 #
-class DeepMIMOAdapter:
-    def __init__(self, DeepMIMO_dataset, bs_idx = None, ue_idx = None):
-        self.dataset = DeepMIMO_dataset
-        
-        # Set bs_idx based on given parameters
-        # If no input is given, choose the first basestation
-        if bs_idx is None:
-            bs_idx = np.array([[0]])
-        self.bs_idx = self._verify_idx(bs_idx)
-        
-        # Set ue_idx based on given parameters
-        # If no input is given, set all user indices
-        if ue_idx is None:
-            ue_idx = np.arange(DeepMIMO_dataset[0]['user']['channel'].shape[0])
-        self.ue_idx = self._verify_idx(ue_idx) #(9231, 1)
-        
-        # Extract number of antennas from the DeepMIMO dataset
-        self.num_rx_ant = DeepMIMO_dataset[0]['user']['channel'].shape[1] #1 
-        self.num_tx_ant = DeepMIMO_dataset[0]['user']['channel'].shape[2] #16
-        
-        # Determine the number of samples based on the given indices
-        self.num_samples_bs = self.bs_idx.shape[0] #1
-        self.num_samples_ue = self.ue_idx.shape[0] #9231
-        self.num_samples = self.num_samples_bs * self.num_samples_ue #9231
-        
-        # Determine the number of tx and rx elements in each channel sample based on the given indices
-        self.num_rx = self.ue_idx.shape[1] #1
-        self.num_tx = self.bs_idx.shape[1] #1
-        
-        # Determine the number of available paths in the DeepMIMO dataset
-        self.num_paths = DeepMIMO_dataset[0]['user']['channel'].shape[-1] #10
-        self.num_time_steps = 1 # Time step = 1 for static scenarios
-        
-        # The required path power shape for Sionna
-        self.ch_shape = (self.num_rx, 
-                         self.num_rx_ant, 
-                         self.num_tx, 
-                         self.num_tx_ant, 
-                         self.num_paths, 
-                         self.num_time_steps) #(rx=1, rx_ant=1, tx=1, tx_ant=16, paths=10, timestesp=1)
-        
-        # The required path delay shape for Sionna
-        self.t_shape = (self.num_rx, self.num_tx, self.num_paths) #(rx=1,tx=1,paths=10)
-    
-    # Verify the index values given as input
-    def _verify_idx(self, idx):
-        idx = self._idx_to_numpy(idx)
-        idx = self._numpy_size_check(idx)
-        return idx
-    
-    # Convert the possible input types to numpy (integer - range - list)
-    def _idx_to_numpy(self, idx):
-        if isinstance(idx, int): # If the input is an integer - a single ID - convert it to 2D numpy array
-            idx = np.array([[idx]])
-        elif isinstance(idx, list) or isinstance(idx, range): # If the input is a list or range - convert it to a numpy array
-            idx = np.array(idx)
-        elif isinstance(idx, np.ndarray):
-            pass
-        else:
-            raise TypeError('The index input type must be an integer, list, or numpy array!') 
-        return idx
-    
-    # Check the size of the given input and convert it to a 2D matrix of proper shape (num_tx x num_samples) or (num_rx x num_samples)
-    def _numpy_size_check(self, idx):
-        if len(idx.shape) == 1:
-            idx = idx.reshape((-1, 1))
-        elif len(idx.shape) == 2:
-            pass
-        else:
-            raise ValueError('The index input must be integer, vector or 2D matrix!')
-        return idx
-    
-    # Override length of the generator to provide the available number of samples
-    def __len__(self):
-        return self.num_samples
-        
-    # Provide samples each time the generator is called
-    def __call__(self):
-        for i in range(self.num_samples_ue): # For each UE sample
-            for j in range(self.num_samples_bs): # For each BS sample
-                # Generate zero vectors for the Sionna sample
-                a = np.zeros(self.ch_shape, dtype=np.csingle)
-                tau = np.zeros(self.t_shape, dtype=np.single)
-                
-                # Place the DeepMIMO dataset power and delays into the channel sample for Sionna
-                for i_ch in range(self.num_rx): # for each receiver in the sample
-                    for j_ch in range(self.num_tx): # for each transmitter in the sample
-                        i_ue = self.ue_idx[i][i_ch] # UE channel sample i - channel RX i_ch
-                        i_bs = self.bs_idx[j][j_ch] # BS channel sample i - channel TX j_ch
-                        a[i_ch, :, j_ch, :, :, 0] = self.dataset[i_bs]['user']['channel'][i_ue]
-                        tau[i_ch, j_ch, :self.dataset[i_bs]['user']['paths'][i_ue]['num_paths']] = self.dataset[i_bs]['user']['paths'][i_ue]['ToA'] 
-                #(9231, 1, 16, 10)
-                yield (a, tau) # yield this sample h=(num_rx=1, 1, num_tx=1, 16, 10, 1), tau=(num_rx=1,num_tx=1,ToA=10)
-##h: [64, 1, 1, 1, 16, 10, 1], tau: [64, 1, 1, 10] 64 is the batch size
-
 class DeepMIMODataset(Dataset):
     def __init__(self, DeepMIMO_dataset, bs_idx = None, ue_idx = None):
         self.dataset = DeepMIMO_dataset  
@@ -186,7 +91,7 @@ class DeepMIMODataset(Dataset):
                 i_bs = self.bs_idx[bs_idx][j_ch] # BS channel sample i - channel TX j_ch
                 a[i_ch, :, j_ch, :, :, 0] = self.dataset[i_bs]['user']['channel'][i_ue]
                 tau[i_ch, j_ch, :self.dataset[i_bs]['user']['paths'][i_ue]['num_paths']] = self.dataset[i_bs]['user']['paths'][i_ue]['ToA'] 
-        return a, tau
+        return a, tau ## yield this sample h=(num_rx=1, 1, num_tx=1, 16, 10, 1), tau=(num_rx=1,num_tx=1,ToA=10)
     
     def __len__(self):
         return self.num_samples
@@ -529,15 +434,14 @@ def cir_to_ofdm_channel(frequencies, a, tau, normalize=False):
         tau = np.tile(tau, [1, 1, 1,1, a.shape[4], 1]) #(64, 1, 1, 1, 16, 10)
 
     # Add a time samples dimension for broadcasting
-    tau = np.expand_dims(tau, axis=6) #[batch size, num_rx, 1, num_tx, 1, num_paths, 1] (64, 1, 1, 1, 16, 10, 1)
+    tau = np.expand_dims(tau, axis=6) #[batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, fft_size] (64, 1, 1, 1, 16, 10, 1)
     #tau = tf.expand_dims(tau, axis=6)
 
     # Bring all tensors to broadcastable shapes
-    tau = np.expand_dims(tau, axis=-1) ##[batch size, num_rx, 1, num_tx, 1, num_paths, 1, 1] (64, 1, 1, 1, 16, 10, 1, 1)
+    tau = np.expand_dims(tau, axis=-1) ##[batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, fft_size , 1] (64, 1, 1, 1, 16, 10, 1, 1)
     #tau = tf.expand_dims(tau, axis=-1)
     h = np.expand_dims(a, axis=-1) #[batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps, 1] (64, 1, 1, 1, 16, 10, 1, 1)
     #h = tf.expand_dims(a, axis=-1)
-    from sionna_tf import expand_to_rank
     frequencies = myexpand_to_rank(frequencies, tau.ndim, axis=0) #(1, 1, 1, 1, 1, 1, 1, 76)
 
     ## Compute the Fourier transforms of all cluster taps
@@ -551,6 +455,7 @@ def cir_to_ofdm_channel(frequencies, a, tau, normalize=False):
     # Sum over all clusters to get the channel frequency responses
     #h_f = tf.reduce_sum(h_f, axis=-3)
     h_f = np.sum(h_f, axis=-3) #(64, 1, 1, 1, 16, 1, 76) #combine 10 paths
+    #h_f : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, fft_size]
 
     if normalize:
         # Normalization is performed such that for each batch example and
@@ -589,6 +494,8 @@ if __name__ == '__main__':
     # MISO is considered here.
     num_rx = 1
     num_tx = 1 #new add
+    batch_size =64
+    fft_size = 76
 
     # The number of UE locations in the generated DeepMIMO dataset
     num_ue_locations = len(DeepMIMO_dataset[0]['user']['channel']) # 9231
@@ -601,11 +508,10 @@ if __name__ == '__main__':
 
     testdataset = DeepMIMODataset(DeepMIMO_dataset=DeepMIMO_dataset, ue_idx=ue_idx)
     h, tau = next(iter(testdataset)) #h: (1, 1, 1, 16, 10, 1), tau:(1, 1, 10)
+    #complex gains `h` and delays `tau` for each path
     #print(h.shape) #[num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]
     #print(tau.shape) #[num_rx, num_tx, num_paths]
 
-    batch_size =64
-    fft_size = 76
     # torch dataloaders
     data_loader = DataLoader(dataset=testdataset, batch_size=batch_size, shuffle=True, pin_memory=True)
     h_b, tau_b = next(iter(data_loader)) #h_b: [64, 1, 1, 1, 16, 10, 1], tau_b=[64, 1, 1, 10]
@@ -666,7 +572,7 @@ if __name__ == '__main__':
     mapper = Mapper("qam", num_bits_per_symbol)
     rg_mapper = ResourceGridMapper(RESOURCE_GRID)
     #Zero-forcing precoding for multi-antenna transmissions.
-    zf_precoder = ZFPrecoder(RESOURCE_GRID, STREAM_MANAGEMENT, return_effective_channel=True)
+    #zf_precoder = ZFPrecoder(RESOURCE_GRID, STREAM_MANAGEMENT, return_effective_channel=True)
 
     # Receiver
     ls_est = LSChannelEstimator(RESOURCE_GRID, interpolation_type="lin_time_avg")
@@ -686,7 +592,6 @@ if __name__ == '__main__':
     #h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm_symbols, num_subcarriers], tf.complex
 
     h_perf = remove_nulled_scs(h_freq)[0,0,0,0,0,0] #[76]
-    
     plt.figure()
     plt.plot(np.real(h_perf))
     plt.plot(np.imag(h_perf))
@@ -699,21 +604,32 @@ if __name__ == '__main__':
     #Input: Tensor containing the resource grid to be precoded. x : [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size], tf.complex
     # h : [batch_size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm, fft_size], tf.complex
     #Tensor containing the channel knowledge based on which the precoding is computed.
-    x_rg, g = zf_precoder([x_rg, h_freq]) #[64, 1, 16, 14, 76] , [64, 1, 1, 1, 1, 1, 76]
+    #x_rg, g = zf_precoder([x_rg, h_freq]) #[64, 1, 16, 14, 76] , [64, 1, 1, 1, 1, 1, 76]
     #Output: The precoded resource grids. x_precoded : [batch_size, num_tx, num_tx_ant, num_ofdm_symbols, fft_size], tf.complex
     #h_eff : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm, num_effective_subcarriers]
 
     # Apply OFDM channel
     ebnorange=np.linspace(-7, -5.25, 10)
-    ebno_db = 5.0
+    ebno_db = 15.0
     no = ebnodb2no(ebno_db, num_bits_per_symbol, coderate, RESOURCE_GRID)
 
     #input: (x, h_freq, no) or (x, h_freq):
     # Channel inputs x :  [batch size, num_tx, num_tx_ant, num_ofdm_symbols, fft_size], tf.complex
     # h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm_symbols, fft_size], tf.complex Channel frequency responses
-    y = channel_freq([x_rg, h_freq, no])
+    y = channel_freq([x_rg, h_freq, no]) #h_freq is array
     #Channel outputs y : [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], tf.complex    
-    print(y.shape) #[64, 1, 1, 14, 76]
+    print(y.shape) #[64, 1, 1, 14, 76] dim (3,4 removed)
+    #h_freq: (64, 1, 1, 1, 16, 1, 76)
+
+    #another option of channel_freq
+    #For multiple-input multiple-output (MIMO) links, the channel output is computed for each antenna of each receiver and 
+    #by summing over all the antennas of all transmitters.
+    # Apply the channel response .ndim
+    x = myexpand_to_rank(x_rg, h_freq.ndim, axis=1) #[64, 1(added), 1(added), 1, 1, 14, 76]
+    #y = tf.reduce_sum(tf.reduce_sum(h_freq*x, axis=4), axis=3) #[64, 1, 1, 14, 76] (16 removed)
+    hx=np.sum(h_freq*x, axis=4)
+    y = np.sum(hx, axis=3) #(64, 1, 1, 14, 76) dim (3,4 removed)
+
 
     # Start Receiver
     #Observed resource grid y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols,fft_size], tf.complex

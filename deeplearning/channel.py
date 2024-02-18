@@ -359,8 +359,8 @@ class ApplyOFDMChannel(tf.keras.layers.Layer):
             x, h_freq = inputs 
 
         # Apply the channel response
-        x = expand_to_rank(x, h_freq.shape.rank, axis=1) #[64, 1(added), 1, 1, 16, 14, 76]
-        y = tf.reduce_sum(tf.reduce_sum(h_freq*x, axis=4), axis=3) #[64, 1, 1, 14, 76] (16 removed)
+        x = expand_to_rank(x, h_freq.shape.rank, axis=1) #[64, 1(added), 1(added), 1, 1, 14, 76]
+        y = tf.reduce_sum(tf.reduce_sum(h_freq*x, axis=4), axis=3) #[64, 1, 1, 14, 76] (3,4 removed)
 
         # Add AWGN if requested
         if self._add_awgn:
