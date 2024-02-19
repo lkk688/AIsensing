@@ -451,6 +451,7 @@ class Demapper(Layer):
         # Add a dummy dimension for broadcasting. This is not needed when no
         # is a scalar, but also does not do any harm.
         no = tf.expand_dims(no, axis=-1)
+        no = tf.cast(no, squared_dist.dtype) #newly added
 
         # Compute exponents
         exponents = -squared_dist/no
@@ -1205,14 +1206,14 @@ class Mapper(Layer):
         """The Constellation used by the Mapper."""
         return self._constellation
 
-    def call(self, inputs):
+    def call(self, inputs): #
         tf.debugging.assert_greater_equal(tf.rank(inputs), 2,
             message="The input must have at least rank 2")
 
         # Reshape inputs to the desired format
         new_shape = [-1] + inputs.shape[1:-1].as_list() + \
            [int(inputs.shape[-1] / self.constellation.num_bits_per_symbol),
-            self.constellation.num_bits_per_symbol]
+            self.constellation.num_bits_per_symbol] #[-1, 1, 1, 912, 4]
         inputs_reshaped = tf.cast(tf.reshape(inputs, new_shape), tf.int32)
 
         # Convert the last dimension to an integer
@@ -1749,36 +1750,36 @@ class KroneckerPilotPattern(PilotPattern):
                  seed=0,
                  dtype=tf.complex64):
 
-        num_tx = resource_grid.num_tx
-        num_streams_per_tx = resource_grid.num_streams_per_tx
-        num_ofdm_symbols = resource_grid.num_ofdm_symbols
-        num_effective_subcarriers = resource_grid.num_effective_subcarriers
+        num_tx = resource_grid.num_tx #1
+        num_streams_per_tx = resource_grid.num_streams_per_tx #1
+        num_ofdm_symbols = resource_grid.num_ofdm_symbols #14
+        num_effective_subcarriers = resource_grid.num_effective_subcarriers #76
         self._dtype = dtype
 
         # Number of OFDM symbols carrying pilots
-        num_pilot_symbols = len(pilot_ofdm_symbol_indices)
+        num_pilot_symbols = len(pilot_ofdm_symbol_indices) #2
 
         # Compute the total number of required orthogonal sequences
-        num_seq = num_tx*num_streams_per_tx
+        num_seq = num_tx*num_streams_per_tx #1
 
         # Compute the length of a pilot sequence
-        num_pilots = num_pilot_symbols*num_effective_subcarriers/num_seq
+        num_pilots = num_pilot_symbols*num_effective_subcarriers/num_seq #2*76=152
         assert num_pilots%1==0, \
             """`num_effective_subcarriers` must be an integer multiple of
             `num_tx`*`num_streams_per_tx`."""
 
         # Number of pilots per OFDM symbol
-        num_pilots_per_symbol = int(num_pilots/num_pilot_symbols)
+        num_pilots_per_symbol = int(num_pilots/num_pilot_symbols) #76
 
         # Prepare empty mask and pilots
         shape = [num_tx, num_streams_per_tx,
-                 num_ofdm_symbols,num_effective_subcarriers]
+                 num_ofdm_symbols,num_effective_subcarriers] #kronecker
         mask = np.zeros(shape, bool)
-        shape[2] = num_pilot_symbols
-        pilots = np.zeros(shape, np.complex64)
+        shape[2] = num_pilot_symbols #[1, 1, 14, 76]->[1, 1, 2, 76]
+        pilots = np.zeros(shape, np.complex64) #(1, 1, 2, 76)
 
         # Populate all selected OFDM symbols in the mask
-        mask[..., pilot_ofdm_symbol_indices, :] = True
+        mask[..., pilot_ofdm_symbol_indices, :] = True #[1, 1, 14, 76], [2, 11] col(14) set to True
 
         # Populate the pilots with random QPSK symbols
         qam_source = QAMSource(2, seed=seed, dtype=self._dtype)
@@ -2120,14 +2121,14 @@ def flatten_last_dims(tensor, num_dims=2):
     msg = "`num_dims` must <= rank(`tensor`)"
     tf.debugging.assert_less_equal(num_dims, tf.rank(tensor), msg)
 
-    if num_dims==len(tensor.shape):
+    if num_dims==len(tensor.shape): #tensor: (1, 1, 0)
         new_shape = [-1]
     else:
-        shape = tf.shape(tensor)
-        last_dim = tf.reduce_prod(tensor.shape[-num_dims:])
-        new_shape = tf.concat([shape[:-num_dims], [last_dim]], 0)
+        shape = tf.shape(tensor) #shape=(1, 1, 14, 76, 64) =>shape=(4,), dtype=int32, numpy=array([ 64,   1,   1, 532])
+        last_dim = tf.reduce_prod(tensor.shape[-num_dims:]) #532
+        new_shape = tf.concat([shape[:-num_dims], [last_dim]], 0) #shape=(2,), dtype=int32, numpy=array([ 64,   532])
 
-    return tf.reshape(tensor, new_shape)
+    return tf.reshape(tensor, new_shape) #tensor: (1, 1, 0) new_shape=-1
 
 class ResourceGridMapper(Layer):
     # pylint: disable=line-too-long
@@ -2171,27 +2172,30 @@ class ResourceGridMapper(Layer):
         which is prefilled with pilots and stores indices
         to scatter data symbols.
         """
-        self._rg_type = self._resource_grid.build_type_grid()
-        self._pilot_ind = tf.where(self._rg_type==1)
-        self._data_ind = tf.where(self._rg_type==0)
+        self._rg_type = self._resource_grid.build_type_grid() #(1, 1, 14, 76)
+        self._pilot_ind = tf.where(self._rg_type==1) #tf shape=(152, 4)  (0, 4)
+        self._data_ind = tf.where(self._rg_type==0) #tf tensor shape=[1064, 4]
 
     def call(self, inputs):
         # Map pilots on empty resource grid
-        pilots = flatten_last_dims(self._resource_grid.pilot_pattern.pilots, 3)
+        pilots = flatten_last_dims(self._resource_grid.pilot_pattern.pilots, 3) #empty tf.tensor shape=(0,) (152,)
+        #Scatters pilots into a tensor of shape _rg_type.shape according to _pilot_ind
         template = tf.scatter_nd(self._pilot_ind,
                                  pilots,
-                                 self._rg_type.shape)
-        template = tf.expand_dims(template, -1)
+                                 self._rg_type.shape) #[1, 1, 14, 76]
+        template = tf.expand_dims(template, -1) #[1, 1, 14, 76, 1]
 
         # Broadcast the resource grid template to batch_size
-        batch_size = tf.shape(inputs)[0]
-        new_shape = tf.concat([tf.shape(template)[:-1], [batch_size]], 0)
-        template = tf.broadcast_to(template, new_shape)
+        batch_size = tf.shape(inputs)[0] #64
+        new_shape = tf.concat([tf.shape(template)[:-1], [batch_size]], 0) #shape (5,): array([ 1,  1, 14, 76, 64]
+        template = tf.broadcast_to(template, new_shape) #[1, 1, 14, 76] to newshape (array [ 1,  1, 14, 76, 64])=>shape=(1, 1, 14, 76, 64)
 
         # Flatten the inputs and put batch_dim last for scatter update
-        inputs = tf.transpose(flatten_last_dims(inputs, 3))
-        rg = tf.tensor_scatter_nd_update(template, self._data_ind, inputs)
-        rg = tf.transpose(rg, [4, 0, 1, 2, 3])
+        inputs = tf.transpose(flatten_last_dims(inputs, 3)) #(1064, 64) 14*76/2=532
+
+        #Scatter inputs into an existing template tensor according to _data_ind indices.
+        rg = tf.tensor_scatter_nd_update(template, self._data_ind, inputs) #(1, 1, 14, 76, 64), (1064, 4), (1064, 64)
+        rg = tf.transpose(rg, [4, 0, 1, 2, 3]) #move batch to the front (64, 1, 1, 14, 76)
 
         return rg
 

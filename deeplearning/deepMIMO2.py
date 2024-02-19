@@ -538,7 +538,7 @@ if __name__ == '__main__':
     num_guard_carriers = [0, 0]
     dc_null=False
     pilot_ofdm_symbol_indices=[2,11]
-    pilot_pattern = "kronecker"
+    pilot_pattern = "empty" #"kronecker"
     #fft_size = 76
     RESOURCE_GRID = ResourceGrid( num_ofdm_symbols=14,
                                         fft_size=fft_size,
@@ -574,18 +574,18 @@ if __name__ == '__main__':
     #Zero-forcing precoding for multi-antenna transmissions.
     #zf_precoder = ZFPrecoder(RESOURCE_GRID, STREAM_MANAGEMENT, return_effective_channel=True)
 
+    # Start Transmitter
+    b = binary_source([batch_size, 1, num_streams_per_tx, k]) #[64,1,1,1824]
+    c = encoder(b) #[64,1,1,3648]
+    x = mapper(c) #[64,1,1,912]
+    x_rg = rg_mapper(x) ##[64,1,1,14,76] 14*76=1064
+
     # Receiver
     ls_est = LSChannelEstimator(RESOURCE_GRID, interpolation_type="lin_time_avg")
     lmmse_equ = LMMSEEqualizer(RESOURCE_GRID, STREAM_MANAGEMENT)
     demapper = Demapper("app", "qam", num_bits_per_symbol)
     decoder = LDPC5GDecoder(encoder, hard_out=True)
     remove_nulled_scs = RemoveNulledSubcarriers(RESOURCE_GRID)
-
-    # Start Transmitter
-    b = binary_source([batch_size, 1, num_streams_per_tx, k]) #[64,1,1,1824]
-    c = encoder(b) #[64,1,1,3648]
-    x = mapper(c) #[64,1,1,912]
-    x_rg = rg_mapper(x) ##[64,1,1,14,76] 14*76=1064
 
     # Generate the OFDM channel
     #h_freq = ofdm_channel() #h: [64, 1, 1, 1, 16, 10, 1], tau: [64, 1, 1, 10] => (64, 1, 1, 1, 16, 1, 76) 

@@ -309,9 +309,9 @@ def BinarySource(shape, backend='numpy'):
         return np.random.randint(2, size=shape).astype(np.float32)
     elif backend == "tf":
         return tf.cast(tf.random.uniform(shape, 0, 2, tf.int32), tf.float32)
-    
-    #https://numpy.org/doc/stable/reference/random/generated/numpy.random.randint.html#numpy.random.randint
 
+
+#https://numpy.org/doc/stable/reference/random/generated/numpy.random.randint.html#numpy.random.randint
 def complex_normal(shape, var=1.0):
     r"""Generates a tensor of complex normal random variables.
 

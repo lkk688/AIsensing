@@ -1336,8 +1336,8 @@ class BaseChannelEstimator(ABC, Layer):
     def __init__(self, resource_grid, interpolation_type="nn", interpolator=None, dtype=tf.complex64, **kwargs):
         super().__init__(dtype=dtype, **kwargs)
 
-        assert isinstance(resource_grid, ResourceGrid),\
-            "You must provide a valid instance of ResourceGrid."
+        # assert isinstance(resource_grid, ResourceGrid),\
+        #     "You must provide a valid instance of ResourceGrid."
         self._pilot_pattern = resource_grid.pilot_pattern
         self._removed_nulled_scs = RemoveNulledSubcarriers(resource_grid)
 
