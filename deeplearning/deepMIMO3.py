@@ -1231,7 +1231,7 @@ def cir_to_ofdm_channel(frequencies, a, tau, normalize=False):
 
     Output
     -------
-    h_f : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, fft_size], tf.complex
+    h_f : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, fft_size], complex
         Channel frequency responses at ``frequencies``
     """
 
@@ -1300,7 +1300,7 @@ def mygenerate_OFDMchannel(h, tau, fft_size, subcarrier_spacing=60000.0, dtype=n
                                         dtype) #[76]
     h_freq = cir_to_ofdm_channel(frequencies, h, tau, normalize_channel)
     #Channel frequency responses at ``frequencies`` 
-    return h_freq #[64, 1, 1, 1, 16, 1, 76]
+    return h_freq #[64, 1, 1, 1, 16, 1, 76] [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, fft_size]
 
     
 #https://github.com/NVlabs/sionna/blob/main/sionna/mimo/stream_management.py
@@ -1591,14 +1591,17 @@ def tensor_scatter_nd_update(tensor, indices, updates):
     :return: Updated tensor
     """
     # Create a tuple of indices for advanced indexing
-    index_tuple = tuple(indices.T) #(1064, 4) = > 4 tuple array (1064,) each, same to np.where output
+    index_tuple = tuple(indices.T) #(1064, 4) = > 4 tuple array (1064,) each, same to np.where output, means all places
 
     # Scatter values from updates into tensor
-    tensornew = tensor.copy()
-    tensornew[index_tuple] = updates
+    tensornew = tensor.copy() #(1, 1, 14, 76, 64)
+    tensornew[index_tuple] = updates #updates(1064,64) to all 1064 locations
     #(1, 1, 14, 76, 64) updates(1064, 64)
 
-    return tensor #(1, 1, 14, 76, 64)
+    #print the last dimension data of tensornew
+    #print(tensornew[0,0,0,0,:]) #(64,)
+    #print(updates[0,:]) #(64,)
+    return tensornew #(1, 1, 14, 76, 64)
 
 def scatter_numpy(tensor, indices, values):
     """
@@ -1667,16 +1670,13 @@ class MyResourceGridMapper:
         #self._data_ind = tf.where(self._rg_type==0) #[1064, 4]
 
         #test
-        test=self._rg_type.copy()
-        data_test=test[datatupleindex] #(1, 1, 14, 76)
-        print(data_test.shape)
-        pilot_test=test[tupleindex]
-        print(pilot_test.shape)
+        # test=self._rg_type.copy() #(1, 1, 14, 76)
+        # data_test=test[datatupleindex]  #(1064,) 1064=14*76
+        # print(data_test.shape)
+        # pilot_test=test[tupleindex] #empty
+        # print(pilot_test.shape)
 
-
-
-
-    def __call__(self, inputs):
+    def __call__(self, inputs):#inputs: (64, 1, 1, 1064)
         #inputs: [batch_size, num_tx, num_streams_per_tx, num_data_symbols]
         # Map pilots on empty resource grid
         pilots = flatten_last_dims(self._resource_grid.pilot_pattern.pilots, 3) #empty
@@ -1688,7 +1688,7 @@ class MyResourceGridMapper:
         # template = tf.scatter_nd(self._pilot_ind,
         #                          pilots,
         #                          self._rg_type.shape)
-        template = scatter_nd_numpy(self._pilot_ind, pilots, self._rg_type.shape) #(1, 1, 14, 76)
+        template = scatter_nd_numpy(self._pilot_ind, pilots, self._rg_type.shape) #(1, 1, 14, 76) all 0 complex?
 
         # Expand the template to batch_size)
         # expand the last dimension for template via numpy
@@ -1705,7 +1705,7 @@ class MyResourceGridMapper:
         template = np.broadcast_to(template, new_shape) #(1, 1, 14, 76, 64)
 
         # Flatten the inputs and put batch_dim last for scatter update
-        newflatten=flatten_last_dims(inputs, 3) #(64, 1064)
+        newflatten=flatten_last_dims(inputs, 3) #inputs:(64, 1, 1, 1064) =>(64, 1064)
         inputs = np.transpose(newflatten) #(1064, 64)
         #inputs = tf.transpose(newflatten)
         #The tf.tensor_scatter_nd_update function is a more efficient version of the scatter_nd function. 
@@ -1714,7 +1714,7 @@ class MyResourceGridMapper:
         #Scatter inputs into an existing template tensor according to _data_ind indices 
         #rg = tf.tensor_scatter_nd_update(template, self._data_ind, inputs)
 
-        #Use numpy to Scatter inputs into an existing template tensor according to _data_ind indices 
+        #Scatter inputs(1064, 64) into an existing template tensor(1, 1, 14, 76, 64) according to _data_ind indices (tuple from rg_type(1, 1, 14, 76)) 
         rg = tensor_scatter_nd_update(template, self._data_ind, inputs)
         #rg = scatter_nd_numpy(template, self._data_ind, inputs) #(1, 1, 14, 76, 64), (1064, 4), (1064, 64)
         #rg = tf.transpose(rg, [4, 0, 1, 2, 3])
@@ -1785,7 +1785,7 @@ if __name__ == '__main__':
 
     # Generate the OFDM channel
     h_freq = mygenerate_OFDMchannel(h_b, tau_b, fft_size, subcarrier_spacing=60000.0, dtype=np.complex64, normalize_channel=True)
-    #h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm_symbols, num_subcarriers], np.complex
+    #h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, fft_size]
     #(64, 1, 1, 1, 16, 1, 76)
     
     num_streams_per_tx = num_rx ##1
@@ -1829,16 +1829,17 @@ if __name__ == '__main__':
 
     encoder = LDPC5GEncoder(k, n) #2128, 4256
     mapper = Mapper("qam", num_bits_per_symbol)
-    rg_mapper = ResourceGridMapper(RESOURCE_GRID) #ResourceGridMapper(RESOURCE_GRID)
+    rg_mapper = MyResourceGridMapper(RESOURCE_GRID) #ResourceGridMapper(RESOURCE_GRID)
     #Zero-forcing precoding for multi-antenna transmissions.
     #zf_precoder = ZFPrecoder(RESOURCE_GRID, STREAM_MANAGEMENT, return_effective_channel=True)
 
-    # Start Transmitter
-    b = binary_source([batch_size, 1, num_streams_per_tx, k]) #[64,1,1,2128]
+    # Start Transmitter 
+    b = binary_source([batch_size, 1, num_streams_per_tx, k]) #[64,1,1,2128] [batch_size, num_tx, num_streams_per_tx, num_databits]
 
-    c = encoder(b) #tensor[64,1,1,4256]
-    x = mapper(c) #array[64,1,1,1064] 1064*4=4256
+    c = encoder(b) #tensor[64,1,1,4256] [batch_size, num_tx, num_streams_per_tx, num_codewords]
+    x = mapper(c) #array[64,1,1,1064] 1064*4=4256 [batch_size, num_tx, num_streams_per_tx, num_data_symbols]
     x_rg = rg_mapper(x) ##array[64,1,1,14,76] 14*76=1064 no pilot
+    #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size]
 
     # Generate the OFDM channel
     #h_freq = ofdm_channel() #h: [64, 1, 1, 1, 16, 10, 1], tau: [64, 1, 1, 10] => (64, 1, 1, 1, 16, 1, 76) 
