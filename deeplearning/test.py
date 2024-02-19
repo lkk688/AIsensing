@@ -1,5 +1,60 @@
 import numpy as np
 
+#Scatter Operation (Equivalent to tf.scatter_nd): The scatter_nd operation writes values from a source tensor (src) into 
+#a destination tensor (self) at specified indices. Below is a custom implementation of scatter_nd in NumPy:
+def scatter_numpy(self, dim, index, src):
+    """
+    Writes all values from the Tensor src into self at the indices specified in the index Tensor.
+    :param dim: The axis along which to index
+    :param index: The indices of elements to scatter
+    :param src: The source element(s) to scatter
+    :return: self
+    """
+    if index.dtype != np.dtype('int_'):
+        raise TypeError("The values of index must be integers")
+    if self.ndim != index.ndim:
+        raise ValueError("Index should have the same number of dimensions as output")
+    if dim >= self.ndim or dim < -self.ndim:
+        raise IndexError("dim is out of range")
+    if dim < 0:
+        dim = self.ndim + dim
+
+    idx_xsection_shape = index.shape[:dim] + index.shape[dim + 1:]
+    self_xsection_shape = self.shape[:dim] + self.shape[dim + 1:]
+
+    if idx_xsection_shape != self_xsection_shape:
+        raise ValueError(f"Except for dimension {dim}, all dimensions of index and output should be the same size")
+
+    if (index >= self.shape[dim]).any() or (index < 0).any():
+        raise IndexError("The values of index must be between 0 and (self.shape[dim] - 1)")
+
+    def make_slice(arr, dim, i):
+        slc = [slice(None)] * arr.ndim
+        slc[dim] = i
+        return slc
+
+    idx = [[*np.indices(idx_xsection_shape).reshape(index.ndim - 1, -1),
+            index[make_slice(index, dim, i)].reshape(1, -1)[0]] for i in range(index.shape[dim])]
+    idx = list(np.concatenate(idx, axis=1))
+    idx.insert(dim, idx.pop())
+
+    if not np.isscalar(src):
+        if index.shape[dim] > src.shape[dim]:
+            raise IndexError(f"Dimension {dim} of index cannot be bigger than that of src")
+        src_xsection_shape = src.shape[:dim] + src.shape[dim + 1:]
+        if idx_xsection_shape != src_xsection_shape:
+            raise ValueError(f"Except for dimension {dim}, all dimensions of index and src should be the same size")
+
+        src_idx = list(idx)
+        src_idx.pop(dim)
+        src_idx.insert(dim, np.repeat(np.arange(index.shape[dim]), np.prod(idx_xsection_shape)))
+        self[idx] = src[src_idx]
+    else:
+        self[idx] = src
+
+    return self
+
+
 def collapse_last_two_dimensions(arr):
     """
     Collapses the last two dimensions of a NumPy array.

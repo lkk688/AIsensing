@@ -1591,7 +1591,7 @@ def tensor_scatter_nd_update(tensor, indices, updates):
     :return: Updated tensor
     """
     # Create a tuple of indices for advanced indexing
-    index_tuple = tuple(indices.T) #(1064, 4) = > 4 tuple array (1064,) each
+    index_tuple = tuple(indices.T) #(1064, 4) = > 4 tuple array (1064,) each, same to np.where output
 
     # Scatter values from updates into tensor
     tensornew = tensor.copy()
@@ -1599,6 +1599,20 @@ def tensor_scatter_nd_update(tensor, indices, updates):
     #(1, 1, 14, 76, 64) updates(1064, 64)
 
     return tensor #(1, 1, 14, 76, 64)
+
+def scatter_numpy(tensor, indices, values):
+    """
+    Scatters values into a tensor at specified indices.
+    
+    :param tensor: The target tensor to scatter values into.
+    :param indices: Indices where values should be placed.
+    :param values: Values to scatter.
+    :return: Updated tensor after scattering.
+    """
+    # Scatter values
+    tensor[tuple(indices.T)] = values
+
+    return tensor
 
 from sionna_tf import ResourceGridMapper
 class MyResourceGridMapper:
@@ -1645,16 +1659,27 @@ class MyResourceGridMapper:
         #Return the indices of non-zero elements in _rg_type via pytorch
         tupleindex = np.where(self._rg_type==1)#result is a tuple with first all the row indices, then all the column indices.
         self._pilot_ind=np.stack(tupleindex, axis=1) #shape=(0,4)
-
-        datatupleindex = np.where(self._rg_type==0)
+        #_rg_type array(1, 1, 14, 76)
+        datatupleindex = np.where(self._rg_type==0) 
+        #0 (all 0),1(all 0),2 (0-13),3 (0-75) tuple, (1064,) each, index for each dimension of _rg_type(1, 1, 14, 76)
         self._data_ind=np.stack(datatupleindex, axis=1) #(1064, 4)
         #self._pilot_ind = tf.where(self._rg_type==1) #shape=(0, 4)
         #self._data_ind = tf.where(self._rg_type==0) #[1064, 4]
 
+        #test
+        test=self._rg_type.copy()
+        data_test=test[datatupleindex] #(1, 1, 14, 76)
+        print(data_test.shape)
+        pilot_test=test[tupleindex]
+        print(pilot_test.shape)
+
+
+
+
     def __call__(self, inputs):
         #inputs: [batch_size, num_tx, num_streams_per_tx, num_data_symbols]
         # Map pilots on empty resource grid
-        pilots = flatten_last_dims(self._resource_grid.pilot_pattern.pilots, 3)
+        pilots = flatten_last_dims(self._resource_grid.pilot_pattern.pilots, 3) #empty
 
         #the indices tensor is the _pilot_ind tensor, which is a2D tensor that contains the indices of the pilot symbols in the resource grid. 
         #The values tensor is the pilots tensor, which is a1D tensor that contains the pilot symbols. 
@@ -1804,7 +1829,7 @@ if __name__ == '__main__':
 
     encoder = LDPC5GEncoder(k, n) #2128, 4256
     mapper = Mapper("qam", num_bits_per_symbol)
-    rg_mapper = ResourceGridMapper(RESOURCE_GRID)
+    rg_mapper = ResourceGridMapper(RESOURCE_GRID) #ResourceGridMapper(RESOURCE_GRID)
     #Zero-forcing precoding for multi-antenna transmissions.
     #zf_precoder = ZFPrecoder(RESOURCE_GRID, STREAM_MANAGEMENT, return_effective_channel=True)
 
