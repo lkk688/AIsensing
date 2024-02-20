@@ -201,20 +201,20 @@ class SymbolLogits2LLRs(Layer):
         self._hard_out = hard_out
         self._num_bits_per_symbol = num_bits_per_symbol
         self._with_prior = with_prior
-        num_points = int(2**num_bits_per_symbol) #4
+        num_points = int(2**num_bits_per_symbol) #16
 
         # Array composed of binary representations of all symbols indices
-        a = np.zeros([num_points, num_bits_per_symbol]) #4,2, each symbol map to 2 bits, total 4 symbols
+        a = np.zeros([num_points, num_bits_per_symbol]) #shape(16,4), each symbol map to 4 bits, total 16 symbols
         for i in range(0, num_points):
             a[i,:] = np.array(list(np.binary_repr(i, num_bits_per_symbol)),
-                              dtype=np.int16)
+                              dtype=np.int16) #binary representation of its index to a[i,:]
 
         # Compute symbol indices for which the bits are 0 or 1
-        c0 = np.zeros([int(num_points/2), num_bits_per_symbol]) #2,2
+        c0 = np.zeros([int(num_points/2), num_bits_per_symbol]) #(8,4)
         c1 = np.zeros([int(num_points/2), num_bits_per_symbol])
-        for i in range(num_bits_per_symbol-1,-1,-1):
-            c0[:,i] = np.where(a[:,i]==0)[0]
-            c1[:,i] = np.where(a[:,i]==1)[0]
+        for i in range(num_bits_per_symbol-1,-1,-1): #3,2,1,0
+            c0[:,i] = np.where(a[:,i]==0)[0] #each col with 0bit to c0
+            c1[:,i] = np.where(a[:,i]==1)[0] #each col with 1bit to c0
         self._c0 = tf.constant(c0, dtype=tf.int32) # Symbols with ith bit=0
         self._c1 = tf.constant(c1, dtype=tf.int32) # Symbols with ith bit=1
 
@@ -240,13 +240,16 @@ class SymbolLogits2LLRs(Layer):
         else:
             logits = inputs
 
+        if isinstance(logits, np.ndarray):
+            logits = tf.convert_to_tensor(logits) #newly added
+
         # Compute exponents
-        exponents = logits #(64, 512, 4) tf float32
+        exponents = logits #(64, 512, 4) tf float32 [64, 1, 1, 14, 76, 16]
 
         # Gather exponents for all bits
         # shape [...,n,num_points/2,num_bits_per_symbol]
-        exp0 = tf.gather(exponents, self._c0, axis=-1, batch_dims=0) #c0 (2, 2) =>(64, 512, 2, 2)
-        exp1 = tf.gather(exponents, self._c1, axis=-1, batch_dims=0) #(64, 512, 2, 2)
+        exp0 = tf.gather(exponents, self._c0, axis=-1, batch_dims=0) #c0 (2, 2) =>(64, 512, 2, 2): [64, 1, 1, 14, 76, 8, 4]
+        exp1 = tf.gather(exponents, self._c1, axis=-1, batch_dims=0) #(64, 512, 2, 2): [64, 1, 1, 14, 76, 8, 4]
 
         # Process the prior information
         if self._with_prior:
@@ -275,8 +278,8 @@ class SymbolLogits2LLRs(Layer):
                     - self._reduce(exp_ps0 + exp0, axis=-2)
         else:
             #llr = self._reduce(exp1, axis=-2) - self._reduce(exp0, axis=-2)
-            reduce1=self._reduce(exp1, axis=-2) #(64, 512, 2)
-            reduce2=self._reduce(exp0, axis=-2) #(64, 512, 2)
+            reduce1=self._reduce(exp1, axis=-2) #(64, 512, 2): [64, 1, 1, 14, 76, 4]
+            reduce2=self._reduce(exp0, axis=-2) #(64, 512, 2): [64, 1, 1, 14, 76, 4]
             llr = reduce1-reduce2
 
         if self._hard_out:
@@ -3236,8 +3239,8 @@ class OFDMEqualizer(Layer):
                  **kwargs):
         super().__init__(dtype=dtype, **kwargs)
         assert callable(equalizer)
-        assert isinstance(resource_grid, ResourceGrid)
-        assert isinstance(stream_management, StreamManagement)
+        #assert isinstance(resource_grid, ResourceGrid)
+        #assert isinstance(stream_management, StreamManagement)
         self._equalizer = equalizer
         self._resource_grid = resource_grid
         self._stream_management = stream_management
