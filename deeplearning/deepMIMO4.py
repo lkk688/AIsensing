@@ -2432,6 +2432,8 @@ if __name__ == '__main__':
     # y is the symbol received after the channel and noise
     #Channel outputs y : [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], complex    
     print(y.shape) #[64, 1, 1, 14, 76] dim (3,4 removed)
+    print(y.real)
+    print(y.imag)
 
     #remove_nulled_scs = RemoveNulledSubcarriers(RESOURCE_GRID)
     #h_perf = remove_nulled_scs(h_freq)[0,0,0,0,0,0] #get the last dimension: fft_size [76]
@@ -2445,48 +2447,47 @@ if __name__ == '__main__':
     plt.title("Comparison of channel frequency responses");
 
     #receiver part
-    # Receiver
-    ls_est = LSChannelEstimator(RESOURCE_GRID, interpolation_type="lin_time_avg")
-    lmmse_equ = LMMSEEqualizer(RESOURCE_GRID, STREAM_MANAGEMENT)
     mydemapper = MyDemapper("app", constellation_type="qam", num_bits_per_symbol=num_bits_per_symbol)
+    if pilot_pattern == "empty": #"kronecker", "empty"
+        #no channel estimation
+        llr = mydemapper([y, no]) #[64, 1, 1, 14, 304]
+        # Reshape the array by collapsing the last two dimensions
+        llr_est = llr.reshape(llr.shape[:-2] + (-1,)) #(64, 1, 1, 4256)
 
-    #Observed resource grid y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols,fft_size], tf.complex
-    #no : [batch_size, num_rx, num_rx_ant] 
-    h_hat, err_var = ls_est([y, no]) #(64, 1, 1, 1, 1, 14, 76), (1, 1, 1, 1, 1, 14, 76)
-    #h_ls : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols,fft_size], tf.complex
-    #Channel estimates accross the entire resource grid for all transmitters and streams
+        llr_perfect = mydemapper([x_rg, no]) #[64, 1, 1, 14, 304]
+        llr_perfect = llr_perfect.reshape(llr_perfect.shape[:-2] + (-1,)) #(64, 1, 1, 4256)
+        b_perfect = hard_decisions(llr_perfect, np.int32) #(64, 1024) 0,1 [64, 1, 1, 14, 304] 2128
+        BER=calculate_BER(b, b_perfect)
+        print(BER)
+    else: # channel estimation
+        # Receiver
+        ls_est = LSChannelEstimator(RESOURCE_GRID, interpolation_type="lin_time_avg")
+        lmmse_equ = LMMSEEqualizer(RESOURCE_GRID, STREAM_MANAGEMENT)
 
-    #input (y, h_hat, err_var, no)
-    #Received OFDM resource grid after cyclic prefix removal and FFT y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], tf.complex
-    #Channel estimates for all streams from all transmitters h_hat : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols, num_effective_subcarriers], tf.complex
-    x_hat, no_eff = lmmse_equ([y, h_hat, err_var, no]) #(64, 1, 1, 912), (64, 1, 1, 912)
-    #Estimated symbols x_hat : [batch_size, num_tx, num_streams, num_data_symbols], tf.complex
-    #Effective noise variance for each estimated symbol no_eff : [batch_size, num_tx, num_streams, num_data_symbols], tf.float
-    x_hat=x_hat.numpy() #(64, 1, 1, 912)
-    no_eff=no_eff.numpy() #(64, 1, 1, 912)
-    no_eff=np.mean(no_eff)
+        #Observed resource grid y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols,fft_size], tf.complex
+        #no : [batch_size, num_rx, num_rx_ant] 
+        h_hat, err_var = ls_est([y, no]) #(64, 1, 1, 1, 1, 14, 76), (1, 1, 1, 1, 1, 14, 76)
+        #h_ls : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols,fft_size], tf.complex
+        #Channel estimates accross the entire resource grid for all transmitters and streams
 
-    llr_est = mydemapper([x_hat, no_eff]) 
-    # Reshape the array by collapsing the last two dimensions
-    #llr_est = llr_est.reshape(llr_est.shape[:-2] + (-1,)) #(64, 1, 1, 4256)
+        #input (y, h_hat, err_var, no)
+        #Received OFDM resource grid after cyclic prefix removal and FFT y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], tf.complex
+        #Channel estimates for all streams from all transmitters h_hat : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols, num_effective_subcarriers], tf.complex
+        x_hat, no_eff = lmmse_equ([y, h_hat, err_var, no]) #(64, 1, 1, 912), (64, 1, 1, 912)
+        #Estimated symbols x_hat : [batch_size, num_tx, num_streams, num_data_symbols], tf.complex
+        #Effective noise variance for each estimated symbol no_eff : [batch_size, num_tx, num_streams, num_data_symbols], tf.float
+        x_hat=x_hat.numpy() #(64, 1, 1, 912)
+        no_eff=no_eff.numpy() #(64, 1, 1, 912)
+        no_eff=np.mean(no_eff)
+
+        llr_est = mydemapper([x_hat, no_eff]) #(64, 1, 1, 4256)
+
     b_est = hard_decisions(llr_est, np.int32) #(64, 1024) 0,1 [64, 1, 1, 14, 304] 2128
     BER=calculate_BER(b, b_est)
     print(BER)
 
-    llr = mydemapper([y, no]) #[64, 1, 1, 14, 304]
     
-    llr_perfect = mydemapper([x_rg, no]) #[64, 1, 1, 14, 304]
+    
 
-    # Reshape the array by collapsing the last two dimensions
-    llr = llr.reshape(llr.shape[:-2] + (-1,)) #(64, 1, 1, 4256)
-    b_hat = hard_decisions(llr, np.int32) #(64, 1024) 0,1 [64, 1, 1, 14, 304] 2128
-
-    BER=calculate_BER(b, b_hat)
-    print(BER)
-
-    llr_perfect = llr_perfect.reshape(llr_perfect.shape[:-2] + (-1,)) #(64, 1, 1, 4256)
-    b_perfect = hard_decisions(llr_perfect, np.int32) #(64, 1024) 0,1 [64, 1, 1, 14, 304] 2128
-    BER=calculate_BER(b, b_perfect)
-    print(BER)
 
     
