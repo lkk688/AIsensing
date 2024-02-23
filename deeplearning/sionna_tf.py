@@ -4,6 +4,8 @@ import tensorflow as tf
 from tensorflow.keras.layers import Layer
 import matplotlib.pyplot as plt
 from abc import ABC, abstractmethod
+PI = 3.141592653589793
+SPEED_OF_LIGHT = 299792458
 
 def insert_dims(tensor, num_dims, axis=-1):
     """Adds multiple length-one dimensions to a tensor.
@@ -3633,6 +3635,424 @@ class LMMSEEqualizer(OFDMEqualizer):
                          resource_grid=resource_grid,
                          stream_management=stream_management,
                          dtype=dtype, **kwargs)
+
+def convolve(inp, ker, padding='full', axis=-1):
+    # pylint: disable=line-too-long
+    r"""
+    Filters an input ``inp`` of length `N` by convolving it with a kernel ``ker`` of length `K`.
+
+    The length of the kernel ``ker`` must not be greater than the one of the input sequence ``inp``.
+
+    The `dtype` of the output is `tf.float` only if both ``inp`` and ``ker`` are `tf.float`. It is `tf.complex` otherwise.
+    ``inp`` and ``ker`` must have the same precision.
+
+    Three padding modes are available:
+
+    *   "full" (default): Returns the convolution at each point of overlap between ``ker`` and ``inp``.
+        The length of the output is `N + K - 1`. Zero-padding of the input ``inp`` is performed to
+        compute the convolution at the border points.
+    *   "same": Returns an output of the same length as the input ``inp``. The convolution is computed such
+        that the coefficients of the input ``inp`` are centered on the coefficient of the kernel ``ker`` with index
+        ``(K-1)/2`` for kernels of odd length, and ``K/2 - 1`` for kernels of even length.
+        Zero-padding of the input signal is performed to compute the convolution at the border points.
+    *   "valid": Returns the convolution only at points where ``inp`` and ``ker`` completely overlap.
+        The length of the output is `N - K + 1`.
+
+    Input
+    ------
+    inp : [...,N], tf.complex or tf.real
+        Input to filter.
+
+    ker : [K], tf.complex or tf.real
+        Kernel of the convolution.
+
+    padding : string
+        Padding mode. Must be one of "full", "valid", or "same". Case insensitive.
+        Defaults to "full".
+
+    axis : int
+        Axis along which to perform the convolution.
+        Defaults to `-1`.
+
+    Output
+    -------
+    out : [...,M], tf.complex or tf.float
+        Convolution output.
+        It is `tf.float` only if both ``inp`` and ``ker`` are `tf.float`. It is `tf.complex` otherwise.
+        The length `M` of the output depends on the ``padding``.
+    """
+
+    # We don't want to be sensitive to case
+    padding = padding.lower()
+    assert padding in ('valid', 'same', 'full'), "Invalid padding method"
+
+    # Ensure we process along the axis requested by the user
+    inp = tf.experimental.numpy.swapaxes(inp, axis, -1)
+
+    # Reshape the input to a 2D tensor
+    batch_shape = tf.shape(inp)[:-1]
+    inp_len = tf.shape(inp)[-1]
+    inp_dtype = inp.dtype
+    ker_dtype = ker.dtype
+    inp = tf.reshape(inp, [-1, inp_len])
+
+    # Using Tensorflow convolution implementation, we need to manually flip
+    # the kernel
+    ker = tf.reverse(ker, axis=(0,))
+    # Tensorflow convolution expects convolution kernels with input and
+    # output dims
+    ker = expand_to_rank(ker, 3, 1)
+    # Tensorflow convolution expects a channel dim for the convolution
+    inp = tf.expand_dims(inp, axis=-1)
+
+    # Pad the kernel or input if required depending on the convolution type.
+    # Also, set the padding-mode for TF convolution
+    if padding == 'valid':
+        # No padding required in this case
+        tf_conv_mode = 'VALID'
+    elif padding == 'same':
+        ker = tf.pad(ker, [[0,1],[0,0],[0,0]])
+        tf_conv_mode = 'SAME'
+    elif padding == 'full':
+        ker_len = ker.shape[0] #tf.shape(ker)[0]
+        if (ker_len % 2) == 0:
+            extra_padding_left = ker_len // 2
+            extra_padding_right = extra_padding_left-1
+        else:
+            extra_padding_left = (ker_len-1) // 2
+            extra_padding_right = extra_padding_left
+        inp = tf.pad(inp, [[0,0],
+                        [extra_padding_left,extra_padding_right],
+                        [0,0]])
+        tf_conv_mode = 'SAME'
+
+    # Extract the real and imaginary components of the input and kernel
+    inp_real = tf.math.real(inp)
+    ker_real = tf.math.real(ker)
+    inp_imag = tf.math.imag(inp)
+    ker_imag = tf.math.imag(ker)
+
+    # Compute convolution
+    # The output is complex-valued if the input or the kernel is.
+    # Defaults to False, and set to True if required later
+    complex_output = False
+    out_1 = tf.nn.convolution(inp_real, ker_real, padding=tf_conv_mode)
+    if inp_dtype.is_complex:
+        out_4 = tf.nn.convolution(inp_imag, ker_real, padding=tf_conv_mode)
+        complex_output = True
+    else:
+        out_4 = tf.zeros_like(out_1)
+    if ker_dtype.is_complex:
+        out_3 = tf.nn.convolution(inp_real, ker_imag, padding=tf_conv_mode)
+        complex_output = True
+    else:
+        out_3 = tf.zeros_like(out_1)
+    if inp_dtype.is_complex and ker.dtype.is_complex:
+        out_2 = tf.nn.convolution(inp_imag, ker_imag, padding=tf_conv_mode)
+    else:
+        out_2 = tf.zeros_like(out_1)
+    if complex_output:
+        out = tf.complex(out_1 - out_2,
+                        out_3 + out_4)
+    else:
+        out = out_1
+
+    # Reshape the output to the expected shape
+    out = tf.squeeze(out, axis=-1)
+    out_len = tf.shape(out)[-1]
+    out = tf.reshape(out, tf.concat([batch_shape, [out_len]], axis=-1))
+    out = tf.experimental.numpy.swapaxes(out, axis, -1)
+
+    return out
+
+from tensorflow.experimental.numpy import swapaxes
+def fft(tensor, axis=-1):
+    r"""Computes the normalized DFT along a specified axis.
+
+    This operation computes the normalized one-dimensional discrete Fourier
+    transform (DFT) along the ``axis`` dimension of a ``tensor``.
+    For a vector :math:`\mathbf{x}\in\mathbb{C}^N`, the DFT
+    :math:`\mathbf{X}\in\mathbb{C}^N` is computed as
+
+    .. math::
+        X_m = \frac{1}{\sqrt{N}}\sum_{n=0}^{N-1} x_n \exp \left\{
+            -j2\pi\frac{mn}{N}\right\},\quad m=0,\dots,N-1.
+
+    Input
+    -----
+    tensor : tf.complex
+        Tensor of arbitrary shape.
+    axis : int
+        Indicates the dimension along which the DFT is taken.
+
+    Output
+    ------
+    : tf.complex
+        Tensor of the same dtype and shape as ``tensor``.
+    """
+    fft_size = tf.cast(tf.shape(tensor)[axis], tensor.dtype)
+    scale = 1/tf.sqrt(fft_size)
+
+    if axis not in [-1, tensor.shape.rank]:
+        output =  tf.signal.fft(swapaxes(tensor, axis, -1))
+        output = swapaxes(output, axis, -1)
+    else:
+        output = tf.signal.fft(tensor)
+
+    return scale * output
+
+
+def ifft(tensor, axis=-1):
+    r"""Computes the normalized IDFT along a specified axis.
+
+    This operation computes the normalized one-dimensional discrete inverse
+    Fourier transform (IDFT) along the ``axis`` dimension of a ``tensor``.
+    For a vector :math:`\mathbf{X}\in\mathbb{C}^N`, the IDFT
+    :math:`\mathbf{x}\in\mathbb{C}^N` is computed as
+
+    .. math::
+        x_n = \frac{1}{\sqrt{N}}\sum_{m=0}^{N-1} X_m \exp \left\{
+            j2\pi\frac{mn}{N}\right\},\quad n=0,\dots,N-1.
+
+    Input
+    -----
+    tensor : tf.complex
+        Tensor of arbitrary shape.
+
+    axis : int
+        Indicates the dimension along which the IDFT is taken.
+
+    Output
+    ------
+    : tf.complex
+        Tensor of the same dtype and shape as ``tensor``.
+    """
+    fft_size = tf.cast(tf.shape(tensor)[axis], tensor.dtype)
+    scale = tf.sqrt(fft_size)
+
+    if axis not in [-1, tensor.shape.rank]:
+        output =  tf.signal.ifft(swapaxes(tensor, axis, -1))
+        output = swapaxes(output, axis, -1)
+    else:
+        output = tf.signal.ifft(tensor)
+
+    return scale * output
+
+from tensorflow.signal import ifftshift
+class OFDMModulator(Layer):
+    """
+    OFDMModulator(cyclic_prefix_length, **kwargs)
+
+    Computes the time-domain representation of an OFDM resource grid
+    with (optional) cyclic prefix.
+
+    Parameters
+    ----------
+    cyclic_prefix_length : int
+        Integer indicating the length of the
+        cyclic prefix that it prepended to each OFDM symbol. It cannot
+        be longer than the FFT size.
+
+    Input
+    -----
+    : [...,num_ofdm_symbols,fft_size], tf.complex
+        A resource grid in the frequency domain.
+
+    Output
+    ------
+    : [...,num_ofdm_symbols*(fft_size+cyclic_prefix_length)], tf.complex
+        Time-domain OFDM signal.
+    """
+
+    def __init__(self, cyclic_prefix_length=0, **kwargs):
+        super().__init__(**kwargs)
+        self.cyclic_prefix_length = cyclic_prefix_length
+
+    @property
+    def cyclic_prefix_length(self):
+        return self._cyclic_prefix_length
+
+    @cyclic_prefix_length.setter
+    def cyclic_prefix_length(self, value):
+        assert value >=0, "`cyclic_prefix_length` must be nonnegative."
+        self._cyclic_prefix_length = value
+
+    def build(self, input_shape):
+        # Verify that cyclic prefix is not longer than the FFT size.
+        fft_size = input_shape[-1]
+        assert self.cyclic_prefix_length<=fft_size, \
+            "shape(inputs)[-1] must not be smaller than `cylic_prefix_length`"
+
+    def call(self, inputs):
+        # Shift DC subcarrier to first position
+        inputs = ifftshift(inputs, axes=-1)
+
+        # Compute IFFT along the last dimension
+        x = ifft(inputs)
+
+        # Obtain cyclic prefix
+        cp = x[...,tf.shape(inputs)[-1]-self._cyclic_prefix_length:]
+
+        # Prepend cyclic prefix
+        x = tf.concat([cp, x], -1) #[64, 1, 1, 14, 82]
+
+        # Serialize last two dimensions
+        x = flatten_last_dims(x, 2)
+
+        return x #[64, 1, 1, 1148]
+
+from tensorflow.signal import fftshift
+class OFDMDemodulator(Layer):
+    # pylint: disable=line-too-long
+    r"""
+    OFDMDemodulator(fft_size, l_min, cyclic_prefix_length, **kwargs)
+
+    Computes the frequency-domain representation of an OFDM waveform
+    with cyclic prefix removal.
+
+    The demodulator assumes that the input sequence is generated by the
+    :class:`~sionna.channel.TimeChannel`. For a single pair of antennas,
+    the received signal sequence is given as:
+
+    .. math::
+
+        y_b = \sum_{\ell =L_\text{min}}^{L_\text{max}} \bar{h}_\ell x_{b-\ell} + w_b, \quad b \in[L_\text{min}, N_B+L_\text{max}-1]
+
+    where :math:`\bar{h}_\ell` are the discrete-time channel taps,
+    :math:`x_{b}` is the the transmitted signal,
+    and :math:`w_\ell` Gaussian noise.
+
+    Starting from the first symbol, the demodulator cuts the input
+    sequence into pieces of size ``cyclic_prefix_length + fft_size``,
+    and throws away any trailing symbols. For each piece, the cyclic
+    prefix is removed and the ``fft_size``-point discrete Fourier
+    transform is computed.
+
+    Since the input sequence starts at time :math:`L_\text{min}`,
+    the FFT-window has a timing offset of :math:`L_\text{min}` symbols,
+    which leads to a subcarrier-dependent phase shift of
+    :math:`e^{\frac{j2\pi k L_\text{min}}{N}}`, where :math:`k`
+    is the subcarrier index, :math:`N` is the FFT size,
+    and :math:`L_\text{min} \le 0` is the largest negative time lag of
+    the discrete-time channel impulse response. This phase shift
+    is removed in this layer, by explicitly multiplying
+    each subcarrier by  :math:`e^{\frac{-j2\pi k L_\text{min}}{N}}`.
+    This is a very important step to enable channel estimation with
+    sparse pilot patterns that needs to interpolate the channel frequency
+    response accross subcarriers. It also ensures that the
+    channel frequency response `seen` by the time-domain channel
+    is close to the :class:`~sionna.channel.OFDMChannel`.
+
+    Parameters
+    ----------
+    fft_size : int
+        FFT size (, i.e., the number of subcarriers).
+
+    l_min : int
+        The largest negative time lag of the discrete-time channel
+        impulse response. It should be the same value as that used by the
+        `cir_to_time_channel` function.
+
+    cyclic_prefix_length : int
+        Integer indicating the length of the cyclic prefix that
+        is prepended to each OFDM symbol.
+
+    Input
+    -----
+    :[...,num_ofdm_symbols*(fft_size+cyclic_prefix_length)+n], tf.complex
+        Tensor containing the time-domain signal along the last dimension.
+        `n` is a nonnegative integer.
+
+    Output
+    ------
+    :[...,num_ofdm_symbols,fft_size], tf.complex
+        Tensor containing the OFDM resource grid along the last
+        two dimension.
+    """
+
+    def __init__(self, fft_size, l_min, cyclic_prefix_length=0, **kwargs):
+        super().__init__(**kwargs)
+        self.fft_size = fft_size
+        self.l_min = l_min
+        self.cyclic_prefix_length = cyclic_prefix_length
+
+    @property
+    def fft_size(self):
+        return self._fft_size
+
+    @fft_size.setter
+    def fft_size(self, value):
+        assert value>0, "`fft_size` must be positive."
+        self._fft_size = int(value)
+
+    @property
+    def l_min(self):
+        return self._l_min
+
+    @l_min.setter
+    def l_min(self, value):
+        assert value<=0, "l_min must be nonpositive."
+        self._l_min = int(value)
+
+    @property
+    def cyclic_prefix_length(self):
+        return self._cyclic_prefix_length
+
+    @cyclic_prefix_length.setter
+    def cyclic_prefix_length(self, value):
+        assert value >=0, "`cyclic_prefix_length` must be nonnegative."
+        self._cyclic_prefix_length = int(value)
+
+    def build(self, input_shape): # pylint: disable=unused-argument
+        tmp = -2 * PI * tf.cast(self.l_min, tf.float32) \
+              / tf.cast(self.fft_size, tf.float32) \
+              * tf.range(self.fft_size, dtype=tf.float32)
+        self._phase_compensation = tf.exp(tf.complex(0., tmp))
+
+        # Compute number of elements that will be truncated
+        self._rest = np.mod(input_shape[-1],
+                                self.fft_size + self.cyclic_prefix_length)
+
+        # Compute number of full OFDM symbols to be demodulated
+        self._num_ofdm_symbols = np.floor_divide(
+                                    input_shape[-1]-self._rest,
+                                    self.fft_size + self.cyclic_prefix_length)
+
+    def call(self, inputs):
+        """Demodulate OFDM waveform onto a resource grid.
+
+        Args:
+            inputs (tf.complex64):
+                `[...,num_ofdm_symbols*(fft_size+cyclic_prefix_length)]`.
+
+        Returns:
+            `tf.complex64` : The demodulated inputs of shape
+            `[...,num_ofdm_symbols, fft_size]`.
+        """
+
+        # Cut last samples that do not fit into an OFDM symbol
+        inputs = inputs if self._rest==0 else inputs[...,:-self._rest]
+
+        # Reshape input to separate OFDM symbols
+        new_shape = tf.concat([tf.shape(inputs)[:-1], [self._num_ofdm_symbols],
+                               [self.fft_size + self.cyclic_prefix_length]], 0)
+        x = tf.reshape(inputs, new_shape)
+
+        # Remove cyclic prefix
+        x = x[...,self.cyclic_prefix_length:]
+
+        # Compute FFT
+        x = fft(x)
+
+        # Apply phase shift compensation to all subcarriers
+        rot = tf.cast(self._phase_compensation, x.dtype)
+        rot = expand_to_rank(rot, tf.rank(x), 0)
+        x = x * rot
+
+        # Shift DC subcarrier to the middle
+        x = fftshift(x, axes=-1)
+
+        return x
 
 
 from ldpc.encoding import LDPC5GEncoder

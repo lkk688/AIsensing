@@ -1136,7 +1136,7 @@ class MyResourceGrid():
     def num_time_samples(self):
         """The number of time-domain samples occupied by the resource grid."""
         return (self.fft_size + self.cyclic_prefix_length) \
-                * self._num_ofdm_symbols
+                * self._num_ofdm_symbols #(76+6)*14
 
     @property
     def dc_null(self):
@@ -2226,6 +2226,122 @@ def calculate_BER(bits, bits_est):
     return BER
 
 class MyDemapper:
+    r"""
+    Demapper(demapping_method, constellation_type=None, num_bits_per_symbol=None, constellation=None, hard_out=False, with_prior=False, dtype=tf.complex64, **kwargs)
+
+    Computes log-likelihood ratios (LLRs) or hard-decisions on bits
+    for a tensor of received symbols.
+    If the flag ``with_prior`` is set, prior knowledge on the bits is assumed to be available.
+
+    This class defines a layer implementing different demapping
+    functions. All demapping functions are fully differentiable when soft-decisions
+    are computed.
+
+    Parameters
+    ----------
+    demapping_method : One of ["app", "maxlog"], str
+        The demapping method used.
+
+    constellation_type : One of ["qam", "pam", "custom"], str
+        For "custom", an instance of :class:`~sionna.mapping.Constellation`
+        must be provided.
+
+    num_bits_per_symbol : int
+        The number of bits per constellation symbol, e.g., 4 for QAM16.
+        Only required for ``constellation_type`` in ["qam", "pam"].
+
+    constellation : Constellation
+        An instance of :class:`~sionna.mapping.Constellation` or `None`.
+        In the latter case, ``constellation_type``
+        and ``num_bits_per_symbol`` must be provided.
+
+    hard_out : bool
+        If `True`, the demapper provides hard-decided bits instead of soft-values.
+        Defaults to `False`.
+
+    with_prior : bool
+        If `True`, it is assumed that prior knowledge on the bits is available.
+        This prior information is given as LLRs as an additional input to the layer.
+        Defaults to `False`.
+
+    dtype : One of [tf.complex64, tf.complex128] tf.DType (dtype)
+        The dtype of `y`. Defaults to tf.complex64.
+        The output dtype is the corresponding real dtype (tf.float32 or tf.float64).
+
+    Input
+    -----
+    (y,no) or (y, prior, no) :
+        Tuple:
+
+    y : [...,n], tf.complex
+        The received symbols.
+
+    prior : [num_bits_per_symbol] or [...,num_bits_per_symbol], tf.float
+        Prior for every bit as LLRs.
+        It can be provided either as a tensor of shape `[num_bits_per_symbol]` for the
+        entire input batch, or as a tensor that is "broadcastable"
+        to `[..., n, num_bits_per_symbol]`.
+        Only required if the ``with_prior`` flag is set.
+
+    no : Scalar or [...,n], tf.float
+        The noise variance estimate. It can be provided either as scalar
+        for the entire input batch or as a tensor that is "broadcastable" to
+        ``y``.
+
+    Output
+    ------
+    : [...,n*num_bits_per_symbol], tf.float
+        LLRs or hard-decisions for every bit.
+
+    Note
+    ----
+    With the "app" demapping method, the LLR for the :math:`i\text{th}` bit
+    is computed according to
+
+    .. math::
+        LLR(i) = \ln\left(\frac{\Pr\left(b_i=1\lvert y,\mathbf{p}\right)}{\Pr\left(b_i=0\lvert y,\mathbf{p}\right)}\right) =\ln\left(\frac{
+                \sum_{c\in\mathcal{C}_{i,1}} \Pr\left(c\lvert\mathbf{p}\right)
+                \exp\left(-\frac{1}{N_o}\left|y-c\right|^2\right)
+                }{
+                \sum_{c\in\mathcal{C}_{i,0}} \Pr\left(c\lvert\mathbf{p}\right)
+                \exp\left(-\frac{1}{N_o}\left|y-c\right|^2\right)
+                }\right)
+
+    where :math:`\mathcal{C}_{i,1}` and :math:`\mathcal{C}_{i,0}` are the
+    sets of constellation points for which the :math:`i\text{th}` bit is
+    equal to 1 and 0, respectively. :math:`\mathbf{p} = \left[p_0,\dots,p_{K-1}\right]`
+    is the vector of LLRs that serves as prior knowledge on the :math:`K` bits that are mapped to
+    a constellation point and is set to :math:`\mathbf{0}` if no prior knowledge is assumed to be available,
+    and :math:`\Pr(c\lvert\mathbf{p})` is the prior probability on the constellation symbol :math:`c`:
+
+    .. math::
+        \Pr\left(c\lvert\mathbf{p}\right) = \prod_{k=0}^{K-1} \text{sigmoid}\left(p_k \ell(c)_k\right)
+
+    where :math:`\ell(c)_k` is the :math:`k^{th}` bit label of :math:`c`, where 0 is
+    replaced by -1.
+    The definition of the LLR has been
+    chosen such that it is equivalent with that of logits. This is
+    different from many textbooks in communications, where the LLR is
+    defined as :math:`LLR(i) = \ln\left(\frac{\Pr\left(b_i=0\lvert y\right)}{\Pr\left(b_i=1\lvert y\right)}\right)`.
+
+    With the "maxlog" demapping method, LLRs for the :math:`i\text{th}` bit
+    are approximated like
+
+    .. math::
+        \begin{align}
+            LLR(i) &\approx\ln\left(\frac{
+                \max_{c\in\mathcal{C}_{i,1}} \Pr\left(c\lvert\mathbf{p}\right)
+                    \exp\left(-\frac{1}{N_o}\left|y-c\right|^2\right)
+                }{
+                \max_{c\in\mathcal{C}_{i,0}} \Pr\left(c\lvert\mathbf{p}\right)
+                    \exp\left(-\frac{1}{N_o}\left|y-c\right|^2\right)
+                }\right)\\
+                &= \max_{c\in\mathcal{C}_{i,0}}
+                    \left(\ln\left(\Pr\left(c\lvert\mathbf{p}\right)\right)-\frac{|y-c|^2}{N_o}\right) -
+                 \max_{c\in\mathcal{C}_{i,1}}\left( \ln\left(\Pr\left(c\lvert\mathbf{p}\right)\right) - \frac{|y-c|^2}{N_o}\right)
+                .
+        \end{align}
+    """
     def __init__(self,
                  demapping_method,
                  constellation_type=None,
@@ -2270,7 +2386,7 @@ class MyDemapper:
         if self.with_prior:
             y, prior, no = inputs
         else:
-            y, no = inputs #(64, 1, 1, 14, 76), 
+            y, no = inputs #(64, 1, 1, 14, 76), [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size]
         
         # Reshape constellation points to [1,...1,num_points]
         #points_shape = [1]*y.shape.rank + self.points.shape
@@ -2297,15 +2413,19 @@ class MyDemapper:
             llr = self._logits2llrs([exponents, prior])
         else:
             #exponents = tf.convert_to_tensor(exponents) #move into the logits2llrs function
-            llr = self._logits2llrs(exponents) #(64, 512, 2): tensor [64, 1, 1, 14, 76, 4]
+            llr = self._logits2llrs(exponents) #(64, 512, 2): tensor 
+            #input: [...,n, num_points] => [...,n, num_bits_per_symbol] LLRs or hard-decisions for every bit.
+            #output [64, 1, 1, 14, 76, 4] [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size, bits]
         
         llr = llr.numpy() #convert tf to numpy
-        yshape_list = list(np.shape(y)) #[64, 1, 1, 14, 76]
+        yshape_list = list(np.shape(y)) #[64, 1, 1, 14, 76] [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size]
         part1= yshape_list[:-1] #[64, 1, 1, 14]
         part2= yshape_list[-1]*self.num_bits_per_symbol #304 (76*4)
         out_shape = np.concatenate([part1, [part2]], 0) #[ 64,   1,   1,  14, 304] 
         # Reshape LLRs to [...,n*num_bits_per_symbol]
         llr_reshaped = np.reshape(llr, out_shape) #[ 64,   1,   1,  14, 304] combined last two dimension
+        #[...,n*num_bits_per_symbol] [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size(n subcarrier) * num_bits_per_symbol]
+
         # print(tf.shape(y)) #[64, 512]
         # print(tf.shape(y)[:-1]) # [64]
         # print(y.shape[-1]) #512
@@ -2316,8 +2436,8 @@ class MyDemapper:
 
         return llr_reshaped
 
-from sionna_tf import ZFPrecoder, LMMSEEqualizer, Demapper, RemoveNulledSubcarriers, SymbolLogits2LLRs #KroneckerPilotPattern
-from channel import LSChannelEstimator
+from sionna_tf import ZFPrecoder, LMMSEEqualizer, Demapper, RemoveNulledSubcarriers, SymbolLogits2LLRs, OFDMModulator, OFDMDemodulator #KroneckerPilotPattern
+from channel import LSChannelEstimator, cir_to_time_channel, time_lag_discrete_time_channel, ApplyTimeChannel
 from ldpc.encoding import LDPC5GEncoder
 from ldpc.decoding import LDPC5GDecoder
 
@@ -2369,6 +2489,7 @@ if __name__ == '__main__':
     plt.ylabel(r"$|a|$")
 
     # Generate the OFDM channel response
+    #computes the Fourier transform of the continuous-time channel impulse response at a set of `frequencies`, corresponding to the different subcarriers.
     ##h: [64, 1, 1, 1, 16, 10, 1], tau: [64, 1, 1, 10] => (64, 1, 1, 1, 16, 1, 76) 
     h_freq = mygenerate_OFDMchannel(h_b, tau_b, fft_size, subcarrier_spacing=60000.0, dtype=np.complex64, normalize_channel=True)
     #h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, fft_size]
@@ -2377,9 +2498,9 @@ if __name__ == '__main__':
     num_streams_per_tx = num_rx ##1
     STREAM_MANAGEMENT = StreamManagement(np.ones([num_rx, 1], int), num_streams_per_tx) #RX_TX_ASSOCIATION, NUM_STREAMS_PER_TX
 
-    cyclic_prefix_length = 0 #6
-    num_guard_carriers = [0, 0]
-    dc_null=False
+    cyclic_prefix_length = 6 #0 #6 Length of the cyclic prefix
+    num_guard_carriers = [5,6] #[0, 0] #List of two integers defining the number of guardcarriers at the left and right side of the resource grid.
+    dc_null=True #False
     pilot_ofdm_symbol_indices=[2,11]
     pilot_pattern = "kronecker" #"kronecker", "empty"
     #fft_size = 76
@@ -2395,14 +2516,56 @@ if __name__ == '__main__':
                                         pilot_pattern=pilot_pattern,
                                         pilot_ofdm_symbol_indices=pilot_ofdm_symbol_indices)
     RESOURCE_GRID.show() #14(OFDM symbol)*76(subcarrier) array=1064
+    RESOURCE_GRID.pilot_pattern.show();
+    #The pilot patterns are defined over the resource grid of *effective subcarriers* from which the nulled DC and guard carriers have been removed. 
+    #This leaves us in our case with 76 - 1 (DC) - 5 (left guards) - 6 (right guards) = 64 effective subcarriers.
+
+    #actual pilot sequences for all streams which consists of random QPSK symbols.
+    #By default, the pilot sequences are normalized, such that the average power per pilot symbol is
+    #equal to one. As only every fourth pilot symbol in the sequence is used, their amplitude is scaled by a factor of two.
+    plt.figure()
+    plt.title("Real Part of the Pilot Sequences")
+    for i in range(num_streams_per_tx):
+        plt.stem(np.real(RESOURCE_GRID.pilot_pattern.pilots[0, i]),
+                markerfmt="C{}.".format(i), linefmt="C{}-".format(i),
+                label="Stream {}".format(i))
+    plt.legend()
+    print("Average energy per pilot symbol: {:1.2f}".format(np.mean(np.abs(RESOURCE_GRID.pilot_pattern.pilots[0,0])**2)))
+
+    bandwidth = RESOURCE_GRID.bandwidth
+    l_min, l_max = time_lag_discrete_time_channel(bandwidth)
+    l_tot = l_max-l_min+1 #27
+    # Compute the discrete-time channel impulse reponse
+    h_time = cir_to_time_channel(bandwidth, h_b, tau_b, l_min=l_min, l_max=l_max, normalize=True) 
+    #h_time: [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, l_max - l_min + 1] [64, 1, 1, 1, 16, 1, 27]
+    plt.figure()
+    plt.title("Discrete-time channel impulse response")
+    plt.stem(np.abs(h_time[0,0,0,0,0,0]))
+    plt.xlabel(r"Time step $\ell$")
+    plt.ylabel(r"$|\bar{h}|$");
+
+    channel_time = ApplyTimeChannel(RESOURCE_GRID.num_time_samples, l_tot=l_tot, add_awgn=True)
+
+    # OFDM modulator and demodulator
+    modulator = OFDMModulator(RESOURCE_GRID.cyclic_prefix_length)
+    demodulator = OFDMDemodulator(RESOURCE_GRID.fft_size, l_min, RESOURCE_GRID.cyclic_prefix_length)
 
     num_bits_per_symbol = 4
-    coderate = 1 #0.5
     # Codeword length
     n = int(RESOURCE_GRID.num_data_symbols * num_bits_per_symbol) #912*4=3648, if empty 1064*4=4256
-    # Number of information bits per codeword
-    k = int(n * coderate)        
 
+    USE_LDPC = True
+    if USE_LDPC:
+        coderate = 0.5
+        # Number of information bits per codeword
+        k = int(n * coderate)  
+        encoder = LDPC5GEncoder(k, n) #1824, 3648
+        decoder = LDPC5GDecoder(encoder, hard_out=True)
+    else:
+        coderate = 1
+        # Number of information bits per codeword
+        k = int(n * coderate)  
+    
     # Transmitter
     binary_source = BinarySource()
 
@@ -2410,10 +2573,13 @@ if __name__ == '__main__':
     rg_mapper = MyResourceGridMapper(RESOURCE_GRID) #ResourceGridMapper(RESOURCE_GRID)
 
     # Start Transmitter 
-    b = binary_source([batch_size, 1, num_streams_per_tx, k]) #[64,1,1,2128] [batch_size, num_tx, num_streams_per_tx, num_databits]
-
-    x = mapper(b) #array[64,1,1,1064] 1064*4=4256 [batch_size, num_tx, num_streams_per_tx, num_data_symbols]
-    x_rg = rg_mapper(x) ##array[64,1,1,14,76] 14*76=1064 no pilot
+    b = binary_source([batch_size, 1, num_streams_per_tx, k]) #[64,1,1,1824] [batch_size, num_tx, num_streams_per_tx, num_databits]
+    if USE_LDPC:
+        c = encoder(b) #tensor[64,1,1,3648] [batch_size, num_tx, num_streams_per_tx, num_codewords]
+    else:
+        c = b
+    x = mapper(c) #array[64,1,1,912] 912*4=3648 [batch_size, num_tx, num_streams_per_tx, num_data_symbols]
+    x_rg = rg_mapper(x) ##array[64,1,1,14,76] 14*76=1064
     #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size]
 
     #set noise level
@@ -2424,6 +2590,20 @@ if __name__ == '__main__':
     # Convert it to a NumPy float
     no = np.float32(no)
 
+    # OFDM modulation with cyclic prefix insertion
+    x_time = modulator(x_rg) #output: [64, 1, 1, 1148]
+    # Compute the channel output
+    # This computes the full convolution between the time-varying
+    # discrete-time channel impulse reponse and the discrete-time
+    # transmit signal. With this technique, the effects of an
+    # insufficiently long cyclic prefix will become visible. This
+    # is in contrast to frequency-domain modeling which imposes
+    # no inter-symbol interfernce.
+    y_time = channel_time([x_time, h_time, no]) #[64, 1, 1, 1174]
+
+    # OFDM demodulation and cyclic prefix removal
+    y = demodulator(y_time)
+    #y: [64, 1, 1, 14, 76]
 
     # Generate the OFDM channel
     #h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, fft_size]
@@ -2480,11 +2660,19 @@ if __name__ == '__main__':
         no_eff=no_eff.numpy() #(64, 1, 1, 912)
         no_eff=np.mean(no_eff)
 
-        llr_est = mydemapper([x_hat, no_eff]) #(64, 1, 1, 4256)
+        llr_est = mydemapper([x_hat, no_eff]) #(64, 1, 1, 3648)
+        #output: [batch size, num_rx, num_rx_ant, n * num_bits_per_symbol]
 
-    b_est = hard_decisions(llr_est, np.int32) #(64, 1024) 0,1 [64, 1, 1, 14, 304] 2128
-    BER=calculate_BER(b, b_est)
+    #llr_est #(64, 1, 1, 4256)
+    if USE_LDPC:
+        b_hat = decoder(llr_est) #[64, 1, 1, 2128]
+    else:
+        b_hat = hard_decisions(llr_est, np.int32) 
+    BER=calculate_BER(b, b_hat)
     print(BER)
+
+    
+
 
     
     

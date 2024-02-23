@@ -563,6 +563,443 @@ def subcarrier_frequencies(num_subcarriers, subcarrier_spacing,
     frequencies = frequencies*subcarrier_spacing
     return frequencies
 
+def cir_to_time_channel(bandwidth, a, tau, l_min, l_max, normalize=False):
+    # pylint: disable=line-too-long
+    r"""
+    Compute the channel taps forming the discrete complex-baseband
+    representation of the channel from the channel impulse response
+    (``a``, ``tau``).
+
+    This function assumes that a sinc filter is used for pulse shaping and receive
+    filtering. Therefore, given a channel impulse response
+    :math:`(a_{m}(t), \tau_{m}), 0 \leq m \leq M-1`, the channel taps
+    are computed as follows:
+
+    .. math::
+        \bar{h}_{b, \ell}
+        = \sum_{m=0}^{M-1} a_{m}\left(\frac{b}{W}\right)
+            \text{sinc}\left( \ell - W\tau_{m} \right)
+
+    for :math:`\ell` ranging from ``l_min`` to ``l_max``, and where :math:`W` is
+    the ``bandwidth``.
+
+    Input
+    ------
+    bandwidth : float
+        Bandwidth [Hz]
+
+    a : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps], tf.complex
+        Path coefficients
+
+    tau : [batch size, num_rx, num_tx, num_paths] or [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths], tf.float
+        Path delays [s]
+
+    l_min : int
+        Smallest time-lag for the discrete complex baseband channel (:math:`L_{\text{min}}`)
+
+    l_max : int
+        Largest time-lag for the discrete complex baseband channel (:math:`L_{\text{max}}`)
+
+    normalize : bool
+        If set to `True`, the channel is normalized over the block size
+        to ensure unit average energy per time step. Defaults to `False`.
+
+    Output
+    -------
+    hm :  [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, l_max - l_min + 1], tf.complex
+        Channel taps coefficients
+    """
+
+    real_dtype = tau.dtype #(64, 1, 1, 10)
+
+    if len(tau.shape) == 4:
+        # Expand dims to broadcast with h. Add the following dimensions:
+        #  - number of rx antennas (2)
+        #  - number of tx antennas (4)
+        tau = tf.expand_dims(tf.expand_dims(tau, axis=2), axis=4) #[64, 1, num_rx_antenna=1(added), 1, num_tx_antenna=1(added), 10]
+        # Broadcast is not supported by TF for such high rank tensors.
+        # We therefore do part of it manually
+        tau = tf.tile(tau, [1, 1, 1, 1, a.shape[4], 1]) #(64, 1, 1, 1, 16(added num_tx_ant), 10)
+
+    # Add a time samples dimension for broadcasting
+    tau = tf.expand_dims(tau, axis=6) #[64, 1, 1, 1, 16, 10, 1(time)]
+
+    # Time lags for which to compute the channel taps
+    l = tf.range(l_min, l_max+1, dtype=real_dtype) #(27,)
+
+    # Bring tau and l to broadcastable shapes
+    tau = tf.expand_dims(tau, axis=-1) #(64, 1, 1, 1, 16, 10, 1, 1(added for time lag))
+    l = expand_to_rank(l, tau.shape.rank, axis=0) #[1, 1, 1, 1, 1, 1, 1, 27]
+
+    # sinc pulse shaping
+    g = tf.experimental.numpy.sinc(l-tau*bandwidth)#[64, 1, 1, 1, 16, 10, 1, 27]
+    g = tf.complex(g, tf.constant(0., real_dtype))
+    a = tf.expand_dims(a, axis=-1) #[64, 1, 1, 1, 16, 10, 1, 1(added for time lag)]
+
+    # For every tap, sum the sinc-weighted coefficients
+    hm = tf.reduce_sum(a*g, axis=-3) #[64, 1, 1, 1, 16, 10(pathes reduced), 1, 27]=>[64, 1, 1, 1, 16, 1, 27]
+
+    if normalize:
+        # Normalization is performed such that for each batch example and
+        # link the energy per block is one.
+        # The total energy of a channel response is the sum of the squared
+        # norm over the channel taps.
+        # Average over block size, RX antennas, and TX antennas
+        c = tf.reduce_mean(tf.reduce_sum(tf.square(tf.abs(hm)),
+                                         axis=6, keepdims=True), #sum for time
+                           axis=(2,4,5), keepdims=True)
+        c = tf.complex(tf.sqrt(c), tf.constant(0., real_dtype))
+        hm = tf.math.divide_no_nan(hm, c) #c:[64, 1, 1, 1, 1, 1, 1]
+
+    return hm #[64, 1, 1, 1, 16, 1, 27]
+
+def time_lag_discrete_time_channel(bandwidth, maximum_delay_spread=3e-6):
+    # pylint: disable=line-too-long
+    r"""
+    Compute the smallest and largest time-lag for the descrete complex baseband
+    channel, i.e., :math:`L_{\text{min}}` and :math:`L_{\text{max}}`.
+
+    The smallest time-lag (:math:`L_{\text{min}}`) returned is always -6, as this value
+    was found small enough for all models included in Sionna.
+
+    The largest time-lag (:math:`L_{\text{max}}`) is computed from the ``bandwidth``
+    and ``maximum_delay_spread`` as follows:
+
+    .. math::
+        L_{\text{max}} = \lceil W \tau_{\text{max}} \rceil + 6
+
+    where :math:`L_{\text{max}}` is the largest time-lag, :math:`W` the ``bandwidth``,
+    and :math:`\tau_{\text{max}}` the ``maximum_delay_spread``.
+
+    The default value for the ``maximum_delay_spread`` is 3us, which was found
+    to be large enough to include most significant paths with all channel models
+    included in Sionna assuming a nominal delay spread of 100ns.
+
+    Note
+    ----
+    The values of :math:`L_{\text{min}}` and :math:`L_{\text{max}}` computed
+    by this function are only recommended values.
+    :math:`L_{\text{min}}` and :math:`L_{\text{max}}` should be set according to
+    the considered channel model. For OFDM systems, one also needs to be careful
+    that the effective length of the complex baseband channel is not larger than
+    the cyclic prefix length.
+
+    Input
+    ------
+    bandwidth : float
+        Bandwith (:math:`W`) [Hz]
+
+    maximum_delay_spread : float
+        Maximum delay spread [s]. Defaults to 3us.
+
+    Output
+    -------
+    l_min : int
+        Smallest time-lag (:math:`L_{\text{min}}`) for the descrete complex baseband
+        channel. Set to -6, , as this value was found small enough for all models
+        included in Sionna.
+
+    l_max : int
+        Largest time-lag (:math:`L_{\text{max}}`) for the descrete complex baseband
+        channel
+    """
+    l_min = tf.cast(-6, tf.int32)
+    l_max = tf.math.ceil(maximum_delay_spread*bandwidth) + 6
+    l_max = tf.cast(l_max, tf.int32)
+    return l_min, l_max #-6, 20
+
+
+def time_to_ofdm_channel(h_t, rg, l_min):
+    # pylint: disable=line-too-long
+    r"""
+    Compute the channel frequency response from the discrete complex-baseband
+    channel impulse response.
+
+    Given a discrete complex-baseband channel impulse response
+    :math:`\bar{h}_{b,\ell}`, for :math:`\ell` ranging from :math:`L_\text{min}\le 0`
+    to :math:`L_\text{max}`, the discrete channel frequency response is computed as
+
+    .. math::
+
+        \hat{h}_{b,n} = \sum_{k=0}^{L_\text{max}} \bar{h}_{b,k} e^{-j \frac{2\pi kn}{N}} + \sum_{k=L_\text{min}}^{-1} \bar{h}_{b,k} e^{-j \frac{2\pi n(N+k)}{N}}, \quad n=0,\dots,N-1
+
+    where :math:`N` is the FFT size and :math:`b` is the time step.
+
+    This function only produces one channel frequency response per OFDM symbol, i.e.,
+    only values of :math:`b` corresponding to the start of an OFDM symbol (after
+    cyclic prefix removal) are considered.
+
+    Input
+    ------
+    h_t : [...num_time_steps,l_max-l_min+1], tf.complex
+        Tensor of discrete complex-baseband channel impulse responses
+
+    resource_grid : :class:`~sionna.ofdm.ResourceGrid`
+        Resource grid
+
+    l_min : int
+        Smallest time-lag for the discrete complex baseband
+        channel impulse response (:math:`L_{\text{min}}`)
+
+    Output
+    ------
+    h_f : [...,num_ofdm_symbols,fft_size], tf.complex
+        Tensor of discrete complex-baseband channel frequency responses
+
+    Note
+    ----
+    Note that the result of this function is generally different from the
+    output of :meth:`~sionna.channel.utils.cir_to_ofdm_channel` because
+    the discrete complex-baseband channel impulse response is truncated
+    (see :meth:`~sionna.channel.utils.cir_to_time_channel`). This effect
+    can be observed in the example below.
+
+    Examples
+    --------
+    .. code-block:: Python
+
+        # Setup resource grid and channel model
+        tf.random.set_seed(4)
+        sm = StreamManagement(np.array([[1]]), 1)
+        rg = ResourceGrid(num_ofdm_symbols=1,
+                          fft_size=1024,
+                          subcarrier_spacing=15e3)
+        tdl = TDL("A", 100e-9, 3.5e9)
+
+        # Generate CIR
+        cir = tdl(batch_size=1, num_time_steps=1, sampling_frequency=rg.bandwidth)
+
+        # Generate OFDM channel from CIR
+        frequencies = subcarrier_frequencies(rg.fft_size, rg.subcarrier_spacing)
+        h_freq = tf.squeeze(cir_to_ofdm_channel(frequencies, *cir, normalize=True))
+
+        # Generate time channel from CIR
+        l_min, l_max = time_lag_discrete_time_channel(rg.bandwidth)
+        h_time = cir_to_time_channel(rg.bandwidth, *cir, l_min=l_min, l_max=l_max, normalize=True)
+
+        # Generate OFDM channel from time channel
+        h_freq_hat = tf.squeeze(time_to_ofdm_channel(h_time, rg, l_min))
+
+        # Visualize results
+        plt.figure()
+        plt.plot(np.real(h_freq), "-")
+        plt.plot(np.real(h_freq_hat), "--")
+        plt.plot(np.imag(h_freq), "-")
+        plt.plot(np.imag(h_freq_hat), "--")
+        plt.xlabel("Subcarrier index")
+        plt.ylabel(r"Channel frequency response")
+        plt.legend(["OFDM Channel (real)", "OFDM Channel from time (real)", "OFDM Channel (imag)", "OFDM Channel from time (imag)"])
+
+    .. image:: ../figures/time_to_ofdm_channel.png
+    """
+    # Totla length of an OFDM symbol including cyclic prefix
+    ofdm_length = rg.fft_size + rg.cyclic_prefix_length
+
+    # Downsample the impulse respons to one sample per OFDM symbol
+    h_t = h_t[...,rg.cyclic_prefix_length:rg.num_time_samples:ofdm_length, :]
+
+    # Pad channel impulse response with zeros to the FFT size
+    pad_dims = rg.fft_size - tf.shape(h_t)[-1]
+    pad_shape = tf.concat([tf.shape(h_t)[:-1], [pad_dims]], axis=-1)
+    h_t = tf.concat([h_t, tf.zeros(pad_shape, dtype=h_t.dtype)], axis=-1)
+
+    # Circular shift of negative time lags so that the channel impulse reponse
+    # starts with h_{b,0}
+    h_t = tf.roll(h_t, l_min, axis=-1)
+
+    # Compute FFT
+    h_f = tf.signal.fft(h_t)
+
+    # Move the zero subcarrier to the center of the spectrum
+    h_f = tf.signal.fftshift(h_f, axes=-1)
+
+    return h_f
+
+
+def deg_2_rad(x):
+    r"""
+    Convert degree to radian
+
+    Input
+    ------
+        x : Tensor
+            Angles in degree
+
+    Output
+    -------
+        y : Tensor
+            Angles ``x`` converted to radian
+    """
+    return x*tf.constant(PI/180.0, x.dtype)
+
+def rad_2_deg(x):
+    r"""
+    Convert radian to degree
+
+    Input
+    ------
+        x : Tensor
+            Angles in radian
+
+    Output
+    -------
+        y : Tensor
+            Angles ``x`` converted to degree
+    """
+    return x*tf.constant(180.0/PI, x.dtype)
+
+import scipy
+class ApplyTimeChannel(tf.keras.layers.Layer):
+    # pylint: disable=line-too-long
+    r"""ApplyTimeChannel(num_time_samples, l_tot, add_awgn=True, dtype=tf.complex64, **kwargs)
+
+    Apply time domain channel responses ``h_time`` to channel inputs ``x``,
+    by filtering the channel inputs with time-variant channel responses.
+
+    This class inherits from the Keras `Layer` class and can be used as layer
+    in a Keras model.
+
+    For each batch example, ``num_time_samples`` + ``l_tot`` - 1 time steps of a
+    channel realization are required to filter the channel inputs.
+
+    The channel output consists of ``num_time_samples`` + ``l_tot`` - 1
+    time samples, as it is the result of filtering the channel input of length
+    ``num_time_samples`` with the time-variant channel filter  of length
+    ``l_tot``. In the case of a single-input single-output link and given a sequence of channel
+    inputs :math:`x_0,\cdots,x_{N_B}`, where :math:`N_B` is ``num_time_samples``, this
+    layer outputs
+
+    .. math::
+        y_b = \sum_{\ell = 0}^{L_{\text{tot}}} x_{b-\ell} \bar{h}_{b,\ell} + w_b
+
+    where :math:`L_{\text{tot}}` corresponds ``l_tot``, :math:`w_b` to the additive noise, and
+    :math:`\bar{h}_{b,\ell}` to the :math:`\ell^{th}` tap of the :math:`b^{th}` channel sample.
+    This layer outputs :math:`y_b` for :math:`b` ranging from 0 to
+    :math:`N_B + L_{\text{tot}} - 1`, and :math:`x_{b}` is set to 0 for :math:`b \geq N_B`.
+
+    For multiple-input multiple-output (MIMO) links, the channel output is computed for each antenna
+    of each receiver and by summing over all the antennas of all transmitters.
+
+    Parameters
+    ----------
+
+    num_time_samples : int
+        Number of time samples forming the channel input (:math:`N_B`)
+
+    l_tot : int
+        Length of the channel filter (:math:`L_{\text{tot}} = L_{\text{max}} - L_{\text{min}} + 1`)
+
+    add_awgn : bool
+        If set to `False`, no white Gaussian noise is added.
+        Defaults to `True`.
+
+    dtype : tf.DType
+        Complex datatype to use for internal processing and output.
+        Defaults to `tf.complex64`.
+
+    Input
+    -----
+
+    (x, h_time, no) or (x, h_time):
+        Tuple:
+
+    x :  [batch size, num_tx, num_tx_ant, num_time_samples], tf.complex
+        Channel inputs
+
+    h_time : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_samples + l_tot - 1, l_tot], tf.complex
+        Channel responses.
+        For each batch example, ``num_time_samples`` + ``l_tot`` - 1 time steps of a
+        channel realization are required to filter the channel inputs.
+
+    no : Scalar or Tensor, tf.float
+        Scalar or tensor whose shape can be broadcast to the shape of the channel outputs: [batch size, num_rx, num_rx_ant, num_time_samples + l_tot - 1].
+        Only required if ``add_awgn`` is set to `True`.
+        The noise power ``no`` is per complex dimension. If ``no`` is a
+        scalar, noise of the same variance will be added to the outputs.
+        If ``no`` is a tensor, it must have a shape that can be broadcast to
+        the shape of the channel outputs. This allows, e.g., adding noise of
+        different variance to each example in a batch. If ``no`` has a lower
+        rank than the channel outputs, then ``no`` will be broadcast to the
+        shape of the channel outputs by adding dummy dimensions after the
+        last axis.
+
+    Output
+    -------
+    y : [batch size, num_rx, num_rx_ant, num_time_samples + l_tot - 1], tf.complex
+        Channel outputs.
+        The channel output consists of ``num_time_samples`` + ``l_tot`` - 1
+        time samples, as it is the result of filtering the channel input of length
+        ``num_time_samples`` with the time-variant channel filter  of length
+        ``l_tot``.
+    """
+
+    def __init__(self, num_time_samples, l_tot, add_awgn=True,
+                 dtype=tf.complex64, **kwargs):
+
+        super().__init__(trainable=False, dtype=dtype, **kwargs)
+
+        self._add_awgn = add_awgn
+
+        # The channel transfert function is implemented by first gathering from
+        # the vector of transmitted baseband symbols
+        # x = [x_0,...,x_{num_time_samples-1}]^T  the symbols that are then
+        # multiplied by the channel tap coefficients.
+        # We build here the matrix of indices G, with size
+        # `num_time_samples + l_tot - 1` x `l_tot` that is used to perform this
+        # gathering.
+        # For example, if there are 4 channel taps
+        # h = [h_0, h_1, h_2, h_3]^T
+        # and `num_time_samples` = 10 time steps then G  would be
+        #       [[0, 10, 10, 10]
+        #        [1,  0, 10, 10]
+        #        [2,  1,  0, 10]
+        #        [3,  2,  1,  0]
+        #        [4,  3,  2,  1]
+        #        [5,  4,  3,  2]
+        #        [6,  5,  4,  3]
+        #        [7,  6,  5,  4]
+        #        [8,  7,  6,  5]
+        #        [9,  8,  7,  6]
+        #        [10, 9,  8,  7]
+        #        [10,10,  9,  8]
+        #        [10,10, 10,  9]
+        # Note that G is a Toeplitz matrix.
+        # In this example, the index `num_time_samples`=10 corresponds to the
+        # zero symbol. The vector of transmitted symbols is padded with one
+        # zero at the end.
+        first_colum = np.concatenate([  np.arange(0, num_time_samples),
+                                        np.full([l_tot-1], num_time_samples)])
+        first_row = np.concatenate([[0], np.full([l_tot-1], num_time_samples)])
+        self._g = scipy.linalg.toeplitz(first_colum, first_row)
+
+    def build(self, input_shape): #pylint: disable=unused-argument
+
+        if self._add_awgn:
+            self._awgn = AWGN(dtype=self.dtype)
+
+    def call(self, inputs):
+
+        if self._add_awgn:
+            x, h_time, no = inputs
+        else:
+            x, h_time = inputs
+
+        # Preparing the channel input for broadcasting and matrix multiplication
+        x = tf.pad(x, [[0,0], [0,0], [0,0], [0,1]])
+        x = insert_dims(x, 2, axis=1)
+
+        x = tf.gather(x, self._g, axis=-1)
+
+        # Apply the channel response
+        y = tf.reduce_sum(h_time*x, axis=-1)
+        y = tf.reduce_sum(tf.reduce_sum(y, axis=4), axis=3)
+
+        # Add AWGN if requested
+        if self._add_awgn:
+            y = self._awgn((y, no))
+
+        return y
+
 
 class GenerateOFDMChannel:
     # pylint: disable=line-too-long
