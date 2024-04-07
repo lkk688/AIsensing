@@ -249,3 +249,13 @@ pip install PyOpenGL PyOpenGL_accelerate
 pip install pyopengl
 #try: import pyqtgraph.opengl as gl
 ```
+
+# DeepMIMO Dataset
+Download [DeepMIMO](https://www.deepmimo.net/) dataset.
+
+Follow [link](https://www.deepmimo.net/versions/v2-python/), install DeepMIMO python package:
+```bash
+pip install DeepMIMO
+```
+
+Select and download a scenario from the scenarios [page](https://www.deepmimo.net/scenarios/), for example, select Outdoor scenario1 (O1). 
