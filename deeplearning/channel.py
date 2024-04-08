@@ -936,7 +936,8 @@ class ApplyTimeChannel(tf.keras.layers.Layer):
     def __init__(self, num_time_samples, l_tot, add_awgn=True,
                  dtype=tf.complex64, **kwargs):
 
-        super().__init__(trainable=False, dtype=dtype, **kwargs)
+        #super().__init__(trainable=False, dtype=dtype, **kwargs)
+        super().__init__(trainable=False, **kwargs)
 
         self._add_awgn = add_awgn
 
@@ -969,8 +970,19 @@ class ApplyTimeChannel(tf.keras.layers.Layer):
         # zero at the end.
         first_colum = np.concatenate([  np.arange(0, num_time_samples),
                                         np.full([l_tot-1], num_time_samples)])
-        first_row = np.concatenate([[0], np.full([l_tot-1], num_time_samples)])
+        #The first_column (1D array) is created by concatenating two arrays: 
+            #The first part generates an array of integers from 0 to num_time_samples - 1
+            #the second part creates an array of length l_tot - 1 filled with the value num_time_samples
+
+        first_row = np.concatenate([[0], np.full([l_tot-1], num_time_samples)]) #1D array
+            #The first part is [0], which is a single-element array containing just the value 0.
+            #The second part is np.full([l_tot-1], num_time_samples), which is the same as in the first_column.
+
+        #Toeplitz Matrix Creation
         self._g = scipy.linalg.toeplitz(first_colum, first_row)
+        #A Toeplitz matrix has constant diagonals, where the first column (first_column) 
+        #serves as the diagonal and the first row (first_row) serves as the first row of the matrix.
+        #The resulting matrix _g is a square matrix with dimensions (l_tot, l_tot).
 
     def build(self, input_shape): #pylint: disable=unused-argument
 
@@ -984,15 +996,38 @@ class ApplyTimeChannel(tf.keras.layers.Layer):
         else:
             x, h_time = inputs
 
+        #x :  [batch size, num_tx, num_tx_ant, num_time_samples]
         # Preparing the channel input for broadcasting and matrix multiplication
         x = tf.pad(x, [[0,0], [0,0], [0,0], [0,1]])
-        x = insert_dims(x, 2, axis=1)
+        #The first dimension [0,0] indicates no padding along the batch size dimension.
+        #The second dimension [0,0] indicates no padding along the num_tx dimension.
+        #The third dimension [0,0] indicates no padding along the num_tx_ant dimension.
+        #The fourth dimension [0,1] adds one zero-padding element along the num_time_samples dimension.
+        #The purpose of this padding is to ensure that the dimensions of x are compatible for broadcasting and matrix multiplication.
 
+        x = insert_dims(x, 2, axis=1) #inserts a new dimension into the x tensor 
+        #The inserted dimension is placed at index 2 (third dimension) along the axis 1.
+
+        #tf.gather(params, indices, axis) is a TensorFlow function that slices the input tensor params along the specified axis using the indices provided in the tensor indices
+        #gather slices from the input tensor x based on indices specified by the matrix self._g along the last axis (axis=-1).
         x = tf.gather(x, self._g, axis=-1)
+        #self._g is a matrix of shape [num_time_samples, num_time_samples], the operation will gather slices from x along the last axis (i.e., num_time_samples) using the indices specified by self._g.
+        #The resulting tensor will have the same shape as x, but with values rearranged based on the indices in self._g
+        #x :  [batch size, num_tx, num_tx_ant, num_time_samples]
 
         # Apply the channel response
+        #h_time : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_samples + l_tot - 1, l_tot]
+        #The first line computes the element-wise product (*) between h_time and another tensor x. The result is a new tensor y.
+        #The tf.reduce_sum(y, axis=-1) computes the sum along the last axis (axis with index -1). 
+        #This reduces the dimensionality of y by one, resulting in a tensor with shape [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_samples + l_tot - 1].
         y = tf.reduce_sum(h_time*x, axis=-1)
+
+        #The inner tf.reduce_sum(y, axis=4) computes the sum along the fourth axis (assuming y has the shape described above)
+        #The result of the inner reduction will have shape [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_samples + l_tot - 1].
         y = tf.reduce_sum(tf.reduce_sum(y, axis=4), axis=3)
+        #The outer tf.reduce_sum(..., axis=3) computes the sum along the third axis of the intermediate result.
+        #The final result is assigned back to the variable y.
+        #The resulting tensor y will have shape [batch size, num_rx, num_rx_ant, num_time_samples + l_tot - 1].
 
         # Add AWGN if requested
         if self._add_awgn:

@@ -474,7 +474,7 @@ def get_deepMIMOdata(scenario='O1_60', dataset_folder=r'D:\Dataset\Communication
     # Set the main folder containing extracted scenarios
     parameters['dataset_folder'] = dataset_folder #r'D:\Dataset\CommunicationDataset\O1_60'
 
-    # To only include 10 strongest paths in the channel computation, set
+    # To only include 10 strongest paths in the channel computation, num_paths integer in [1, 25]
     parameters['num_paths'] = 10
 
     # To activate only the first basestation, set
@@ -523,18 +523,15 @@ def get_deepMIMOdata(scenario='O1_60', dataset_folder=r'D:\Dataset\Communication
     print(DeepMIMO_dataset[active_bs_idx]['user']['channel'].shape) #(num_ue_locations=9231, 1, bs_antenna=16, strongest_path=10) 
     # Shape of the channel matrix
     print(DeepMIMO_dataset[0]['user']['channel'].shape) #(9231, 1, 16, 10)
-
-    i=0
+    #i=0
     j=0
-    #The channel matrix between basestation i and user j
-    DeepMIMO_dataset[i]['user']['channel'][j]
+    print(DeepMIMO_dataset[active_bs_idx]['user']['channel'][j])
     #Float matrix of size (number of RX antennas) x (number of TX antennas) x (number of OFDM subcarriers)
-
-    # Shape of BS 0 - UE 0 channel
-    print(DeepMIMO_dataset[i]['user']['channel'][0].shape) #(1, 16, 10)
+    # The channel matrix between basestation i and user j, Shape of BS 0 - UE 0 channel
+    print(DeepMIMO_dataset[active_bs_idx]['user']['channel'][j].shape) #(1, 16, 10)
     
     # Path properties of BS 0 - UE 0
-    print(DeepMIMO_dataset[i]['user']['paths'][j]) #Ray-tracing Path Parameters in dictionary
+    print(DeepMIMO_dataset[active_bs_idx]['user']['paths'][j]) #Ray-tracing Path Parameters in dictionary
     #Azimuth and zenith angle-of-arrivals – degrees (DoA_phi, DoA_theta)
     # Azimuth and zenith angle-of-departure – degrees (DoD_phi, DoD_theta)
     # Time of arrival – seconds (ToA)
@@ -542,21 +539,21 @@ def get_deepMIMOdata(scenario='O1_60', dataset_folder=r'D:\Dataset\Communication
     # Power – watts (power)
     # Number of paths (num_paths)
 
-    print(DeepMIMO_dataset[i]['user']['LoS'][j]) #Integer of values {-1, 0, 1} indicates the existence of the LOS path in the channel.
+    print(DeepMIMO_dataset[active_bs_idx]['user']['LoS'][j]) #Integer of values {-1, 0, 1} indicates the existence of the LOS path in the channel.
     # (1): The LoS path exists.
     # (0): Only NLoS paths exist. The LoS path is blocked (LoS blockage).
     # (-1): No paths exist between the transmitter and the receiver (Full blockage).
 
-    print(DeepMIMO_dataset[i]['user']['distance'][j])
+    print(DeepMIMO_dataset[active_bs_idx]['user']['distance'][j])
     #The Euclidian distance between the RX and TX locations in meters.
 
-    print(DeepMIMO_dataset[i]['user']['pathloss'][j])
+    print(DeepMIMO_dataset[active_bs_idx]['user']['pathloss'][j])
     #The combined path-loss of the channel between the RX and TX in dB.
 
 
-    print(DeepMIMO_dataset[i]['location'])
+    print(DeepMIMO_dataset[active_bs_idx]['location'])
     #Basestation Location [x, y, z].
-    print(DeepMIMO_dataset[i]['user']['location'][j])
+    print(DeepMIMO_dataset[active_bs_idx]['user']['location'][j])
     #The Euclidian location of the user in the form of [x, y, z].
 
     plt.figure(figsize=(12,8))
@@ -564,7 +561,7 @@ def get_deepMIMOdata(scenario='O1_60', dataset_folder=r'D:\Dataset\Communication
             DeepMIMO_dataset[active_bs_idx]['user']['location'][:, 0], # x-axis location of the users
             s=1, marker='x', c='C0', label='The users located on the rows %i to %i (R%i to R%i)'%
             (parameters['user_row_first'], parameters['user_row_last'],
-            parameters['user_row_first'], parameters['user_row_last']))
+            parameters['user_row_first'], parameters['user_row_last']))#1-100
     # First 181 users correspond to the first row
     plt.scatter(DeepMIMO_dataset[active_bs_idx]['user']['location'][0:181, 1],
             DeepMIMO_dataset[active_bs_idx]['user']['location'][0:181, 0],
@@ -2444,7 +2441,7 @@ from ldpc.decoding import LDPC5GDecoder
 if __name__ == '__main__':
 
     scenario='O1_60'
-    dataset_folder='data\O1_60\O1_60'
+    dataset_folder='data'
     #DeepMIMO provides multiple [scenarios](https://deepmimo.net/scenarios/) that one can select from. 
     #In this example, we use the O1 scenario with the carrier frequency set to 60 GHz (O1_60). 
     #Please download the "O1_60" data files [from this page](https://deepmimo.net/scenarios/o1-scenario/).
