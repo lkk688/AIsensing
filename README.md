@@ -250,7 +250,12 @@ pip install pyopengl
 #try: import pyqtgraph.opengl as gl
 ```
 
-# DeepMIMO Dataset
+# Deep Learning with DeepMIMO Dataset
+Install Pytorch and TensorFlow (some package needs Tensorflow). Following [Tensorflow Pip](https://www.tensorflow.org/install/pip) page to install Tensorflow:
+```bash
+(mypy310) lkk@Alienware-LKKi7G8:~/Developer/AIsensing$ python3 -m pip install tensorflow[and-cuda]
+```
+
 Download [DeepMIMO](https://www.deepmimo.net/) dataset.
 
 Follow [link](https://www.deepmimo.net/versions/v2-python/), install DeepMIMO python package:
@@ -258,4 +263,4 @@ Follow [link](https://www.deepmimo.net/versions/v2-python/), install DeepMIMO py
 pip install DeepMIMO
 ```
 
-Select and download a scenario from the scenarios [page](https://www.deepmimo.net/scenarios/), for example, select Outdoor scenario1 (O1). 
+Select and download a scenario from the scenarios [page](https://www.deepmimo.net/scenarios/), for example, select Outdoor scenario1 (O1). Download 'O1_60' and 'O1_3p5' to the 'data' folder
