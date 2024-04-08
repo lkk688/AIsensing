@@ -1247,7 +1247,7 @@ class OFDMChannel(Layer):
         else:
             return y
 
-from sionna_tf import ResourceGrid, RemoveNulledSubcarriers
+from sionna_tf import ResourceGrid, MyRemoveNulledSubcarriers, RemoveNulledSubcarriers
 class BaseChannelInterpolator(ABC):
     # pylint: disable=line-too-long
     r"""BaseChannelInterpolator()
@@ -2020,6 +2020,195 @@ class LSChannelEstimator(BaseChannelEstimator, Layer):
 
         return h_ls, err_var
 
+
+class MyLSChannelEstimator():
+    # pylint: disable=line-too-long
+    r"""LSChannelEstimator(resource_grid, interpolation_type="nn", interpolator=None, dtype=tf.complex64, **kwargs)
+
+    Layer implementing least-squares (LS) channel estimation for OFDM MIMO systems.
+
+    After LS channel estimation at the pilot positions, the channel estimates
+    and error variances are interpolated accross the entire resource grid using
+    a specified interpolation function.
+
+    For simplicity, the underlying algorithm is described for a vectorized observation,
+    where we have a nonzero pilot for all elements to be estimated.
+    The actual implementation works on a full OFDM resource grid with sparse
+    pilot patterns. The following model is assumed:
+
+    .. math::
+
+        \mathbf{y} = \mathbf{h}\odot\mathbf{p} + \mathbf{n}
+
+    where :math:`\mathbf{y}\in\mathbb{C}^{M}` is the received signal vector,
+    :math:`\mathbf{p}\in\mathbb{C}^M` is the vector of pilot symbols,
+    :math:`\mathbf{h}\in\mathbb{C}^{M}` is the channel vector to be estimated,
+    and :math:`\mathbf{n}\in\mathbb{C}^M` is a zero-mean noise vector whose
+    elements have variance :math:`N_0`. The operator :math:`\odot` denotes
+    element-wise multiplication.
+
+    The channel estimate :math:`\hat{\mathbf{h}}` and error variances
+    :math:`\sigma^2_i`, :math:`i=0,\dots,M-1`, are computed as
+
+    .. math::
+
+        \hat{\mathbf{h}} &= \mathbf{y} \odot
+                           \frac{\mathbf{p}^\star}{\left|\mathbf{p}\right|^2}
+                         = \mathbf{h} + \tilde{\mathbf{h}}\\
+             \sigma^2_i &= \mathbb{E}\left[\tilde{h}_i \tilde{h}_i^\star \right]
+                         = \frac{N_0}{\left|p_i\right|^2}.
+
+    The channel estimates and error variances are then interpolated accross
+    the entire resource grid.
+
+    Parameters
+    ----------
+    resource_grid : ResourceGrid
+        An instance of :class:`~sionna.ofdm.ResourceGrid`.
+
+    interpolation_type : One of ["nn", "lin", "lin_time_avg"], string
+        The interpolation method to be used.
+        It is ignored if ``interpolator`` is not `None`.
+        Available options are :class:`~sionna.ofdm.NearestNeighborInterpolator` (`"nn`")
+        or :class:`~sionna.ofdm.LinearInterpolator` without (`"lin"`) or with
+        averaging across OFDM symbols (`"lin_time_avg"`).
+        Defaults to "nn".
+
+    interpolator : BaseChannelInterpolator
+        An instance of :class:`~sionna.ofdm.BaseChannelInterpolator`,
+        such as :class:`~sionna.ofdm.LMMSEInterpolator`,
+        or `None`. In the latter case, the interpolator specfied
+        by ``interpolation_type`` is used.
+        Otherwise, the ``interpolator`` is used and ``interpolation_type``
+        is ignored.
+        Defaults to `None`.
+
+    dtype : tf.Dtype
+        Datatype for internal calculations and the output dtype.
+        Defaults to `tf.complex64`.
+
+    Input
+    -----
+    (y, no) :
+        Tuple:
+
+    y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols,fft_size], tf.complex
+        Observed resource grid
+
+    no : [batch_size, num_rx, num_rx_ant] or only the first n>=0 dims, tf.float
+        Variance of the AWGN
+
+    Output
+    ------
+    h_ls : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols,fft_size], tf.complex
+        Channel estimates accross the entire resource grid for all
+        transmitters and streams
+
+    err_var : Same shape as ``h_ls``, tf.float
+        Channel estimation error variance accross the entire resource grid
+        for all transmitters and streams
+    """
+
+    def __init__(self, resource_grid, interpolation_type="nn", interpolator=None, dtype=tf.complex64, **kwargs):
+        #super().__init__(dtype=dtype, **kwargs)
+
+        # assert isinstance(resource_grid, ResourceGrid),\
+        #     "You must provide a valid instance of ResourceGrid."
+        self._pilot_pattern = resource_grid.pilot_pattern
+        self._removed_nulled_scs = MyRemoveNulledSubcarriers(resource_grid)
+
+        assert interpolation_type in ["nn","lin","lin_time_avg",None], \
+            "Unsupported `interpolation_type`"
+        self._interpolation_type = interpolation_type
+
+        if interpolator is not None:
+            assert isinstance(interpolator, BaseChannelInterpolator), \
+        "`interpolator` must implement the BaseChannelInterpolator interface"
+            self._interpol = interpolator
+        elif self._interpolation_type == "nn":
+            self._interpol = NearestNeighborInterpolator(self._pilot_pattern)
+        elif self._interpolation_type == "lin":
+            self._interpol = LinearInterpolator(self._pilot_pattern)
+        elif self._interpolation_type == "lin_time_avg":
+            self._interpol = LinearInterpolator(self._pilot_pattern,
+                                                time_avg=True)
+
+        # Precompute indices to gather received pilot signals
+        num_pilot_symbols = self._pilot_pattern.num_pilot_symbols
+        mask = flatten_last_dims(self._pilot_pattern.mask)
+        pilot_ind = tf.argsort(mask, axis=-1, direction="DESCENDING")
+        self._pilot_ind = pilot_ind[...,:num_pilot_symbols]
+
+
+    def estimate_at_pilot_locations(self, y_pilots, no):
+
+        # y_pilots : [batch_size, num_rx, num_rx_ant, num_tx, num_streams,
+        #               num_pilot_symbols], tf.complex
+        #     The observed signals for the pilot-carrying resource elements.
+
+        # no : [batch_size, num_rx, num_rx_ant] or only the first n>=0 dims,
+        #   tf.float
+        #     The variance of the AWGN.
+
+        # Compute LS channel estimates
+        # Note: Some might be Inf because pilots=0, but we do not care
+        # as only the valid estimates will be considered during interpolation.
+        # We do a save division to replace Inf by 0.
+        # Broadcasting from pilots here is automatic since pilots have shape
+        # [num_tx, num_streams, num_pilot_symbols]
+        h_ls = tf.math.divide_no_nan(y_pilots, self._pilot_pattern.pilots)
+
+        # Compute error variance and broadcast to the same shape as h_ls
+        # Expand rank of no for broadcasting
+        no = expand_to_rank(no, tf.rank(h_ls), -1)
+
+        # Expand rank of pilots for broadcasting
+        pilots = expand_to_rank(self._pilot_pattern.pilots, tf.rank(h_ls), 0)
+
+        # Compute error variance, broadcastable to the shape of h_ls
+        err_var = tf.math.divide_no_nan(no, tf.abs(pilots)**2)
+
+        return h_ls, err_var
+
+    #def call(self, inputs):
+    def __call__(self, inputs):
+
+        y, no = inputs #y: (64, 1, 1, 14, 76) complex64
+
+        # y has shape:
+        # [batch_size, num_rx, num_rx_ant, num_ofdm_symbols,..
+        # ... fft_size]
+        #
+        # no can have shapes [], [batch_size], [batch_size, num_rx]
+        # or [batch_size, num_rx, num_rx_ant]
+
+        # Removed nulled subcarriers (guards, dc)
+        y_eff = self._removed_nulled_scs(y) #(64, 1, 1, 14, 64) complex64
+
+        # Flatten the resource grid for pilot extraction
+        # New shape: [...,num_ofdm_symbols*num_effective_subcarriers]
+        y_eff_flat = flatten_last_dims(y_eff)
+
+        # Gather pilots along the last dimensions
+        # Resulting shape: y_eff_flat.shape[:-1] + pilot_ind.shape, i.e.:
+        # [batch_size, num_rx, num_rx_ant, num_tx, num_streams,...
+        #  ..., num_pilot_symbols]
+        y_pilots = tf.gather(y_eff_flat, self._pilot_ind, axis=-1)
+
+        # Compute LS channel estimates
+        # Note: Some might be Inf because pilots=0, but we do not care
+        # as only the valid estimates will be considered during interpolation.
+        # We do a save division to replace Inf by 0.
+        # Broadcasting from pilots here is automatic since pilots have shape
+        # [num_tx, num_streams, num_pilot_symbols]
+        h_hat, err_var = self.estimate_at_pilot_locations(y_pilots, no)
+
+        # Interpolate channel estimates over the resource grid
+        if self._interpolation_type is not None:
+            h_hat, err_var = self._interpol(h_hat, err_var)
+            err_var = tf.maximum(err_var, tf.cast(0, err_var.dtype))
+
+        return h_hat, err_var
 
 class GenerateFlatFadingChannel():
     # pylint: disable=line-too-long
