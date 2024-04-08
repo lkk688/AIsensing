@@ -2438,8 +2438,8 @@ from channel import LSChannelEstimator, cir_to_time_channel, time_lag_discrete_t
 from ldpc.encoding import LDPC5GEncoder
 from ldpc.decoding import LDPC5GDecoder
 
-if __name__ == '__main__':
 
+def testprocess():
     scenario='O1_60'
     dataset_folder='data'
     #DeepMIMO provides multiple [scenarios](https://deepmimo.net/scenarios/) that one can select from. 
@@ -2667,7 +2667,267 @@ if __name__ == '__main__':
     BER=calculate_BER(b, b_hat)
     print(BER)
 
+
+class Transmitter():
+    def __init__(self, scenario, dataset_folder, num_rx = 1, num_tx = 1, \
+                 batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
+                USE_LDPC = True, pilot_pattern = "kronecker") -> None:
+        self.fft_size = fft_size
+        self.batch_size = batch_size
+        self.num_bits_per_symbol = num_bits_per_symbol
+        #DeepMIMO provides multiple [scenarios](https://deepmimo.net/scenarios/) that one can select from. 
+        #In this example, we use the O1 scenario with the carrier frequency set to 60 GHz (O1_60). 
+        #Please download the "O1_60" data files [from this page](https://deepmimo.net/scenarios/o1-scenario/).
+        #The downloaded zip file should be extracted into a folder, and the parameter `'dataset_folder` should be set to point to this folder
+        DeepMIMO_dataset = get_deepMIMOdata(scenario=scenario, dataset_folder=dataset_folder)
+        # The number of UE locations in the generated DeepMIMO dataset
+        num_ue_locations = len(DeepMIMO_dataset[0]['user']['channel']) # 9231
+        # Pick the largest possible number of user locations that is a multiple of ``num_rx``
+        ue_idx = np.arange(num_rx*(num_ue_locations//num_rx)) #(9231,) 0~9230
+        # Optionally shuffle the dataset to not select only users that are near each others
+        np.random.shuffle(ue_idx)
+        # Reshape to fit the requested number of users
+        ue_idx = np.reshape(ue_idx, [-1, num_rx]) # In the shape of (floor(9231/num_rx) x num_rx) (9231,1)
+        self.channeldataset = DeepMIMODataset(DeepMIMO_dataset=DeepMIMO_dataset, ue_idx=ue_idx)
+        h, tau = next(iter(self.channeldataset)) #h: (1, 1, 1, 16, 10, 1), tau:(1, 1, 10)
+        #complex gains `h` and delays `tau` for each path
+        #print(h.shape) #[num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]
+        #print(tau.shape) #[num_rx, num_tx, num_paths]
+
+        # torch dataloaders
+        self.data_loader = DataLoader(dataset=self.channeldataset, batch_size=batch_size, shuffle=True, pin_memory=True)
+        self.plotchimpulse()
+
+        num_streams_per_tx = num_rx ##1
+        self.STREAM_MANAGEMENT = StreamManagement(np.ones([num_rx, 1], int), num_streams_per_tx) #RX_TX_ASSOCIATION, NUM_STREAMS_PER_TX
+
+        cyclic_prefix_length = 6 #0 #6 Length of the cyclic prefix
+        num_guard_carriers = [5,6] #[0, 0] #List of two integers defining the number of guardcarriers at the left and right side of the resource grid.
+        dc_null=True #False
+        pilot_ofdm_symbol_indices=[2,11]
+        #pilot_pattern = "kronecker" #"kronecker", "empty"
+        #fft_size = 76
+        #num_ofdm_symbols=14
+        RESOURCE_GRID = MyResourceGrid( num_ofdm_symbols=num_ofdm_symbols,
+                                            fft_size=fft_size,
+                                            subcarrier_spacing=60e3, #30e3,
+                                            num_tx=num_tx, #1
+                                            num_streams_per_tx=num_streams_per_tx, #1
+                                            cyclic_prefix_length=cyclic_prefix_length,
+                                            num_guard_carriers=num_guard_carriers,
+                                            dc_null=dc_null,
+                                            pilot_pattern=pilot_pattern,
+                                            pilot_ofdm_symbol_indices=pilot_ofdm_symbol_indices)
+        RESOURCE_GRID.show() #14(OFDM symbol)*76(subcarrier) array=1064
+        RESOURCE_GRID.pilot_pattern.show();
+        #The pilot patterns are defined over the resource grid of *effective subcarriers* from which the nulled DC and guard carriers have been removed. 
+        #This leaves us in our case with 76 - 1 (DC) - 5 (left guards) - 6 (right guards) = 64 effective subcarriers.
+
+        #actual pilot sequences for all streams which consists of random QPSK symbols.
+        #By default, the pilot sequences are normalized, such that the average power per pilot symbol is
+        #equal to one. As only every fourth pilot symbol in the sequence is used, their amplitude is scaled by a factor of two.
+        plt.figure()
+        plt.title("Real Part of the Pilot Sequences")
+        for i in range(num_streams_per_tx):
+            plt.stem(np.real(RESOURCE_GRID.pilot_pattern.pilots[0, i]),
+                    markerfmt="C{}.".format(i), linefmt="C{}-".format(i),
+                    label="Stream {}".format(i))
+        plt.legend()
+        print("Average energy per pilot symbol: {:1.2f}".format(np.mean(np.abs(RESOURCE_GRID.pilot_pattern.pilots[0,0])**2)))
+        self.num_streams_per_tx = num_streams_per_tx
+        self.RESOURCE_GRID = RESOURCE_GRID
+
+        #num_bits_per_symbol = 4
+        # Codeword length
+        n = int(RESOURCE_GRID.num_data_symbols * num_bits_per_symbol) #912*4=3648, if empty 1064*4=4256
+
+        #USE_LDPC = True
+        if USE_LDPC:
+            coderate = 0.5
+            # Number of information bits per codeword
+            k = int(n * coderate)  
+            encoder = LDPC5GEncoder(k, n) #1824, 3648
+            decoder = LDPC5GDecoder(encoder, hard_out=True)
+        else:
+            coderate = 1
+            # Number of information bits per codeword
+            k = int(n * coderate)  
+        self.k = k # Number of information bits per codeword
+        self.decoder = decoder
+        self.encoder = encoder
+        self.USE_LDPC = USE_LDPC
+        self.coderate = coderate
+        
+        self.mapper = Mapper("qam", num_bits_per_symbol)
+        self.rg_mapper = MyResourceGridMapper(RESOURCE_GRID) #ResourceGridMapper(RESOURCE_GRID)
+
+        #receiver part
+        self.mydemapper = MyDemapper("app", constellation_type="qam", num_bits_per_symbol=num_bits_per_symbol)
+
     
+    def plotchimpulse(self):
+        h_b, tau_b = next(iter(self.data_loader)) #h_b: [64, 1, 1, 1, 16, 10, 1], tau_b=[64, 1, 1, 10]
+        #print(h_b.shape) #[batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]
+        #print(tau_b.shape) #[batch, num_rx, num_tx, num_paths]
+        tau_b=tau_b.numpy()#torch tensor to numpy
+        h_b=h_b.numpy()
+        plt.figure()
+        plt.title("Channel impulse response realization")
+        plt.stem(tau_b[0,0,0,:]/1e-9, np.abs(h_b)[0,0,0,0,0,:,0])#10 different pathes
+        plt.xlabel(r"$\tau$ [ns]")
+        plt.ylabel(r"$|a|$")
+
+    def generateChannel(self, x_rg, no, channeltype='ofdm'):
+        h_b, tau_b = self.get_htau_batch()
+
+        if channeltype=="ofdm":
+            # Generate the OFDM channel response
+            #computes the Fourier transform of the continuous-time channel impulse response at a set of `frequencies`, corresponding to the different subcarriers.
+            ##h: [64, 1, 1, 1, 16, 10, 1], tau: [64, 1, 1, 10] => (64, 1, 1, 1, 16, 1, 76) 
+            h_freq = mygenerate_OFDMchannel(h_b, tau_b, self.fft_size, subcarrier_spacing=60000.0, dtype=np.complex64, normalize_channel=True)
+            #h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, fft_size]
+            #(64, 1, 1, 1, 16, 1, 76)
+
+            #remove_nulled_scs = RemoveNulledSubcarriers(RESOURCE_GRID)
+            #h_perf = remove_nulled_scs(h_freq)[0,0,0,0,0,0] #get the last dimension: fft_size [76]
+            h_freq_plt = h_freq[0,0,0,0,0,0] #get the last dimension: fft_size [76]
+            plt.figure()
+            plt.plot(np.real(h_freq_plt))
+            plt.plot(np.imag(h_freq_plt))
+            plt.xlabel("Subcarrier index")
+            plt.ylabel("Channel frequency response")
+            plt.legend(["Ideal (real part)", "Ideal (imaginary part)"]);
+            plt.title("Comparison of channel frequency responses");
+
+            # Generate the OFDM channel
+            #h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, fft_size]
+            #(64, 1, 1, 1, 16, 1, 76)
+            y = ApplyOFDMChannel(symbol_resourcegrid=x_rg, channel_frequency=h_freq, noiselevel=no, add_awgn=False)
+            # y is the symbol received after the channel and noise
+            #Channel outputs y : [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], complex    
+
+        else:
+            bandwidth = self.RESOURCE_GRID.bandwidth
+            l_min, l_max = time_lag_discrete_time_channel(bandwidth)
+            l_tot = l_max-l_min+1 #27
+            # Compute the discrete-time channel impulse reponse
+            h_time = cir_to_time_channel(bandwidth, h_b, tau_b, l_min=l_min, l_max=l_max, normalize=True) 
+            #h_time: [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, l_max - l_min + 1] [64, 1, 1, 1, 16, 1, 27]
+            plt.figure()
+            plt.title("Discrete-time channel impulse response")
+            plt.stem(np.abs(h_time[0,0,0,0,0,0]))
+            plt.xlabel(r"Time step $\ell$")
+            plt.ylabel(r"$|\bar{h}|$");
+            channel_time = ApplyTimeChannel(self.RESOURCE_GRID.num_time_samples, l_tot=l_tot, add_awgn=True)
+            # OFDM modulator and demodulator
+            modulator = OFDMModulator(self.RESOURCE_GRID.cyclic_prefix_length)
+            demodulator = OFDMDemodulator(self.RESOURCE_GRID.fft_size, l_min, self.RESOURCE_GRID.cyclic_prefix_length)
+
+            # OFDM modulation with cyclic prefix insertion
+            x_time = modulator(x_rg) #output: [64, 1, 1, 1148]
+            # Compute the channel output
+            # This computes the full convolution between the time-varying
+            # discrete-time channel impulse reponse and the discrete-time
+            # transmit signal. With this technique, the effects of an
+            # insufficiently long cyclic prefix will become visible. This
+            # is in contrast to frequency-domain modeling which imposes
+            # no inter-symbol interfernce.
+            y_time = channel_time([x_time, h_time, no]) #[64, 1, 1, 1174]
+
+            # OFDM demodulation and cyclic prefix removal
+            y = demodulator(y_time)
+            #y: [64, 1, 1, 14, 76]
+        return y
+    
+    def get_htau_batch(self, returnformat='numpy'):
+        h_b, tau_b = next(iter(self.data_loader)) #h_b: [64, 1, 1, 1, 16, 10, 1], tau_b=[64, 1, 1, 10]
+        #print(h_b.shape) #[batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]
+        #print(tau_b.shape) #[batch, num_rx, num_tx, num_paths]
+        if returnformat=="numpy":
+            tau_b=tau_b.numpy()#torch tensor to numpy
+            h_b=h_b.numpy()
+        return h_b, tau_b
+
+    def __call__(self, ebno_db = 15.0):
+        self.get_htau_batch()
+        # Transmitter
+        binary_source = BinarySource()
+        # Start Transmitter self.k Number of information bits per codeword
+        b = binary_source([self.batch_size, 1, self.num_streams_per_tx, self.k]) #[64,1,1,1824] [batch_size, num_tx, num_streams_per_tx, num_databits]
+        if self.USE_LDPC:
+            c = self.encoder(b) #tensor[64,1,1,3648] [batch_size, num_tx, num_streams_per_tx, num_codewords]
+        else:
+            c = b
+        x = self.mapper(c) #array[64,1,1,912] 912*4=3648 [batch_size, num_tx, num_streams_per_tx, num_data_symbols]
+        x_rg = self.rg_mapper(x) ##array[64,1,1,14,76] 14*76=1064
+        #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size]
+
+        #set noise level
+        ebnorange=np.linspace(-7, -5.25, 10)
+        #ebno_db = 15.0
+        #no = ebnodb2no(ebno_db, num_bits_per_symbol, coderate, RESOURCE_GRID)
+        no = ebnodb2no(ebno_db, self.num_bits_per_symbol, self.coderate)
+        # Convert it to a NumPy float
+        no = np.float32(no)
+
+        y = self.generateChannel(self, x_rg, no, channeltype='ofdm')
+        # y is the symbol received after the channel and noise
+        #Channel outputs y : [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], complex    
+        print(y.shape) #[64, 1, 1, 14, 76] dim (3,4 removed)
+        print(y.real)
+        print(y.imag)
+
+        
+        if self.RESOURCE_GRID.pilot_pattern == "empty": #"kronecker", "empty"
+            #no channel estimation
+            llr = self.mydemapper([y, no]) #[64, 1, 1, 14, 304]
+            # Reshape the array by collapsing the last two dimensions
+            llr_est = llr.reshape(llr.shape[:-2] + (-1,)) #(64, 1, 1, 4256)
+
+            llr_perfect = self.mydemapper([x_rg, no]) #[64, 1, 1, 14, 304]
+            llr_perfect = llr_perfect.reshape(llr_perfect.shape[:-2] + (-1,)) #(64, 1, 1, 4256)
+            b_perfect = hard_decisions(llr_perfect, np.int32) #(64, 1024) 0,1 [64, 1, 1, 14, 304] 2128
+            BER=calculate_BER(b, b_perfect)
+            print(BER)
+        else: # channel estimation
+            # Receiver
+            ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
+            lmmse_equ = LMMSEEqualizer(self.RESOURCE_GRID, self.STREAM_MANAGEMENT)
+
+            #Observed resource grid y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols,fft_size], tf.complex
+            #no : [batch_size, num_rx, num_rx_ant] 
+            h_hat, err_var = ls_est([y, no]) #(64, 1, 1, 1, 1, 14, 76), (1, 1, 1, 1, 1, 14, 76)
+            #h_ls : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols,fft_size], tf.complex
+            #Channel estimates accross the entire resource grid for all transmitters and streams
+
+            #input (y, h_hat, err_var, no)
+            #Received OFDM resource grid after cyclic prefix removal and FFT y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], tf.complex
+            #Channel estimates for all streams from all transmitters h_hat : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols, num_effective_subcarriers], tf.complex
+            x_hat, no_eff = lmmse_equ([y, h_hat, err_var, no]) #(64, 1, 1, 912), (64, 1, 1, 912)
+            #Estimated symbols x_hat : [batch_size, num_tx, num_streams, num_data_symbols], tf.complex
+            #Effective noise variance for each estimated symbol no_eff : [batch_size, num_tx, num_streams, num_data_symbols], tf.float
+            x_hat=x_hat.numpy() #(64, 1, 1, 912)
+            no_eff=no_eff.numpy() #(64, 1, 1, 912)
+            no_eff=np.mean(no_eff)
+
+            llr_est = self.mydemapper([x_hat, no_eff]) #(64, 1, 1, 3648)
+            #output: [batch size, num_rx, num_rx_ant, n * num_bits_per_symbol]
+
+        #llr_est #(64, 1, 1, 4256)
+        if self.USE_LDPC:
+            b_hat = self.decoder(llr_est) #[64, 1, 1, 2128]
+        else:
+            b_hat = hard_decisions(llr_est, np.int32) 
+        BER=calculate_BER(b, b_hat)
+        print(BER)
+
+
+if __name__ == '__main__':
+    scenario='O1_60'
+    dataset_folder='data'
+    transmit = Transmitter(scenario, dataset_folder, num_rx = 1, num_tx = 1, \
+                 batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
+                USE_LDPC = True, pilot_pattern = "kronecker")
 
 
     
