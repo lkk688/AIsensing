@@ -2702,8 +2702,27 @@ class Transmitter():
         if showfig:
             self.plotchimpulse()
 
+        # The number of transmitted streams is equal to the number of UT antennas
+        # in both uplink and downlink
+        #NUM_STREAMS_PER_TX = NUM_UT_ANT
+        #NUM_UT_ANT = num_rx
         num_streams_per_tx = num_rx ##1
-        self.STREAM_MANAGEMENT = StreamManagement(np.ones([num_rx, 1], int), num_streams_per_tx) #RX_TX_ASSOCIATION, NUM_STREAMS_PER_TX
+        # Create an RX-TX association matrix.
+        # RX_TX_ASSOCIATION[i,j]=1 means that receiver i gets at least one stream
+        # from transmitter j. Depending on the transmission direction (uplink or downlink),
+        # the role of UT and BS can change.
+        # For example, considering a system with 2 RX and 4 TX, the RX-TX
+        # association matrix could be
+        # [ [1 , 1, 0, 0],
+        #   [0 , 0, 1, 1] ]
+        # which indicates that the RX 0 receives from TX 0 and 1, and RX 1 receives from
+        # TX 2 and 3.
+        #
+        # In this notebook, as we have only a single transmitter and receiver,
+        # the RX-TX association matrix is simply:
+        #RX_TX_ASSOCIATION = np.array([[1]]) #np.ones([num_rx, 1], int)
+        RX_TX_ASSOCIATION = np.ones([num_rx, num_tx], int)
+        self.STREAM_MANAGEMENT = StreamManagement(RX_TX_ASSOCIATION, num_streams_per_tx) #RX_TX_ASSOCIATION, NUM_STREAMS_PER_TX
 
         if guards:
             cyclic_prefix_length = 6 #0 #6 Length of the cyclic prefix
