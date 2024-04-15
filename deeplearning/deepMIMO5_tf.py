@@ -66,7 +66,8 @@ if __name__ == '__main__':
         snr_db.append(ebno_db)
         b_hat, BER = transmit(ebno_db = ebno_db, channeltype='awgn')
         ber.append(BER)
-    
+    print(snr_db)
+    print(ber)
     fig, ax = plt.subplots(figsize=(16,10))
 
     plt.xticks(fontsize=18)
@@ -82,20 +83,11 @@ if __name__ == '__main__':
     is_bler= False
     plt.title(title, fontsize=25)
     # return figure handle
-    if isinstance(ber, list):
-        for idx, b in enumerate(ber):
-            if is_bler:
-                line_style = "--"
-            else:
-                line_style = ""
-            plt.semilogy(snr_db[idx], b, line_style, linewidth=2)
-            print(f'db:{snr_db[idx]}, BER: {b}')
+    if is_bler:
+        line_style = "--"
     else:
-        if is_bler:
-            line_style = "--"
-        else:
-            line_style = ""
-        plt.semilogy(snr_db, ber, line_style, linewidth=2)
+        line_style = ""
+    plt.semilogy(snr_db, ber, line_style, linewidth=2)
 
     plt.grid(which="both")
     ebno = True
