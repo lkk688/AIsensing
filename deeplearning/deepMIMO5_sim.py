@@ -25,6 +25,48 @@ import matplotlib.pyplot as plt
 
 from deepMIMO5 import Transmitter
 
+def simulationloop(ebno_dbs, eval_transceiver, channeltype='awgn', title = "BER Simulation", savefigpath='./data/ber.jpg'):
+    bers = []
+    snr_db = []
+    for ebno_db in ebno_dbs:
+        b_hat, BER = eval_transceiver(ebno_db = ebno_db, channeltype='awgn')
+        bers.append(BER)
+    fig, ax = plt.subplots(figsize=(16,10))
+
+    plt.xticks(fontsize=18)
+    plt.yticks(fontsize=18)
+
+    #A tuple of two floats defining x-axis limits.
+    # if xlim is not None:
+    #     plt.xlim(xlim)
+    # if ylim is not None:
+    #     plt.ylim(ylim)
+
+    is_bler= False
+    plt.title(title, fontsize=25)
+    # return figure handle
+    if is_bler:
+        line_style = "--"
+    else:
+        line_style = ""
+    plt.semilogy(ebno_dbs, bers, line_style, linewidth=2)
+
+    plt.grid(which="both")
+    ebno = True
+    if ebno:
+        plt.xlabel(r"$E_b/N_0$ (dB)", fontsize=25)
+    else:
+        plt.xlabel(r"$E_s/N_0$ (dB)", fontsize=25)
+    ylabel="BER"
+    plt.ylabel(ylabel, fontsize=25)
+    # legend=""
+    # plt.legend(legend, fontsize=20)
+    if savefigpath is not None:
+        plt.savefig(savefigpath)
+        plt.close(fig)
+
+    return bers
+
 if __name__ == '__main__':
     scenario='O1_60'
     dataset_folder='data'
@@ -56,50 +98,10 @@ if __name__ == '__main__':
 
     ebno_dbs=np.linspace(EBN0_DB_MIN, EBN0_DB_MAX, 20)
 
-    transmit = Transmitter(scenario, dataset_folder, num_rx = 1, num_tx = 1, \
+    eval_transceiver = Transmitter(scenario, dataset_folder, num_rx = 1, num_tx = 1, \
                 batch_size =BATCH_SIZE, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = NUM_BITS_PER_SYMBOL,  \
                 USE_LDPC = False, pilot_pattern = "empty", guards=False, showfig=False) #"kronecker"
         #channeltype="perfect", "awgn", "ofdm", "time"
-    ber = []
-    snr_db = []
-    for ebno_db in ebno_dbs:
-        snr_db.append(ebno_db)
-        b_hat, BER = transmit(ebno_db = ebno_db, channeltype='awgn')
-        ber.append(BER)
-    print(snr_db)
-    print(ber)
-    fig, ax = plt.subplots(figsize=(16,10))
-
-    plt.xticks(fontsize=18)
-    plt.yticks(fontsize=18)
-
-    #A tuple of two floats defining x-axis limits.
-    # if xlim is not None:
-    #     plt.xlim(xlim)
-    # if ylim is not None:
-    #     plt.ylim(ylim)
-
-    title = "BER Simulation"
-    is_bler= False
-    plt.title(title, fontsize=25)
-    # return figure handle
-    if is_bler:
-        line_style = "--"
-    else:
-        line_style = ""
-    plt.semilogy(snr_db, ber, line_style, linewidth=2)
-
-    plt.grid(which="both")
-    ebno = True
-    if ebno:
-        plt.xlabel(r"$E_b/N_0$ (dB)", fontsize=25)
-    else:
-        plt.xlabel(r"$E_s/N_0$ (dB)", fontsize=25)
-    ylabel="BER"
-    plt.ylabel(ylabel, fontsize=25)
-    legend=""
-    plt.legend(legend, fontsize=20)
-    save_fig = True
-    if save_fig:
-        plt.savefig('./data/ber.jpg')
-        plt.close(fig)
+    
+    bers=simulationloop(ebno_dbs, eval_transceiver, channeltype='perfect', title = "BER Simulation", savefigpath='./data/ber_perfect.jpg')
+    print(bers)
