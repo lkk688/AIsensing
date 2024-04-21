@@ -23,14 +23,11 @@ import matplotlib.pyplot as plt
 # from tensorflow.keras.layers import Layer, Conv2D, LayerNormalization
 # from tensorflow.nn import relu
 
-from deepMIMO5 import Transmitter
+from deepMIMO5 import Transmitter, BinarySource, count_errors, count_block_errors
 
-def simulationloop(ebno_dbs, eval_transceiver, channeltype='awgn', title = "BER Simulation", savefigpath='./data/ber.jpg'):
-    bers = []
-    snr_db = []
-    for ebno_db in ebno_dbs:
-        b_hat, BER = eval_transceiver(ebno_db = ebno_db, channeltype='awgn')
-        bers.append(BER)
+
+def ber_plot_single(ebno_dbs, bers, title = "BER Simulation", savefigpath='./data/ber.jpg'):
+
     fig, ax = plt.subplots(figsize=(16,10))
 
     plt.xticks(fontsize=18)
@@ -65,7 +62,47 @@ def simulationloop(ebno_dbs, eval_transceiver, channeltype='awgn', title = "BER 
         plt.savefig(savefigpath)
         plt.close(fig)
 
-    return bers
+def sim_ber(ebno_dbs, eval_transceiverc, b, batch_size,  channeltype='awgn'):
+    #num_points = 100  # Example value, replace with the actual value
+    ebno_dbs_np = np.array(ebno_dbs, dtype=np.float64)  # Cast to the desired data type
+    batch_size_np = np.array(batch_size, dtype=np.int32)  # Cast to the desired data type
+    num_points = ebno_dbs_np.shape[0]
+
+    # Initialize NumPy arrays with zeros
+    bit_errors = np.zeros(num_points, dtype=np.int64)
+    block_errors = np.zeros(num_points, dtype=np.int64)
+    nb_bits = np.zeros(num_points, dtype=np.int64)
+    nb_blocks = np.zeros(num_points, dtype=np.int64)
+
+    for ebno_db in ebno_dbs:
+        b_hat, BER = eval_transceiver(b=b, ebno_db = ebno_db, channeltype=channeltype)
+    
+    # count errors
+    bit_e = count_errors(b, b_hat)
+    block_e = count_block_errors(b, b_hat)
+
+    bit_n = np.size(b)
+    block_n = np.size(b[..., -1])
+
+    # Initialize NumPy arrays bit_errors, block_errors, nb_bits, and nb_blocks (if not already initialized)
+    bit_errors = np.zeros_like(bit_e, dtype=np.int64)
+    block_errors = np.zeros_like(block_e, dtype=np.int64)
+    nb_bits = np.zeros_like(bit_n, dtype=np.int64)
+    nb_blocks = np.zeros_like(block_n, dtype=np.int64)
+
+    # Update variables
+    bit_errors[i] += np.int64(bit_e)
+    block_errors[i] += np.int64(block_e)
+    nb_bits[i] += np.int64(bit_n)
+    nb_blocks[i] += np.int64(block_n)
+
+def simulationloop(ebno_dbs, eval_transceiver, b=None, channeltype='awgn'):
+    bers = []
+    for ebno_db in ebno_dbs:
+        b_hat, BER = eval_transceiver(b=b, ebno_db = ebno_db, channeltype=channeltype)
+        bers.append(BER)
+    bers_np=np.array(bers)
+    return bers_np
 
 if __name__ == '__main__':
     scenario='O1_60'
@@ -102,6 +139,19 @@ if __name__ == '__main__':
                 batch_size =BATCH_SIZE, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = NUM_BITS_PER_SYMBOL,  \
                 USE_LDPC = False, pilot_pattern = "empty", guards=False, showfig=False) #"kronecker"
         #channeltype="perfect", "awgn", "ofdm", "time"
+    #Number of information bits per codeword
+    k=eval_transceiver.k
+    binary_source = BinarySource()
+    # Start Transmitter self.k Number of information bits per codeword
+    b = binary_source([BATCH_SIZE, 1, NUM_STREAMS_PER_TX, k]) #[batch_size, num_tx, num_streams_per_tx, num_databits]
     
-    bers=simulationloop(ebno_dbs, eval_transceiver, channeltype='perfect', title = "BER Simulation", savefigpath='./data/ber_perfect.jpg')
+
+    BER_list = []
+    bers=simulationloop(ebno_dbs, eval_transceiver, b, channeltype='perfect')
     print(bers)
+    BER_list.append(bers)
+    bers=simulationloop(ebno_dbs, eval_transceiver, b, channeltype='awgn')
+    print(bers)
+    BER_list.append(bers)
+
+    ber_plot_single(ebno_dbs, BER_list, title = "BER Simulation", savefigpath='./data/ber.jpg')

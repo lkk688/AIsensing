@@ -2223,6 +2223,64 @@ def calculate_BER(bits, bits_est):
     # BER = torch.round(error_rate * 1000) / 1000  # Round to 3 decimal places
     return BER
 
+def count_errors(b, b_hat):
+    """Counts the number of bit errors between two binary tensors.
+
+    Input
+    -----
+        b : float32
+        b_hat : float32: same shape as ``b`` filled with ones and zeros.
+
+    Output
+    ------
+        : tf.int64
+            A scalar, the number of bit errors.
+    """
+    # errors = tf.not_equal(b,b_hat)
+    # errors = tf.cast(errors, tf.int64)
+    # return tf.reduce_sum(errors)
+    errors = np.not_equal(b, b_hat)
+    errors = errors.astype(np.int64)
+    result = np.sum(errors)
+    return result
+
+def count_block_errors(b, b_hat):
+    """Counts the number of block errors between two binary tensors.
+
+    A block error happens if at least one element of ``b`` and ``b_hat``
+    differ in one block. The BLER is evaluated over the last dimension of
+    the input, i. e., all elements of the last dimension are considered to
+    define a block.
+
+    This is also sometimes referred to as `word error rate` or `frame error
+    rate`.
+
+    Input
+    -----
+        b : tf.float32
+            A tensor of arbitrary shape filled with ones and
+            zeros.
+
+        b_hat : tf.float32
+            A tensor of the same shape as ``b`` filled with
+            ones and zeros.
+    # Example usage:
+    b = np.array([[1, 0], [0, 1]])
+    b_hat = np.array([[1, 1], [0, 1]])
+    block_errors = count_block_errors(b, b_hat)
+    print(f"Number of block errors: {block_errors}")
+
+    Output
+    ------
+        : tf.int64
+            A scalar, the number of block errors.
+    """
+    # errors = tf.reduce_any(tf.not_equal(b,b_hat), axis=-1)
+    # errors = tf.cast(errors, tf.int64)
+    # return tf.reduce_sum(errors)
+    errors = np.any(b != b_hat, axis=-1) #np.any(b != b_hat, axis=-1) computes element-wise inequality between the arrays b and b_hat along the last dimension.
+    return np.sum(errors) #np.sum(errors) calculates the sum of all elements in the resulting boolean array.
+
 class MyDemapper:
     r"""
     Demapper(demapping_method, constellation_type=None, num_bits_per_symbol=None, constellation=None, hard_out=False, with_prior=False, dtype=tf.complex64, **kwargs)
@@ -2891,11 +2949,12 @@ class Transmitter():
             h_b=h_b.numpy()
         return h_b, tau_b
 
-    def __call__(self, ebno_db = 15.0, channeltype='ofdm'):
+    def __call__(self, b=None, ebno_db = 15.0, channeltype='ofdm'):
         # Transmitter
-        binary_source = BinarySource()
-        # Start Transmitter self.k Number of information bits per codeword
-        b = binary_source([self.batch_size, 1, self.num_streams_per_tx, self.k]) #[64,1,1,3584] if empty [64,1,1,1536] [batch_size, num_tx, num_streams_per_tx, num_databits]
+        if b is None:
+            binary_source = BinarySource()
+            # Start Transmitter self.k Number of information bits per codeword
+            b = binary_source([self.batch_size, 1, self.num_streams_per_tx, self.k]) #[64,1,1,3584] if empty [64,1,1,1536] [batch_size, num_tx, num_streams_per_tx, num_databits]
         if self.USE_LDPC:
             c = self.encoder(b) #tf.tensor[64,1,1,3072] [batch_size, num_tx, num_streams_per_tx, num_codewords]
         else:
