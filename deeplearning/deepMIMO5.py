@@ -2988,8 +2988,8 @@ class Transmitter():
             llr_perfect = self.mydemapper([x_rg, no]) #[64, 1, 1, 14, 304]
             llr_perfect = llr_perfect.reshape(llr_perfect.shape[:-2] + (-1,)) #(64, 1, 1, 4256)
             b_perfect = hard_decisions(llr_perfect, np.int32) ##(64, 1, 1, 4256) 0,1 [64, 1, 1, 14, 304] 2128
-            BER=calculate_BER(b, b_perfect)
-            print("Perfect BER:", BER)
+            #BER=calculate_BER(b, b_perfect)
+            #print("Perfect BER:", BER)
         else: # channel estimation
             print("Num of Pilots:", len(self.RESOURCE_GRID.pilot_pattern.pilots)) #1
             # Receiver
@@ -3019,7 +3019,8 @@ class Transmitter():
 
         #llr_est #(64, 1, 1, 4256)
         if self.USE_LDPC:
-            b_hat = self.decoder(llr_est) #[64, 1, 1, 2128]
+            b_hat_tf = self.decoder(llr_est) #[64, 1, 1, 2128]
+            b_hat = b_hat_tf.numpy()
         else:
             b_hat = hard_decisions(llr_est, np.int32) 
         BER=calculate_BER(b, b_hat)
