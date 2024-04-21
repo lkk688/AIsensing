@@ -225,7 +225,7 @@ if __name__ == '__main__':
             batch_size =BATCH_SIZE, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = NUM_BITS_PER_SYMBOL,  \
             USE_LDPC = False, pilot_pattern = "kronecker", guards=False, showfig=False) #"kronecker"
     #channeltype="perfect", "awgn", "ofdm", "time"
-    bers=simulationloop(ebno_dbs, eval_transceiver, b, channeltype='ofdm')
+    bers=simulationloop(ebno_dbs, eval_transceiver, channeltype='ofdm')
     print(bers)
     BER_list.append(bers)
 
