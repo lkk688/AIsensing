@@ -174,7 +174,7 @@ if __name__ == '__main__':
     NUM_BITS_PER_SYMBOL = 2 # QPSK
 
     # Minimum value of Eb/N0 [dB] for simulations
-    EBN0_DB_MIN = 2.0 #-3.0
+    EBN0_DB_MIN = -3.0
 
     # Maximum value of Eb/N0 [dB] for simulations
     EBN0_DB_MAX = 5.0
@@ -208,28 +208,30 @@ if __name__ == '__main__':
     b = binary_source([BATCH_SIZE, 1, NUM_STREAMS_PER_TX, k]) #[batch_size, num_tx, num_streams_per_tx, num_databits]
     
     bers, blers, BERs = sim_ber(ebno_dbs, eval_transceiver, b, BATCH_SIZE,  channeltype='awgn')
+    ber_plot_single(ebno_dbs, bers, title = "BER Simulation", savefigpath='./data/ber.jpg')
 
+    #Multi-scenario testing
     BER_list = []
+    legend=[]
+    
     bers=simulationloop(ebno_dbs, eval_transceiver, b, channeltype='awgn')
-    print(bers)
+    legend.append('awgn')
     BER_list.append(bers)
 
     eval_transceiver = Transmitter(scenario, dataset_folder, num_rx = 1, num_tx = 1, \
                 batch_size =BATCH_SIZE, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = NUM_BITS_PER_SYMBOL,  \
                 USE_LDPC = True, pilot_pattern = "empty", guards=False, showfig=False) #"kronecker"
     bers=simulationloop(ebno_dbs, eval_transceiver, channeltype='awgn')
-    print(bers)
+    legend.append('awgn with LDPC')
     BER_list.append(bers)
 
     eval_transceiver = Transmitter(scenario, dataset_folder, num_rx = 1, num_tx = 1, \
             batch_size =BATCH_SIZE, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = NUM_BITS_PER_SYMBOL,  \
-            USE_LDPC = False, pilot_pattern = "kronecker", guards=False, showfig=False) #"kronecker"
+            USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=False) #"kronecker"
     #channeltype="perfect", "awgn", "ofdm", "time"
     bers=simulationloop(ebno_dbs, eval_transceiver, channeltype='ofdm')
-    print(bers)
+    legend.append('OFDM channel')
     BER_list.append(bers)
 
-    ber_plot_single(ebno_dbs, bers, title = "BER Simulation", savefigpath='./data/ber.jpg')
-
-    ber_plot(ebno_dbs, BER_list, legend=['awgn','awgn+ldpc', 'OFDM channel'], ylabel="BER", title="Bit Error Rate", ebno=True, xlim=None,
+    ber_plot(ebno_dbs, BER_list, legend=legend, ylabel="BER", title="Bit Error Rate", ebno=True, xlim=None,
              ylim=None, is_bler=None, savefigpath='./data/berlist.jpg')

@@ -265,4 +265,10 @@ Follow [link](https://www.deepmimo.net/versions/v2-python/), install DeepMIMO py
 pip install DeepMIMO
 ```
 
-Select and download a scenario from the scenarios [page](https://www.deepmimo.net/scenarios/), for example, select Outdoor scenario1 (O1). Download 'O1_60' and 'O1_3p5' to the 'data' folder
+Select and download a scenario from the scenarios [page](https://www.deepmimo.net/scenarios/), for example, select Outdoor scenario1 (O1). Download 'O1_60' and 'O1_3p5' to the 'data' folder.
+
+Run the DeepMIMO simulation and obtain the BER curve for various configurations:
+```bash
+python deeplearning/deepMIMO5_sim.py
+```
+[BER Curve](imgs/berlist.jpg)
