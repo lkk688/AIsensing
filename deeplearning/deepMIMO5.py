@@ -3041,7 +3041,7 @@ if __name__ == '__main__':
     else:
         transmit = Transmitter(scenario, dataset_folder, num_rx = 1, num_tx = 1, \
                     batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
-                    USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=False) #"kronecker" "empty"
+                    USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=True) #"kronecker" "empty"
         #channeltype="perfect", "awgn", "ofdm", "time"
         b_hat, BER = transmit(ebno_db = 15.0, channeltype='ofdm')
     print("Finished")
