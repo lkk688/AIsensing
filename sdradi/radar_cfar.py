@@ -9,8 +9,8 @@ print(adi.__version__)
    As of March 2024, this is in the main branch of https://github.com/analogdevicesinc/pyadi-iio
    Also, make sure your Pluto firmware is updated to rev 0.38 (or later)
 '''
-from myradar2 import cfar
-
+from myradar2 import createcomplexsinusoid
+from processing import cfar, get_spectrum, select_chirp
 import sys
 import time
 import matplotlib.pyplot as plt
@@ -20,10 +20,72 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import *
 from pyqtgraph.Qt import QtCore, QtGui
 
-def deviceInstantiate(rx_gain = 20, sample_rate = 0.6e6, fft_size = 1024 * 8, signal_freq = 100e3, center_freq = 2.1e9, output_freq = 12.145e9, BW = 500e6, ramp_time = 0.5e3, c = 3e8, tddmode=False):
+
+def setupTDD(sdr_ip, ramp_time, num_chirps = 1):
+    """ Synchronize chirps to the start of each Pluto receive buffer
+    """
+    # Configure TDD controller
+    sdr_pins = adi.one_bit_adc_dac(sdr_ip)
+    sdr_pins.gpio_tdd_ext_sync = True # If set to True, this enables external capture triggering using the L24N GPIO on the Pluto.  When set to false, an internal trigger pulse will be generated every second
+    tdd = adi.tddn(sdr_ip)
+    sdr_pins.gpio_phaser_enable = True
+    tdd.enable = False         # disable TDD to configure the registers
+    tdd.sync_external = True
+    tdd.startup_delay_ms = 1
+    tdd.frame_length_ms = ramp_time/1e3 + 1.2    # each chirp is spaced this far apart
+    #num_chirps = 1
+    tdd.burst_count = num_chirps       # number of chirps in one continuous receive buffer
+
+    tdd.channel[0].enable = True
+    tdd.channel[0].polarity = False
+    tdd.channel[0].on_ms = 0.01
+    tdd.channel[0].off_ms = 0.1
+    tdd.channel[1].enable = True
+    tdd.channel[1].polarity = False
+    tdd.channel[1].on_ms = 0.01
+    tdd.channel[1].off_ms = 0.1
+    tdd.channel[2].enable = False
+    tdd.enable = True
+
+    # From start of each ramp, how many "good" points do we want?
+    # For best freq linearity, stay away from the start of the ramps
+    #ramp_time = int(my_phaser.freq_dev_time)
+    ramp_time_s = ramp_time / 1e6
+    begin_offset_time = 0.10 * ramp_time_s   # time in seconds
+    #print("actual freq dev time = ", ramp_time)
+    good_ramp_samples = int((ramp_time_s-begin_offset_time) * sample_rate)
+    start_offset_time = tdd.channel[0].on_ms/1e3 + begin_offset_time
+    start_offset_samples = int(start_offset_time * sample_rate)
+
+    # size the fft for the number of ramp data points
+    power=8
+    fft_size = int(2**power)
+    num_samples_frame = int(tdd.frame_length_ms/1000*sample_rate)
+    while num_samples_frame > fft_size:     
+        power=power+1
+        fft_size = int(2**power) 
+        if power==18:
+            break
+    print("fft_size =", fft_size)
+
+    # Pluto receive buffer size needs to be greater than total time for all chirps
+    total_time = tdd.frame_length_ms * num_chirps   # time in ms
+    print("Total Time for all Chirps:  ", total_time, "ms")
+    buffer_time = 0
+    power=12
+    while total_time > buffer_time:     
+        power=power+1
+        buffer_size = int(2**power) 
+        buffer_time = buffer_size/my_sdr.sample_rate*1000   # buffer time in ms
+        if power==23:
+            break     # max pluto buffer size is 2**23, but for tdd burst mode, set to 2**22
+    print("buffer_time:", buffer_time, " ms")
+    return tdd, sdr_pins, good_ramp_samples, start_offset_time, start_offset_samples, fft_size, buffer_size
+
+def deviceInstantiate(rpi_ip = "ip:phaser.local", sdr_ip = "ip:192.168.2.1", rx_gain = 20, sample_rate = 0.6e6, fft_size = 1024 * 8, signal_freq = 100e3, center_freq = 2.1e9, output_freq = 12.145e9, BW = 500e6, ramp_time = 0.5e3, c = 3e8, tddmode=False):
     # Instantiate all the Devices
-    rpi_ip = "ip:phaser.local"  # IP address of the Raspberry Pi
-    sdr_ip = "ip:192.168.2.1"  # "192.168.2.1, or pluto.local"  # IP address of the Transceiver Block
+    #rpi_ip = "ip:phaser.local"  # IP address of the Raspberry Pi
+    #sdr_ip = "ip:192.168.2.1"  # "192.168.2.1, or pluto.local"  # IP address of the Transceiver Block
     my_sdr = adi.ad9361(uri=sdr_ip)
     my_phaser = adi.CN0566(uri=rpi_ip, sdr=my_sdr)
 
@@ -113,69 +175,6 @@ def deviceInstantiate(rx_gain = 20, sample_rate = 0.6e6, fft_size = 1024 * 8, si
     )
     my_phaser.enable = 0  # 0 = PLL enable.  Write this last to update all the registers
 
-    if tddmode:
-        """ Synchronize chirps to the start of each Pluto receive buffer
-        """
-        # Configure TDD controller
-        sdr_pins = adi.one_bit_adc_dac(sdr_ip)
-        sdr_pins.gpio_tdd_ext_sync = True # If set to True, this enables external capture triggering using the L24N GPIO on the Pluto.  When set to false, an internal trigger pulse will be generated every second
-        tdd = adi.tddn(sdr_ip)
-        sdr_pins.gpio_phaser_enable = True
-        tdd.enable = False         # disable TDD to configure the registers
-        tdd.sync_external = True
-        tdd.startup_delay_ms = 1
-        tdd.frame_length_ms = ramp_time/1e3 + 1.2    # each chirp is spaced this far apart
-        num_chirps = 1
-        tdd.burst_count = num_chirps       # number of chirps in one continuous receive buffer
-
-        tdd.channel[0].enable = True
-        tdd.channel[0].polarity = False
-        tdd.channel[0].on_ms = 0.01
-        tdd.channel[0].off_ms = 0.1
-        tdd.channel[1].enable = True
-        tdd.channel[1].polarity = False
-        tdd.channel[1].on_ms = 0.01
-        tdd.channel[1].off_ms = 0.1
-        tdd.channel[2].enable = False
-        tdd.enable = True
-
-        # From start of each ramp, how many "good" points do we want?
-        # For best freq linearity, stay away from the start of the ramps
-        ramp_time = int(my_phaser.freq_dev_time)
-        ramp_time_s = ramp_time / 1e6
-        begin_offset_time = 0.10 * ramp_time_s   # time in seconds
-        print("actual freq dev time = ", ramp_time)
-        good_ramp_samples = int((ramp_time_s-begin_offset_time) * sample_rate)
-        start_offset_time = tdd.channel[0].on_ms/1e3 + begin_offset_time
-        start_offset_samples = int(start_offset_time * sample_rate)
-
-        # size the fft for the number of ramp data points
-        power=8
-        fft_size = int(2**power)
-        num_samples_frame = int(tdd.frame_length_ms/1000*sample_rate)
-        while num_samples_frame > fft_size:     
-            power=power+1
-            fft_size = int(2**power) 
-            if power==18:
-                break
-        print("fft_size =", fft_size)
-
-        # Pluto receive buffer size needs to be greater than total time for all chirps
-        total_time = tdd.frame_length_ms * num_chirps   # time in ms
-        print("Total Time for all Chirps:  ", total_time, "ms")
-        buffer_time = 0
-        power=12
-        while total_time > buffer_time:     
-            power=power+1
-            buffer_size = int(2**power) 
-            buffer_time = buffer_size/my_sdr.sample_rate*1000   # buffer time in ms
-            if power==23:
-                break     # max pluto buffer size is 2**23, but for tdd burst mode, set to 2**22
-        print("buffer_size:", buffer_size)
-        my_sdr.rx_buffer_size = buffer_size
-        print("buffer_time:", buffer_time, " ms")
-
-
     # Print config
     wavelength = c / output_freq
     freq = np.linspace(-sample_rate / 2, sample_rate / 2, int(fft_size))
@@ -205,28 +204,25 @@ def deviceInstantiate(rx_gain = 20, sample_rate = 0.6e6, fft_size = 1024 * 8, si
     # Create a sinewave waveform for transmitter
     fs = int(my_sdr.sample_rate)
     N = int(my_sdr.rx_buffer_size)
-    fc = int(signal_freq / (fs / N)) * (fs / N)
-    ts = 1 / float(fs)
-    t = np.arange(0, N * ts, ts)
-    i = np.cos(2 * np.pi * t * fc) * 2 ** 14
-    q = np.sin(2 * np.pi * t * fc) * 2 ** 14
-    iq = 1 * (i + 1j * q)
+    iq = createcomplexsinusoid(fs = fs, signal_freq = signal_freq, N = N)
+    # fc = int(signal_freq / (fs / N)) * (fs / N)
+    # ts = 1 / float(fs)
+    # t = np.arange(0, N * ts, ts)
+    # i = np.cos(2 * np.pi * t * fc) * 2 ** 14
+    # q = np.sin(2 * np.pi * t * fc) * 2 ** 14
+    # iq = 1 * (i + 1j * q)
 
-    # Send data
-    my_sdr._ctx.set_timeout(0)
-    my_sdr.tx([iq * 0.5, iq])  # only send data to the 2nd channel (that's all we need)
+    # transmit data from radio
+    #my_sdr._ctx.set_timeout(0)
+    my_sdr._ctx.set_timeout(30000)
+    if tddmode:
+        my_sdr._rx_init_channels()
+    my_sdr.tx([iq, iq])
+    #my_sdr.tx([iq * 0.5, iq])  # only send data to the 2nd channel (that's all we need)
 
-    #c = 3e8
-    N_frame = fft_size
-    freq = np.linspace(-fs / 2, fs / 2, int(N_frame))
-    slope = BW / ramp_time_s
-    dist = (freq - signal_freq) * c / (2 * slope)
-
-    return my_phaser, my_sdr, ramp_time_s, N, sample_rate
+    return my_phaser, my_sdr, sdr_pins, tdd, ramp_time_s, N, sample_rate
 
 c = 3e8
-plot_threshold = False
-cfar_toggle = False
 default_chirp_bw = 500e6
 rx_gain = 20
 sample_rate = 0.6e6 #2e6
@@ -238,8 +234,29 @@ output_freq = 10e9
 # int(output_freq 10e9 + signal_freq 100e3 + center_freq 2.1e9)
 BW = 500e6, 
 ramp_time = 0.5e3 # ramp time in us
-my_phaser, my_sdr, ramp_time_s, N, sample_rate= deviceInstantiate(rx_gain, sample_rate, fft_size, signal_freq, center_freq, output_freq, BW, ramp_time, c)
+tddmode = False
+rpi_ip = "ip:phaser.local"  # IP address of the Raspberry Pi
+sdr_ip = "ip:192.168.2.1"  # "192.168.2.1, or pluto.local"  # IP address of the Transceiver Block
+my_phaser, my_sdr, ramp_time_s, N, sample_rate= \
+        deviceInstantiate(rpi_ip, sdr_ip, rx_gain, sample_rate, fft_size, signal_freq, \
+                            center_freq, output_freq, BW, ramp_time, c)
+if tddmode:
+    num_chirps = 1
+    ramp_time = int(my_phaser.freq_dev_time)
+    print("actual freq dev time = ", ramp_time)
+    tdd, sdr_pins, good_ramp_samples, start_offset_time, start_offset_samples, fft_size, buffer_size \
+        = setupTDD(sdr_ip, ramp_time, num_chirps)
+    print("buffer_size:", buffer_size)
+    my_sdr.rx_buffer_size = buffer_size
 
+#c = 3e8
+N_frame = fft_size
+freq = np.linspace(-sample_rate / 2, sample_rate / 2, int(N_frame))
+slope = BW / ramp_time_s
+dist = (freq - signal_freq) * c / (2 * slope)
+
+plot_threshold = False
+cfar_toggle = False
 num_slices = 50     # this sets how much time will be displayed on the waterfall plot
 plot_freq = 100e3    # x-axis freq range to plot
 img_array = np.ones((num_slices, fft_size))*(-100)
@@ -247,7 +264,7 @@ img_array = np.ones((num_slices, fft_size))*(-100)
 class Window(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Interactive FFT")
+        self.setWindowTitle("MyRadar Test")
         self.setGeometry(0, 0, 400, 400)  # (x,y, width, height)
         #self.setFixedWidth(600)
         self.setWindowState(QtCore.Qt.WindowMaximized)
@@ -264,7 +281,7 @@ class Window(QMainWindow):
         layout = QGridLayout()
 
         # Control Panel
-        control_label = QLabel("PHASER CFAR Targeting")
+        control_label = QLabel("Radar Targeting")
         font = control_label.font()
         font.setPointSize(24)
         control_label.setFont(font)
@@ -310,7 +327,7 @@ class Window(QMainWindow):
         self.cfar_bias = QSlider(Qt.Horizontal)
         self.cfar_bias.setMinimum(0)
         self.cfar_bias.setMaximum(100)
-        self.cfar_bias.setValue(40)
+        self.cfar_bias.setValue(40) #25
         self.cfar_bias.setTickInterval(5)
         self.cfar_bias.setMaximumWidth(200)
         self.cfar_bias.setTickPosition(QSlider.TicksBelow)
@@ -326,7 +343,7 @@ class Window(QMainWindow):
         self.cfar_guard = QSlider(Qt.Horizontal)
         self.cfar_guard.setMinimum(1)
         self.cfar_guard.setMaximum(40)
-        self.cfar_guard.setValue(27)
+        self.cfar_guard.setValue(27) #15
         self.cfar_guard.setTickInterval(4)
         self.cfar_guard.setMaximumWidth(200)
         self.cfar_guard.setTickPosition(QSlider.TicksBelow)
@@ -371,7 +388,7 @@ class Window(QMainWindow):
         self.high_slider.setMinimum(-100)
         self.high_slider.setMaximum(0)
         self.high_slider.setValue(0)
-        self.high_slider.setTickInterval(20)
+        self.high_slider.setTickInterval(20)#5
         self.high_slider.setMaximumWidth(200)
         self.high_slider.setTickPosition(QSlider.TicksBelow)
         self.high_slider.valueChanged.connect(self.get_water_levels)
@@ -446,6 +463,7 @@ class Window(QMainWindow):
         tr = QtGui.QTransform()
         tr.translate(0,-sample_rate/2)
         tr.scale(0.35, sample_rate / (N))
+        #tr.scale(0.35, sample_rate / fft_size)
         self.imageitem.setTransform(tr)
         zoom_freq = 35e3
         self.waterfall.setRange(yRange=(signal_freq, signal_freq + zoom_freq))
@@ -501,6 +519,10 @@ class Window(QMainWindow):
             * np.sin(np.radians(self.steer_slider.value()))
             / (3e8)
         )
+        # phase_delta = (2 * 3.14159 * output_freq * my_phaser.element_spacing
+        #     * np.sin(np.radians(self.steer_slider.value()))
+        #     / (3e8)
+        # )
         my_phaser.set_beam_phase_diff(np.degrees(phase_delta))
 
     def set_range_res(self):
@@ -516,11 +538,20 @@ class Window(QMainWindow):
         my_phaser.enable = 0
 
     def end_program(self):
-        """ Gracefully shutsdown the program and Pluto
+        """ Gracefully shutsdown the program and Radio
 		Returns:
 			None
 		"""
         my_sdr.tx_destroy_buffer()
+        print("Program finished and Pluto Tx Buffer Cleared")
+        if tddmode:
+            # disable TDD and revert to non-TDD (standard) mode
+            tdd.enable = False
+            sdr_pins.gpio_phaser_enable = False
+            tdd.channel[1].polarity = not(sdr_pins.gpio_phaser_enable)
+            tdd.channel[2].polarity = sdr_pins.gpio_phaser_enable
+            tdd.enable = True
+            tdd.enable = False
         self.close()
 
     def change_thresh(self, state):
@@ -565,18 +596,24 @@ def update():
 		None
 	"""
     global index, plot_threshold, freq, dist
+    global plot_dist, ramp_time_s, sample_rate
     label_style = {"color": "#FFF", "font-size": "14pt"}
+    if tddmode:
+        my_phaser._gpios.gpio_burst = 0
+        my_phaser._gpios.gpio_burst = 1
+        my_phaser._gpios.gpio_burst = 0
 
     data = my_sdr.rx()
-    data = data[0] + data[1]   
-    win_funct = np.blackman(len(data))
-    y = data * win_funct
-    data_fft = np.fft.fft(y, n=fft_size)
-    sp = np.absolute(data_fft)
-    sp = np.fft.fftshift(sp)
-    s_mag = np.abs(sp) / np.sum(win_funct)
-    s_mag = np.maximum(s_mag, 10 ** (-15))
-    s_dbfs = 20 * np.log10(s_mag / (2 ** 11))
+    chan1 = data[0]
+    chan2 = data[1]
+    data = chan1+chan2 
+
+    if tddmode:
+        # select just the linear portion of the last chirp
+        data, win_funct = select_chirp(data, num_chirps, good_ramp_samples, start_offset_samples, num_samples_frame, fft_size):
+        s_dbfs = get_spectrum(data, fft_size=fft_size, win_funct=win_funct)
+    else:
+        s_dbfs = get_spectrum(data, fft_size=fft_size)
 
     bias = win.cfar_bias.value()
     num_guard_cells = win.cfar_guard.value()
