@@ -80,7 +80,7 @@ def setupTDD(sdr_ip, ramp_time, num_chirps = 1):
         if power==23:
             break     # max pluto buffer size is 2**23, but for tdd burst mode, set to 2**22
     print("buffer_time:", buffer_time, " ms")
-    return tdd, sdr_pins, good_ramp_samples, start_offset_time, start_offset_samples, fft_size, buffer_size
+    return tdd, sdr_pins, good_ramp_samples, start_offset_time, start_offset_samples, num_samples_frame, fft_size, buffer_size
 
 def deviceInstantiate(rpi_ip = "ip:phaser.local", sdr_ip = "ip:192.168.2.1", rx_gain = 20, sample_rate = 0.6e6, fft_size = 1024 * 8, signal_freq = 100e3, center_freq = 2.1e9, output_freq = 12.145e9, BW = 500e6, ramp_time = 0.5e3, c = 3e8, tddmode=False):
     # Instantiate all the Devices
@@ -244,7 +244,7 @@ if tddmode:
     num_chirps = 1
     ramp_time = int(my_phaser.freq_dev_time)
     print("actual freq dev time = ", ramp_time)
-    tdd, sdr_pins, good_ramp_samples, start_offset_time, start_offset_samples, fft_size, buffer_size \
+    tdd, sdr_pins, good_ramp_samples, start_offset_time, start_offset_samples, num_samples_frame, fft_size, buffer_size \
         = setupTDD(sdr_ip, ramp_time, num_chirps)
     print("buffer_size:", buffer_size)
     my_sdr.rx_buffer_size = buffer_size
@@ -610,7 +610,7 @@ def update():
 
     if tddmode:
         # select just the linear portion of the last chirp
-        data, win_funct = select_chirp(data, num_chirps, good_ramp_samples, start_offset_samples, num_samples_frame, fft_size):
+        data, win_funct = select_chirp(data, num_chirps, good_ramp_samples, start_offset_samples, num_samples_frame, fft_size)
         s_dbfs = get_spectrum(data, fft_size=fft_size, win_funct=win_funct)
     else:
         s_dbfs = get_spectrum(data, fft_size=fft_size)
