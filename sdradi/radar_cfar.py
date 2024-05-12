@@ -232,7 +232,7 @@ center_freq = 2.1e9
 output_freq = 10e9
 #output_freq = 12.145e9
 # int(output_freq 10e9 + signal_freq 100e3 + center_freq 2.1e9)
-BW = 500e6, 
+BW = 500e6
 ramp_time = 0.5e3 # ramp time in us
 tddmode = False
 rpi_ip = "ip:phaser.local"  # IP address of the Raspberry Pi
@@ -249,7 +249,6 @@ if tddmode:
     print("buffer_size:", buffer_size)
     my_sdr.rx_buffer_size = buffer_size
 
-#c = 3e8
 N_frame = fft_size
 freq = np.linspace(-sample_rate / 2, sample_rate / 2, int(N_frame))
 slope = BW / ramp_time_s
@@ -619,7 +618,7 @@ def update():
     num_guard_cells = win.cfar_guard.value()
     num_ref_cells = win.cfar_ref.value()
     cfar_method = 'average'
-    if (True):
+    if (True):#use cfar
         threshold, targets = cfar(s_dbfs, num_guard_cells, num_ref_cells, bias, cfar_method)
         s_dbfs_cfar = targets.filled(-200)  # fill the values below the threshold with -200 dBFS
         s_dbfs_threshold = threshold
