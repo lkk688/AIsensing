@@ -5,7 +5,7 @@ import sys
  
 # importing numpy as np
 import numpy as np
-Runtime="Side6"
+Runtime="QT6"#"Side6"
 if Runtime=="QT5":
    #from PyQt5.QtWidgets import QApplication, QWidget, QLabel
    from PyQt5 import QtWidgets
