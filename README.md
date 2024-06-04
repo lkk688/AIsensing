@@ -76,8 +76,12 @@ PlutoSDR quick start: https://wiki.analog.com/university/tools/pluto/users/quick
   * Check IIO devices "iio_info -s", "iio_attr -a -C"
 
 ```bash 
-nmap -sn 192.168.86.0/24 #scan IP
-ssh analog@phaser.local #analog@192.168.1.83 (wifi) analog@192.168.1.73 (eth0)
+sudo apt install nmap
+ipconfig #check the current ip range
+nmap -sn 192.168.86.0/24 #scan IP in the current network, nmap -sn 192.168.1.0/24 if the current network IP is 192.168.1.73
+ssh analog@192.168.1.69 #password: analog
+#second option
+ssh analog@phaser.local #password: analog analog@192.168.1.83 (wifi) analog@192.168.1.73 (eth0)
 
 (mycondapy310) PS D:\Developer\radarsensing> iio_attr -a -C fw_version   
 Using auto-detected IIO context at URI "usb:2.46.5"

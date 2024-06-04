@@ -22,3 +22,34 @@ Complementing the wideband base station, our cost-effective mobile node offers a
 Due to the limited 56 MHz bandwidth, which is insufficient for radar sensing, we integrated an external frequency modulation chip outside the transceiver. This chip enables frequency sweeping of 500 MHz, granting the mobile node a frequency-modulated continuous wave (FMCW) radar sensing capability with a bandwidth of 500 MHz. This feature allows for precise distance measurements, making the mobile node suitable for applications such as target detection, positioning, and obstacle detection.
 
 
+# SDR Device Access
+Using POE to power the Mobile Node, connect the device via host device in the same network:
+
+```bash 
+sudo apt install nmap
+ipconfig #check the current ip range
+nmap -sn 192.168.86.0/24 #scan IP in the current network, nmap -sn 192.168.1.0/24 if the current network IP is 192.168.1.73
+ssh analog@192.168.1.69 #password: analog
+#second option
+ssh analog@phaser
+analog@phaser:~ $ ifconfig
+    eth0: 192.168.1.67
+    eth1: 192.168.2.10
+    wlan0: 192.168.1.69
+```
+
+Check the analog devices:
+```bash
+analog@phaser:~ $ iio_attr -a -C fw_version #it will show multiple devices
+analog@phaser:~ $ iio_info -u ip:phaser.local #show the Raspberry Pi phaser information
+analog@phaser:~ $ iio_info -u ip:192.168.1.67 #use the IP to show the phaser information
+analog@phaser:~ $ iio_info -u ip:192.168.2.10 #same information
+analog@phaser:~ $ iio_info -u ip:192.168.1.69 #same information
+analog@phaser:~ $ iio_info -u ip:phaser.local:50901 #show the SDR information (actual connection is USB)
+    hw_model: Analog Devices PlutoSDR Rev.C (Z7010-AD9361)
+    uri: ip:phaser.local
+	ip,ip-addr: 192.168.2.10
+    IIO context has 4 devices:
+analog@phaser:~ $ iio_readdev -u ip:pluto.local -B -b 65768 cf-ad9361-lpc
+    Throughput: 24 MiB/s
+```
