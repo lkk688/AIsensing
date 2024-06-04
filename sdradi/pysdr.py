@@ -13,8 +13,8 @@ num_samps = 100000 # number of samples per call to rx()
 #sdr = adi.Pluto("ip:192.168.2.1")
 sdr = adi.ad9361(uri="ip:pluto.local")
 # Read back properties from hardware
-print(sdr.tx_rf_bandwidth)
-sdr.sample_rate = int(sample_rate)
+print(sdr.tx_rf_bandwidth) #18,000,000
+sdr.sample_rate = int(sample_rate) #1Mhz
 
 # Config Tx
 sdr.tx_rf_bandwidth = int(sample_rate) # filter cutoff, just set it to the same as sample rate
@@ -37,11 +37,11 @@ sdr.rx_hardwaregain_chan0 = 0.0 # dB, increase to increase the receive gain, but
 
 # Create transmit waveform (QPSK, 16 samples per symbol)
 num_symbols = 1000
-x_int = np.random.randint(0, 4, num_symbols) # 0 to 3
-x_degrees = x_int*360/4.0 + 45 # 45, 135, 225, 315 degrees
+x_int = np.random.randint(0, 4, num_symbols) # (1000,) 0 to 3
+x_degrees = x_int*360/4.0 + 45 # (1000,) 45, 135, 225, 315 degrees
 x_radians = x_degrees*np.pi/180.0 # sin() and cos() takes in radians
 x_symbols = np.cos(x_radians) + 1j*np.sin(x_radians) # this produces our QPSK complex symbols
-samples = np.repeat(x_symbols, 16) # 16 samples per symbol (rectangular pulses)
+samples = np.repeat(x_symbols, 16) # (16000,) 16 samples per symbol (rectangular pulses), each data repated 16 times
 samples *= 2**14 # The PlutoSDR expects samples to be between -2^14 and +2^14, not -1 and +1 like some SDRs
 #IQ samples between -1 and 1, before transmitting them scale by 2^14  size: 16000
 print(np.min(samples), np.max(samples))

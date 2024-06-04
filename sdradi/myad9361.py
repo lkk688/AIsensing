@@ -188,7 +188,7 @@ def main():
     sdr.tx_destroy_buffer() #Clears TX buffer
     sdr.rx_destroy_buffer() #Clears RX buffer
     print(len(alldata0))
-    with open('./data/antad9361data.npy', 'wb') as f:
+    with open('./data/test9361data.npy', 'wb') as f:
         np.save(f, alldata0)
     plotfigure(ts, alldata0.real[0:num_samps*2])
     print(np.mean(rxtime))
@@ -269,7 +269,7 @@ def updatefigure(axs, t, data0, data1, specf,specp):
 # plutodruri="ip:192.168.2.16"#connected via USB
 import argparse
 parser = argparse.ArgumentParser(description='MyAD9361')
-parser.add_argument('--urladdress', default="ip:192.168.1.10", type=str,
+parser.add_argument('--urladdress', default="ip:192.168.2.1", type=str,
                     help='urladdress of the device, e.g., ip:pluto.local') 
 parser.add_argument('--rxch', default=1, type=int, 
                     help='number of rx channels')
