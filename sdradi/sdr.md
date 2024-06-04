@@ -23,7 +23,9 @@ Due to the limited 56 MHz bandwidth, which is insufficient for radar sensing, we
 
 
 # SDR Device Access
-Using POE to power the Mobile Node, connect the device via host device in the same network:
+
+## SSH Access
+Using POE to power the Mobile Node, i.e., connect the POE cable to the Raspberry Pi Ethernet port with POE hat. The SDR radio is connected to the Raspberry Pi via USB; the Raspberry Pi itself will be served as the analog phaser. The POE will provide all the power to these devices. We can connect to the Mobile Node (i.e., Raspberry Pi) via host device (Mac, Linux or Windows) in the same network:
 
 ```bash 
 sudo apt install nmap
