@@ -52,4 +52,6 @@ analog@phaser:~ $ iio_info -u ip:phaser.local:50901 #show the SDR information (a
     IIO context has 4 devices:
 analog@phaser:~ $ iio_readdev -u ip:pluto.local -B -b 65768 cf-ad9361-lpc
     Throughput: 24 MiB/s
+analog@phaser:~ $ iio_readdev -u ip:phaser.local:50901 -B -b 65768 cf-ad9361-lpc
+    Throughput: 21 MiB/s
 ```
