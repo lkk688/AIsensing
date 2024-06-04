@@ -1,8 +1,9 @@
 # import matplotlib
 # matplotlib.use('Agg')
+#pip install PySide6
 import os
 #https://matplotlib.org/stable/api/backend_qt_api.html
-os.environ['QT_API'] = 'pyqt5'
+#os.environ['QT_API'] = 'pyqt6' # 'pyqt5'
 import cv2
 import sys
 import argparse
