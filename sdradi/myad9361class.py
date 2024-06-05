@@ -8,6 +8,30 @@ import numpy as np
 from scipy import signal
 from timeit import default_timer as timer
 
+def printSDRproperties(sdr):
+    print("Bandwidth of TX path:", sdr.tx_rf_bandwidth) #Bandwidth of front-end analog filter of TX path
+    print("Loopback:", sdr.loopback) #0: disable, 1: Digital TX → Digital RX, 2: RF RX → RF TX
+    print("TX gain chan0:", sdr.tx_hardwaregain_chan0) #Attenuation applied to TX path, -30
+    print("TX gain chan1:", sdr.tx_hardwaregain_chan1) #Attenuation applied to TX path, -10
+    print("TX enabled channels:", sdr.tx_enabled_channels) 
+    print("RX enabled channels:", sdr.rx_enabled_channels)
+    print("RX buffer size:", sdr.rx_buffer_size) #1024
+    print(f'TX Cyclic Buffer: {sdr.tx_cyclic_buffer}')
+
+    print("TX LO: %s" % (sdr.tx_lo)) #Carrier frequency of TX path
+    print("RX LO: %s" % (sdr.rx_lo)) #Carrier frequency of RX path
+    print("AGC Mode chan0:", sdr.gain_control_mode_chan0)
+    print("AGC Mode chan1:", sdr.gain_control_mode_chan1)#Mode of receive path AGC. Options are: slow_attack, fast_attack, manual
+    print("RX gain chan0:", sdr.rx_hardwaregain_chan0)#71
+    print("RX gain chan1:", sdr.rx_hardwaregain_chan1)#71 Gain applied to RX path. Only applicable when gain_control_mode is set to ‘manual’
+    print("rx_rf_bandwidth:", sdr.rx_rf_bandwidth) #4Mhz Bandwidth of front-end analog filter of RX path
+    print("TX gain chan0:", sdr.tx_hardwaregain_chan0)
+    print("TX gain chan1:", sdr.tx_hardwaregain_chan1)#71
+    print("rx_rf_bandwidth:", sdr.tx_rf_bandwidth)
+    print("Sample rate:", sdr.sample_rate) #Sample rate RX and TX paths in samples per second
+    print("DDS scales:", sdr.dds_scales)
+    print(f'Filter: {sdr.filter}')
+
 def testlibiioaccess(urladdress="ip:pluto.local"):
     import iio
     sdr = adi.Pluto(urladdress)
@@ -67,19 +91,32 @@ def createcomplexsinusoid(fs, fc = 3000000, N = 1024):
     iq = i + 1j * q
     return iq
 
+def calculate_spectrum(data0, fs, find_peak=True):
+    f, Pxx_den = signal.periodogram(data0.real, fs) #https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.periodogram.html
+    #returns f (ndarray): Array of sample frequencies.
+    #returns Pxx_den (ndarray): Power spectral density or power spectrum of x.
+    peak_freq = 0
+    if find_peak ==True:
+        f /= 1e6  # Hz -> MHz
+        peak_index = np.argmax(Pxx_den) #(71680,) -> 22526
+        peak_freq = f[peak_index]
+        print("Peak frequency found at ", peak_freq, "MHz.")
+    return f, Pxx_den, peak_freq
+
 #modified based on https://github.com/lkk688/AIsensing/blob/main/deeplearning/SDR.py
 class SDR:
-    def __init__(self, SDR_IP, SDR_TX_FREQ=2000000000, SDR_TX_GAIN=-80, SDR_RX_GAIN=0, SDR_TX_SAMPLERATE=1e6, SDR_TX_BANDWIDTH=1e6):
+    def __init__(self, SDR_IP, SDR_FC=2000000000, SDR_TX_GAIN=-80, SDR_RX_GAIN=0, SDR_SAMPLERATE=1e6, SDR_BANDWIDTH=1e6):
     
         self.SDR_IP = SDR_IP # IP address of the TX SDR device
-        self.SDR_TX_FREQ = int(SDR_TX_FREQ) # TX center frequency in Hz,  #2Ghz 2000000000
-        self.SDR_RX_FREQ = int(SDR_TX_FREQ) # RX center frequency in Hz
+        self.SDR_TX_FREQ = int(SDR_FC) # TX center frequency in Hz,  #2Ghz 2000000000
+        self.SDR_RX_FREQ = int(SDR_FC) # RX center frequency in Hz
         self.SDR_TX_GAIN = int(SDR_TX_GAIN) # TX gain in dB
         self.SDR_RX_GAIN = int(SDR_RX_GAIN) # RX gain in dB
-        self.SDR_TX_SAMPLERATE = int(SDR_TX_SAMPLERATE) # TX sample rate (samples/second)
-        self.SDR_TX_BANDWIDTH = int(SDR_TX_BANDWIDTH) # TX bandwidth (Hz)
+        self.SDR_SAMPLERATE = int(SDR_SAMPLERATE) # TX sample rate (samples/second)
+        self.SDR_TX_BANDWIDTH = int(SDR_BANDWIDTH) # TX bandwidth (Hz)
+        self.SDR_RX_BANDWIDTH = int(SDR_BANDWIDTH) # RX bandwidth (Hz)
         self.num_samples=0
-        self.sdr = self.setupSDR(fs=SDR_TX_SAMPLERATE)
+        self.sdr = self.setupSDR(fs=SDR_SAMPLERATE)
 
     #new added
     def setupSDR(self, fs= 6000000, useAD9361=True, Rx_CHANNEL=2, Tx_CHANNEL=1): #default fs=6Mhz
@@ -108,7 +145,8 @@ class SDR:
             sdr.tx_enabled_channels = [0,1] #enables Tx0, tx1
         elif Tx_CHANNEL==1:
             sdr.tx_enabled_channels = [0] #enables Tx0
-
+        self.Rx_CHANNEL = Rx_CHANNEL
+        self.Tx_CHANNEL = Tx_CHANNEL
         return sdr
         
 
@@ -143,7 +181,7 @@ class SDR:
 
         # Set the RF bandwidth for both TX and RX
         self.sdr.tx_rf_bandwidth = self.SDR_TX_BANDWIDTH
-        self.sdr.rx_rf_bandwidth = self.SDR_TX_BANDWIDTH
+        #self.sdr.rx_rf_bandwidth = self.SDR_TX_BANDWIDTH
 
         # Set the hardware gain for both TX and RX
         self.sdr.tx_hardwaregain_chan0 = self.SDR_TX_GAIN  # TX gain
@@ -193,14 +231,24 @@ class SDR:
         # Set gain control mode to manual for the TX channel
         self.sdr.gain_control_mode_chan0 = controlmode #"slow_attack" #'manual'
         # Set the hardware gain for both TX and RX
-        self.sdr.rx_rf_bandwidth = self.SDR_TX_BANDWIDTH
+        self.sdr.rx_rf_bandwidth = self.SDR_RX_BANDWIDTH
 
         # Clear the receiver buffer to prepare for new data
         self.sdr.rx_destroy_buffer()
 
-    def SDR_RX_receive(self, normalize=True):
+    def SDR_RX_receive(self, combinerule='drop', normalize=True):
         # Receive the samples from the SDR hardware
-        a = self.sdr_tx.rx()
+        x = self.sdr_tx.rx()
+
+        if self.Rx_CHANNEL==2:
+            data0=x[0]
+            data1=x[1]
+            if combinerule == 'drop':
+                a = data0
+            elif combinerule == 'plus':
+                a = data0+data1
+        else:
+            a=x
 
         # Normalize the signal amplitude if required
         if normalize:
@@ -210,6 +258,51 @@ class SDR:
         #return torch.tensor(a, dtype=torch.complex64)
         return a
     
+    def SDR_RX_receive_continuous(self, T_len = 2, spectrum=False, delay=0.5, plot_flag = False):
+        #T_len = 2  #2second
+        # Collect data
+        #alldata0 = np.empty(0) #Default is numpy.float64.
+        alldata0 = np.empty(0, dtype=np.complex_) #Default is numpy.float64.
+        rxtime=[]
+        processtime=[]
+        
+        fs = self.SDR_SAMPLERATE
+        num_samps = self.sdr.rx_buffer_size
+        Nperiod=int(T_len*fs/num_samps) #total time 10s *fs=total samples /fft_size = Number of frames
+
+        if plot_flag:
+            #plt.figure(figsize=(10,6))
+            fig, axs = plt.subplots(2, 1, layout='constrained', figsize=(12,6))
+        
+        for r in range(Nperiod):
+            start = timer()
+            data0 = self.SDR_RX_receive()
+            rxt = timer()
+            timedelta=rxt-start
+            rxtime.append(timedelta)
+            
+            datarate=len(data0.real)*4/timedelta/1e6 #Mbps, complex data is 4bytes
+            print("Data rate at ", datarate, "Mbps.") #7-8Mbps in 10240 points, 10Mbps in 102400points, single channel in 19-20Mbps
+            alldata0 = np.concatenate((alldata0, data0))
+            if spectrum:
+                f, Pxx_den, peak_freq = calculate_spectrum(data0, fs, find_peak=True)
+            
+
+            if plot_flag and spectrum:
+                Npoints=len(data0.real) #min(len(data1.real), len(data0.real))
+                ts = 1/fs
+                t = (ts*1000)*np.arange(Npoints) #second to ms
+                #t = np.arange(0, N, ts)
+                #plt.clf()
+                updatefigure(axs, t, data0[0:Npoints], data1=None, f=f, Pxx_den=Pxx_den)
+                #plt.draw()
+                #plt.show()
+                plt.pause(0.01)
+                time.sleep(delay)
+            endtime = timer()
+            processtime.append(endtime-start)
+        return alldata0, processtime
+
     def SDR_TX_send(self, SAMPLES, max_scale=1, cyclic=False):
         '''
         Transmit the given signal samples through the SDR transmitter.
@@ -257,32 +350,25 @@ class SDR:
 
         # Transmit the prepared samples
         self.sdr.tx(samples)
+
+    def SDR_TX_signal(self, signal_type='sinusoid', fc=int(1000000), N=1024, cyclic=True):
+        #get SDR sample rate
+        fs = int(self.sdr.sample_rate) #6MHz
+    
+        if signal_type == 'sinusoid': # Create a sinewave waveform
+            iq = createcomplexsinusoid(fs, fc, N)
+            # Send data
+            # Since sdr.tx_cyclic_buffer was set to True, this data will just keep repeating.  There’s no need to send it again.   
+            # Set cyclic buffer mode if required
+            self.sdr.tx_cyclic_buffer = cyclic
+            self.sdr.tx(iq)
+        elif signal_type == 'dds':
+            ddstone(self.sdr, dualtune=False, dds_freq_hz = fc, dds_scale = 0.9)
     
     # Read back properties from hardware https://analogdevicesinc.github.io/pyadi-iio/devices/adi.ad936x.html
-    def printSDRproperties(self):
+    def show_params(self):
         sdr = self.sdr
-        print("Bandwidth of TX path:", sdr.tx_rf_bandwidth) #Bandwidth of front-end analog filter of TX path
-        print("Loopback:", sdr.loopback) #0: disable, 1: Digital TX → Digital RX, 2: RF RX → RF TX
-        print("TX gain chan0:", sdr.tx_hardwaregain_chan0) #Attenuation applied to TX path, -30
-        print("TX gain chan1:", sdr.tx_hardwaregain_chan1) #Attenuation applied to TX path, -10
-        print("TX enabled channels:", sdr.tx_enabled_channels) 
-        print("RX enabled channels:", sdr.rx_enabled_channels)
-        print("RX buffer size:", sdr.rx_buffer_size) #1024
-        print(f'TX Cyclic Buffer: {sdr.tx_cyclic_buffer}')
-
-        print("TX LO: %s" % (sdr.tx_lo)) #Carrier frequency of TX path
-        print("RX LO: %s" % (sdr.rx_lo)) #Carrier frequency of RX path
-        print("AGC Mode chan0:", sdr.gain_control_mode_chan0)
-        print("AGC Mode chan1:", sdr.gain_control_mode_chan1)#Mode of receive path AGC. Options are: slow_attack, fast_attack, manual
-        print("RX gain chan0:", sdr.rx_hardwaregain_chan0)#71
-        print("RX gain chan1:", sdr.rx_hardwaregain_chan1)#71 Gain applied to RX path. Only applicable when gain_control_mode is set to ‘manual’
-        print("rx_rf_bandwidth:", sdr.rx_rf_bandwidth) #4Mhz Bandwidth of front-end analog filter of RX path
-        print("TX gain chan0:", sdr.tx_hardwaregain_chan0)
-        print("TX gain chan1:", sdr.tx_hardwaregain_chan1)#71
-        print("rx_rf_bandwidth:", sdr.tx_rf_bandwidth)
-        print("Sample rate:", sdr.sample_rate) #Sample rate RX and TX paths in samples per second
-        print("DDS scales:", sdr.dds_scales)
-        print(f'Filter: {sdr.filter}')
+        printSDRproperties(sdr)
 
 
     def find_good_max_TX_gain_value(self, SDR_RX_GAIN=-30, Max_SINR=20, make_plot=True):
@@ -344,7 +430,7 @@ class SDR:
         if make_plot:
             plt.figure(figsize=(10, 4))
             plt.scatter(TX_GAIN_t, SINR)
-            plt.title(f'SINR vs TX Gain. RX Gain set to {SDR_RX_GAIN}\nFreq={self.SDR_TX_FREQ/1e6} MHz, BW={self.SDR_TX_BANDWIDTH/1e6} MHz, SR={self.SDR_TX_SAMPLERATE/1e6} MHz')
+            plt.title(f'SINR vs TX Gain. RX Gain set to {SDR_RX_GAIN}\nFreq={self.SDR_TX_FREQ/1e6} MHz, BW={self.SDR_TX_BANDWIDTH/1e6} MHz, SR={self.SDR_SAMPLERATE/1e6} MHz')
             plt.grid()
             plt.gca().set_aspect('equal', adjustable='box')
             plt.xlabel('PlutoSDR TX Gain')
@@ -356,16 +442,7 @@ class SDR:
         return SDR_TX_GAIN
 
     
-
-def main():
-    args = parser.parse_args()
-    urladdress = args.urladdress #"ip:pluto.local"
-    Rx_CHANNEL = args.rxch
-    signal_type = args.signal
-    plot_flag = args.plot
-
-    #testlibiioaccess(urladdress)
-
+def sdr_test(urladdress, signal_type='sinusoid', Rx_CHANNEL=2, plot_flag = True):
     # Create radio
     sdr = adi.ad9361(uri=urladdress)
     
@@ -415,7 +492,8 @@ def main():
     alldata0 = np.empty(0, dtype=np.complex_) #Default is numpy.float64.
     rxtime=[]
     processtime=[]
-    Nperiod=int(2*fs/num_samps) #total time 10s *fs=total samples /fft_size = Number of frames
+    T_len = 2  #2second
+    Nperiod=int(T_len*fs/num_samps) #total time 10s *fs=total samples /fft_size = Number of frames
     print("Total period for 2s:", Nperiod)
     for r in range(Nperiod):
         start = timer()
@@ -465,6 +543,41 @@ def main():
     print(np.mean(rxtime))
     print(np.mean(processtime))
 
+
+def main():
+    args = parser.parse_args()
+    urladdress = args.urladdress #"ip:pluto.local"
+    Rx_CHANNEL = args.rxch
+    signal_type = args.signal
+    plot_flag = args.plot
+
+    #testlibiioaccess(urladdress)
+    sdr_test(urladdress, signal_type=signal_type, Rx_CHANNEL=Rx_CHANNEL, plot_flag = plot_flag)
+
+    fc=2.4*1e9 #2Ghz 2000000000
+    fs = 6000000 #6MHz
+    bandwidth = 4000000 #4MHz
+    mysdr = SDR(SDR_IP=urladdress, SDR_FC=fc, SDR_SAMPLERATE=fs, SDR_BANDWIDTH=bandwidth)
+    mysdr.SDR_TX_stop()
+    mysdr.SDR_TX_setup()
+    mysdr.SDR_RX_setup(n_SAMPLES=10000)
+    mysdr.SDR_TX_signal(signal_type='dds', fc=fc, N=10000, cyclic=True)
+    time.sleep(0.3)  # Wait for settings to take effect
+    rx_sample = mysdr.SDR_RX_receive(normalize=False)
+    num_samps = mysdr.sdr.rx_buffer_size
+
+    alldata0, processtime = mysdr.SDR_RX_receive_continuous(T_len = 2, spectrum=False, delay=0.5, plot_flag = False)
+    # Stop transmitting
+    mysdr.SDR_TX_stop()
+    with open('./data/test9361data.npy', 'wb') as f:
+        np.save(f, alldata0)
+    plotfigure(1/fs, alldata0.real[0:num_samps*2])
+    #print(np.mean(rxtime))
+    print(np.mean(processtime))
+
+    
+
+
 # def animationfig(axs, data0, data1):
 #     line1=axs[0].plot(data0.real, marker="o", ms=2, color="red")  # Only plot real part
 #     line2=axs[0].plot(data1.real, marker="o", ms=2, color="blue")
@@ -502,7 +615,8 @@ def updatefigure(axs, t, data0, data1, specf,specp):
     #axs[0].plot(t, data0.real, t, data1.real)
     axs[0].cla()  
     axs[0].plot(t, data0.real, marker="o", ms=2, color="red")  # Only plot real part
-    axs[0].plot(t, data1.real, marker="o", ms=2, color="blue")
+    if data1 is not None:
+        axs[0].plot(t, data1.real, marker="o", ms=2, color="blue")
     #axs[0].set_xlim(0, 2)
     axs[0].set_xlabel('Time (ms)')
     axs[0].set_ylabel('data0 and data1')
