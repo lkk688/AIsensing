@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy import signal
 from timeit import default_timer as timer
+import sys
+from processing import createcomplexsinusoid, calculate_spectrum, normalize_complexsignal, detect_signaloffset
 
 def printSDRproperties(sdr):
     print("Bandwidth of TX path:", sdr.tx_rf_bandwidth) #Bandwidth of front-end analog filter of TX path
@@ -58,12 +60,14 @@ def readiio(sdr):
 
 #For FPGA based systems ADI reference designs include direct digital synthesizers (DDS) which can generate tones with arbitrary phase, frequency, and amplitude. 
 # For each individual DAC channel there are two DDSs which can have a unique phase, frequency, and phase.
+#ref: https://pyadi-iio.readthedocs.io/en/stable/fpga/index.html
 def ddstone(sdr, dualtune=True, dds_freq_hz = 10000, dds_scale = 0.9):
     n = len(sdr.dds_scales)
     # Generate a single complex tone
     #dds_freq_hz = 10000 #must be less than 1/2 the sample rate.
     #dds_scale = 0.9 #range [0,1]
     # Enable all DDSs
+    dds_freq_hz = int(dds_freq_hz)
     if dualtune == False:
         #option1:
         sdr.dds_single_tone(dds_freq_hz, dds_scale)
@@ -79,29 +83,6 @@ def ddstone(sdr, dualtune=True, dds_freq_hz = 10000, dds_scale = 0.9):
         frequency2 = dds_freq_hz *2
         sdr.dds_dual_tone(frequency1, dds_scale, frequency2, dds_scale, channel=0)
 
-def createcomplexsinusoid(fs, fc = 3000000, N = 1024):
-    # Create a complex sinusoid
-    #fc = 3000000
-    #N = 1024
-    #fs = int(sdr.tx_sample_rate)
-    ts = 1 / float(fs)
-    t = np.arange(0, N * ts, ts)
-    i = np.cos(2 * np.pi * t * fc) * 2 ** 14
-    q = np.sin(2 * np.pi * t * fc) * 2 ** 14
-    iq = i + 1j * q
-    return iq
-
-def calculate_spectrum(data0, fs, find_peak=True):
-    f, Pxx_den = signal.periodogram(data0.real, fs) #https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.periodogram.html
-    #returns f (ndarray): Array of sample frequencies.
-    #returns Pxx_den (ndarray): Power spectral density or power spectrum of x.
-    peak_freq = 0
-    if find_peak ==True:
-        f /= 1e6  # Hz -> MHz
-        peak_index = np.argmax(Pxx_den) #(71680,) -> 22526
-        peak_freq = f[peak_index]
-        print("Peak frequency found at ", peak_freq, "MHz.")
-    return f, Pxx_den, peak_freq
 
 #modified based on https://github.com/lkk688/AIsensing/blob/main/deeplearning/SDR.py
 class SDR:
@@ -227,18 +208,18 @@ class SDR:
         # Set the buffer size for receiving data
         self.sdr.rx_buffer_size = n_SAMPLES
 
-        self.sdr.rx_lo = self.SDR_TX_FREQ  # Receive frequency (set to the same as TX)
+        self.sdr.rx_lo = self.SDR_RX_FREQ #SDR_TX_FREQ  # Receive frequency (set to the same as TX)
         # Set gain control mode to manual for the TX channel
         self.sdr.gain_control_mode_chan0 = controlmode #"slow_attack" #'manual'
         # Set the hardware gain for both TX and RX
-        self.sdr.rx_rf_bandwidth = self.SDR_RX_BANDWIDTH
+        self.sdr.rx_rf_bandwidth = self.SDR_RX_BANDWIDTH # rx filter cutoff 
 
         # Clear the receiver buffer to prepare for new data
-        self.sdr.rx_destroy_buffer()
+        self.sdr.rx_destroy_buffer()# clear any data from rx buffer
 
     def SDR_RX_receive(self, combinerule='drop', normalize=True):
         # Receive the samples from the SDR hardware
-        x = self.sdr_tx.rx()
+        x = self.sdr.rx()
 
         if self.Rx_CHANNEL==2:
             data0=x[0]
@@ -303,7 +284,7 @@ class SDR:
             processtime.append(endtime-start)
         return alldata0, processtime
 
-    def SDR_TX_send(self, SAMPLES, max_scale=1, cyclic=False):
+    def SDR_TX_send(self, SAMPLES, max_scale=1, leadingzeros=0, cyclic=False):
         '''
         Transmit the given signal samples through the SDR transmitter.
 
@@ -322,7 +303,7 @@ class SDR:
         - Finally, transmits the prepared samples.
         '''
 
-        self.sdr_tx.tx_destroy_buffer()  # Clear any existing buffer
+        self.sdr.tx_destroy_buffer()  # Clear any existing buffer
 
         # Determine the number of samples based on whether SAMPLES is a NumPy array or a PyTorch tensor
         if isinstance(SAMPLES, np.ndarray):
@@ -336,34 +317,42 @@ class SDR:
         else:
             print("Input data is neither a NumPy array nor a Python list.")
 
-        # Normalize the signal to remove DC offset
-        samples = SAMPLES - np.mean(SAMPLES)
+        # # Normalize the signal to remove DC offset
+        # samples = SAMPLES - np.mean(SAMPLES)
 
-        # Scale the samples to their maximum amplitude and adjust according to max_scale
-        samples = (samples / np.max(np.abs(samples))) * max_scale
+        # # Scale the samples to their maximum amplitude and adjust according to max_scale
+        # samples = (samples / np.max(np.abs(samples))) * max_scale
 
-        # Scale the signal to the dynamic range expected by the SDR hardware
-        samples *= 2**14  # PlutoSDR, for example, expects sample values in the range -2^14 to +2^14
-
+        # # Scale the signal to the dynamic range expected by the SDR hardware
+        # samples *= 2**14  # scale the samples to 16-bit PlutoSDR, for example, expects sample values in the range -2^14 to +2^14
+        samples = normalize_complexsignal(SAMPLES, max_scale=max_scale, scale4sdr=True)
+        if leadingzeros >0:
+            leading_zeroes = np.zeros(leadingzeros, dtype=np.complex64)  # Leading 500 zeroes for noise floor measurement
+            samples = np.concatenate([leading_zeroes, samples], axis=0)  # Add the quiet for noise measurements
         # Set cyclic buffer mode if required
         self.sdr.tx_cyclic_buffer = cyclic
 
         # Transmit the prepared samples
         self.sdr.tx(samples)
 
-    def SDR_TX_signal(self, signal_type='sinusoid', fc=int(1000000), N=1024, cyclic=True):
+    def SDR_TX_signalgen(self, signal_type='sinusoid', f_signal=int(1000000), N=1024, leadingzeros=0, cyclic=True):
+        self.sdr.tx_destroy_buffer()  # Clear any existing buffer
+
         #get SDR sample rate
         fs = int(self.sdr.sample_rate) #6MHz
     
         if signal_type == 'sinusoid': # Create a sinewave waveform
-            iq = createcomplexsinusoid(fs, fc, N)
+            tx_samples = createcomplexsinusoid(fs, f_signal, N)
+            if leadingzeros >0:
+                leading_zeroes = np.zeros(leadingzeros, dtype=np.complex64)  # Leading 500 zeroes for noise floor measurement
+                tx_samples = np.concatenate([leading_zeroes, tx_samples], axis=0)  # Add the quiet for noise measurements
             # Send data
             # Since sdr.tx_cyclic_buffer was set to True, this data will just keep repeating.  There’s no need to send it again.   
             # Set cyclic buffer mode if required
             self.sdr.tx_cyclic_buffer = cyclic
-            self.sdr.tx(iq)
+            self.sdr.tx(tx_samples)
         elif signal_type == 'dds':
-            ddstone(self.sdr, dualtune=False, dds_freq_hz = fc, dds_scale = 0.9)
+            ddstone(self.sdr, dualtune=False, dds_freq_hz = f_signal, dds_scale = 0.9)
     
     # Read back properties from hardware https://analogdevicesinc.github.io/pyadi-iio/devices/adi.ad936x.html
     def show_params(self):
@@ -543,6 +532,78 @@ def sdr_test(urladdress, signal_type='sinusoid', Rx_CHANNEL=2, plot_flag = True)
     print(np.mean(rxtime))
     print(np.mean(processtime))
 
+def test_SDRclass(urladdress, signal_type='dds'):
+    fc=2.4*1e9 #2Ghz 2000000000
+    fs = 6000000 #6MHz
+    bandwidth = 4000000 #4MHz
+    mysdr = SDR(SDR_IP=urladdress, SDR_FC=fc, SDR_SAMPLERATE=fs, SDR_BANDWIDTH=bandwidth)
+    mysdr.SDR_TX_stop()
+    mysdr.SDR_TX_setup()
+    mysdr.SDR_RX_setup(n_SAMPLES=10000)
+    
+    time.sleep(0.3)  # Wait for settings to take effect
+
+    f_signal = 2000000 #1MHz
+    N_len = 10000 #data length, only needed for sin
+    mysdr.SDR_TX_signalgen(signal_type=signal_type, f_signal=f_signal, N=N_len, cyclic=True)
+    rx_sample = mysdr.SDR_RX_receive(normalize=False)
+    num_samps = mysdr.sdr.rx_buffer_size
+
+    alldata0, processtime = mysdr.SDR_RX_receive_continuous(T_len = 0.2, spectrum=False, delay=0.5, plot_flag = False)
+    # Stop transmitting
+    mysdr.SDR_TX_stop()
+    with open('./data/test9361data.npy', 'wb') as f:
+        np.save(f, alldata0)
+    plotfigure(1/fs, alldata0.real[0:num_samps*2])
+    #print(np.mean(rxtime))
+    print(np.mean(processtime))
+
+def test_ofdm_SDR(urladdress, SampleRate, SAMPLES, fc=921.1e6, leadingzeros=500, add_td_samples = 0):
+    #SampleRate = rg.fft_size*rg.subcarrier_spacing # sample 
+    out_shape = list(SAMPLES.shape) # store the input tensor shape
+    num_samples = SAMPLES.shape[-1] # number of samples in the input
+
+    bandwidth = SampleRate *1.1
+    mysdr = SDR(SDR_IP=urladdress, SDR_FC=fc, SDR_SAMPLERATE=SampleRate, SDR_BANDWIDTH=bandwidth)
+
+    #x_sdr = mysdr(SAMPLES = x_time, SDR_TX_GAIN=-10, SDR_RX_GAIN = 10, add_td_samples = 16, debug=True) # transmit
+    mysdr.SDR_TX_stop()
+    mysdr.SDR_TX_setup()
+    mysdr.SDR_RX_setup(n_SAMPLES=(num_samples+leadingzeros)*3) ## set the RX buffer size to 3 times the number of samples
+    mysdr.SDR_gain_set(tx_gain=0, rx_gain=30)
+    time.sleep(0.3)  # Wait for settings to take effect
+
+    now = time.time() # for measuing the duration of the process
+    mysdr.SDR_TX_send(SAMPLES, leadingzeros=leadingzeros, cyclic=True)
+    # internal counters
+    corr_threshold = 0.3
+    fails = 0 # how many times the process failed to reach pearson r > self.corr_threshold
+    success = 0 #  how many times the process reached pearson r > self.corr_threshold
+    timeout = 10
+    while success == 0:       
+        # RX samples 
+        rx_samples = mysdr.SDR_RX_receive(combinerule='drop', normalize=False)
+        rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR = detect_signaloffset(rx_samples, tx_SAMPLES=SAMPLES, num_samples=num_samples, leadingzeros=leadingzeros, add_td_samples=add_td_samples)
+        if fails > timeout:
+            print("Too many errors, timeout")
+            sys.exit(1)
+        # check if the correlation is reasonable to assume sync is right, if not increase power and/or rx sensitivity
+        if (corr >= corr_threshold):
+            success = 1
+        else: 
+            fails=+1
+    
+    SDR_TX_GAIN = mysdr.sdr.tx_hardwaregain_chan0
+    SDR_RX_GAIN = mysdr.sdr.rx_hardwaregain_chan0
+    mysdr.SDR_TX_stop()
+    try:
+        out_shape[-1] += add_td_samples
+        out = np.reshape(rx_TTI, out_shape)
+    except Exception as e:
+        print("Something failed:", e)
+        sys.exit(1)
+    sdr_time=time.time()-now
+    return out, SINR, SDR_TX_GAIN, SDR_RX_GAIN, fails+1, corr, sdr_time
 
 def main():
     args = parser.parse_args()
@@ -552,28 +613,9 @@ def main():
     plot_flag = args.plot
 
     #testlibiioaccess(urladdress)
-    sdr_test(urladdress, signal_type=signal_type, Rx_CHANNEL=Rx_CHANNEL, plot_flag = plot_flag)
+    #sdr_test(urladdress, signal_type=signal_type, Rx_CHANNEL=Rx_CHANNEL, plot_flag = plot_flag)
 
-    fc=2.4*1e9 #2Ghz 2000000000
-    fs = 6000000 #6MHz
-    bandwidth = 4000000 #4MHz
-    mysdr = SDR(SDR_IP=urladdress, SDR_FC=fc, SDR_SAMPLERATE=fs, SDR_BANDWIDTH=bandwidth)
-    mysdr.SDR_TX_stop()
-    mysdr.SDR_TX_setup()
-    mysdr.SDR_RX_setup(n_SAMPLES=10000)
-    mysdr.SDR_TX_signal(signal_type='dds', fc=fc, N=10000, cyclic=True)
-    time.sleep(0.3)  # Wait for settings to take effect
-    rx_sample = mysdr.SDR_RX_receive(normalize=False)
-    num_samps = mysdr.sdr.rx_buffer_size
-
-    alldata0, processtime = mysdr.SDR_RX_receive_continuous(T_len = 2, spectrum=False, delay=0.5, plot_flag = False)
-    # Stop transmitting
-    mysdr.SDR_TX_stop()
-    with open('./data/test9361data.npy', 'wb') as f:
-        np.save(f, alldata0)
-    plotfigure(1/fs, alldata0.real[0:num_samps*2])
-    #print(np.mean(rxtime))
-    print(np.mean(processtime))
+    test_SDRclass(urladdress)
 
     
 

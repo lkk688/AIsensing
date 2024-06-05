@@ -2,6 +2,155 @@ import numpy as np
 from scipy import ndimage
 from timeit import default_timer as timer
 from scipy import signal
+import matplotlib.pyplot as plt
+plt.rcParams['font.size'] = 8.0
+
+def createcomplexsinusoid(fs, fc = 3000000, N = 1024):
+    # Create a complex sinusoid
+    #fc = 3000000
+    #N = 1024
+    #fs = int(sdr.tx_sample_rate)
+    ts = 1 / float(fs)
+    t = np.arange(0, N * ts, ts)
+    i = np.cos(2 * np.pi * t * fc) * 2 ** 14
+    q = np.sin(2 * np.pi * t * fc) * 2 ** 14
+    iq = i + 1j * q
+    return iq
+
+def calculate_spectrum(data0, fs, find_peak=True):
+    f, Pxx_den = signal.periodogram(data0.real, fs) #https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.periodogram.html
+    #returns f (ndarray): Array of sample frequencies.
+    #returns Pxx_den (ndarray): Power spectral density or power spectrum of x.
+    peak_freq = 0
+    if find_peak ==True:
+        f /= 1e6  # Hz -> MHz
+        peak_index = np.argmax(Pxx_den) #(71680,) -> 22526
+        peak_freq = f[peak_index]
+        print("Peak frequency found at ", peak_freq, "MHz.")
+    return f, Pxx_den, peak_freq
+
+def normalize_complexsignal(SAMPLES, max_scale=1, scale4sdr=True):
+    # Determine the number of samples based on whether SAMPLES is a NumPy array or a PyTorch tensor
+    if isinstance(SAMPLES, np.ndarray):
+        num_samples = SAMPLES.size
+    # elif isinstance(SAMPLES, torch.Tensor):
+    #     self.num_samples = SAMPLES.numel()
+    #     SAMPLES = SAMPLES.numpy()  # Convert to NumPy array if it's a PyTorch tensor
+    elif isinstance(SAMPLES, list):
+        num_samples = len(SAMPLES) #"Input data is a Python list."
+        SAMPLES = np.array(SAMPLES)
+    else:
+        print("Input data is neither a NumPy array nor a Python list.")
+
+    # Assuming SAMPLES is a NumPy array
+    flat_samples = SAMPLES.flatten()  # Flatten the input samples
+    tx_std = np.std(flat_samples)  # Standard deviation of the input samples
+    tx_mean = np.mean(flat_samples)  # Mean of the input samples
+    tx_samples = flat_samples - tx_mean  # Remove DC offset
+
+    # Scale for SDR input
+    tx_samples_abs = np.abs(tx_samples)  # Absolute values of the samples
+    tx_samples_max = np.max(tx_samples_abs)  # Take the maximum value of the samples
+    tx_samples_scaled = tx_samples / tx_samples_max  # Scale the tx_samples to max 1
+
+    # Scale the samples to their maximum amplitude and adjust according to max_scale
+    samples = tx_samples_scaled * max_scale
+
+    if scale4sdr:
+        # Scale the signal to the dynamic range expected by the SDR hardware
+        samples *= 2**14  # scale the samples to 16-bit PlutoSDR, for example, expects sample values in the range -2^14 to +2^14
+
+    print("Standard deviation:", tx_std)
+    print("Mean:", tx_mean)
+    print("Scaled samples (max 1):", tx_samples_scaled)
+    return samples
+
+def detect_signaloffset(rx_samples, tx_SAMPLES, num_samples, leadingzeros=500, add_td_samples=0, tx_std=None):
+    #add_td_samples: number of additional symbols to cater fordelay spread
+    flat_samples = tx_SAMPLES.flatten()  # Flatten the input samples
+    tx_std = np.std(flat_samples)  # Standard deviation of the input samples
+
+    # Assuming rx_samples is a NumPy array and other variables are defined
+    rx_samples = rx_samples.astype(np.complex64)  # Convert received IQ samples to NumPy complex64
+
+    # Remove any offset
+    rx_mean = np.mean(rx_samples)
+    rx_samples -= rx_mean
+
+    # Set the same standard deviation as in the input samples
+    rx_std = np.std(rx_samples)
+    if tx_std is not None:
+        std_multiplier = np.float16(tx_std / rx_std) * 0.9  # Calculate new multiplier for same stdev in TX and RX
+        rx_samples *= std_multiplier  # Set the stdev
+
+    # Calculate the correlation between TX and RX signal
+    #find the start symbol of the first full TTI with 500 samples of noise measurements in front
+    #TTI_corr is a correlation signal obtained by cross-correlating the received samples (rx_samples) with the transmitted samples (flat_samples). 
+    #The goal is to find the alignment (offset) between the two signals.
+    TTI_corr = signal.correlate(rx_samples, flat_samples, mode='full', method='fft')
+    #find the index of the max value of absolute values of the first half of the correlation signal. 
+    #TTI_offset is initially set to the alignment position (index). we subtract the length of flat_samples and add 1 to get the correct offset.
+    TTI_offset = np.argmax(np.abs(TTI_corr[0:int(len(rx_samples) / 2)])) - len(flat_samples) + 1
+    if TTI_offset < leadingzeros + num_samples: #ensure that it points to the start of the first full Transmission Time Interval (TTI) with noise measurements in front.
+        TTI_offset += leadingzeros + num_samples
+
+    # RX TTI symbols + the additional symbols
+    rx_TTI = rx_samples[TTI_offset:TTI_offset + num_samples + add_td_samples]
+
+    # RX noise for SINR calculation
+    guardsize=50
+    rx_noise = rx_samples[TTI_offset - (leadingzeros-guardsize):TTI_offset - guardsize]
+
+    # Calculate the Pearson correlation between complex samples_orig and rx_TTI as acceptance metric
+    #extracts a portion of the received samples (rx_samples) starting from the TTI_offset and spanning num_samples elements.
+    received=np.abs(rx_samples)[TTI_offset:TTI_offset + num_samples]
+    #np.corrcoef(...) computes the Pearson correlation coefficient between the two sets of absolute values 
+    #The result of np.corrcoef(...) is a 2x2 matrix. The value at position [0, 1] (or equivalently, [1, 0]) represents the correlation coefficient between the two sets of data.
+    corr = np.corrcoef(np.abs(flat_samples), received)[0, 1]
+    print("Corr:", corr)
+
+    # Calculate TX power, RX power & noise power
+    tx_TTI_p = np.var(flat_samples)  # TX power
+    noise_p = np.var(rx_noise)  # Noise power
+    rx_TTI_p = np.var(rx_TTI)  # RX signal power
+    SINR = 10 * np.log10(rx_TTI_p / noise_p)  # Calculate SINR from received powers
+    resulttext = f'SINR ={SINR:1.1f}, TTI start index = {TTI_offset}, correlation = {corr:1.2f}, TX_p/RX_p = {tx_TTI_p/rx_TTI_p:1.2f}'
+    print(resulttext)
+    return rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR
+
+def plot_noisesignalPSD(rx_samples, rx_samples_abs, flat_samples, rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR):
+    #titletext = f'SINR ={SINR:1.1f}, attempt={fails+1}, TTI start index = {TTI_offset}, correlation = {corr:1.2f}, TX_p/RX_p = {tx_TTI_p/rx_TTI_p:1.2f}'
+    titletext = f'SINR ={SINR:1.1f}, TTI start index = {TTI_offset}, correlation = {corr:1.2f}'
+    fig, axs = plt.subplots(3, 2)
+    fig.set_size_inches(16, 7)
+    fig.suptitle(titletext)
+    axs[0,0].plot(10*np.log10(abs(rx_samples)/max(abs(rx_samples))), label='RX_dB')
+    axs[0,0].legend()
+    axs[0,0].set_title('TTI received 3 times, starting at random time')
+    axs[0,1].plot((abs(rx_samples_abs)), label='abs(RXsample)')
+    axs[0,1].axvline(x=TTI_offset, c='r', lw=3, label='TTI start')
+    axs[0,1].plot(abs(abs(TTI_corr)/np.max(abs(TTI_corr))), label='Pearson R')
+    axs[0,1].legend()
+    axs[0,1].set_title('Correlator for syncing the start of the second received TTI')
+    
+    axs[1,0].plot(np.abs(flat_samples), label='abs(TX samples)')
+    #axs[1,0].set_ylim(0,tx_samples_max_sample)
+    axs[1,0].legend()
+    axs[1,0].set_title('Transmitted signal, one TTI')
+    axs[1,1].plot((abs(rx_TTI)), label='abs(RX samples)')
+    #axs[1,1].set_ylim(0,tx_samples_max_sample)
+    axs[1,1].legend()
+    axs[1,1].set_title('Received signal, one TTI, syncronized')
+    
+    axs[2,0].psd(flat_samples, label='TX Signal')
+    axs[2,0].legend()
+    axs[2,0].set_title('Transmitted signal PSD')
+    axs[2,1].psd(rx_TTI, label='RX signal')
+    axs[2,1].psd(rx_noise, label='noise')
+    axs[2,1].legend()
+    axs[2,1].set_title('Received noise PSD and signal PSD')
+    plt.tight_layout()
+    plt.show()
 
 def extenddata(data, zoom=(20,5)):
     resampled_data=ndimage.zoom(data, zoom=(20,5))
