@@ -165,6 +165,7 @@ attr_val=ad9361
 compatible=ad9361
 # fw_printenv mode
 mode=2r2t
+$ exit
 ```
 
 Run the test code for SDR:
@@ -259,6 +260,21 @@ analog@phaser:~ $ iio_readdev -u ip:pluto.local -B -b 65768 cf-ad9361-lpc
 analog@phaser:~ $ iio_readdev -u ip:phaser.local:50901 -B -b 65768 cf-ad9361-lpc
     Throughput: 21 MiB/s
 ```
+
+# Processing Code
+
+Run the test code for SDR:
+```bash
+(mycondapy310) PS D:\Developer\radarsensing> python .\sdradi\pysdr.py #transmitting a QPSK signal in the 915 MHz band, receiving it, and plotting the PSD
+python sdradi/myad9361.py #perform transmit and plot the spectrum
+```
+
+Newly added `myad9361class.py` that put all sdr related code into one class. Run the following code to test the SDR class and perform signal detection
+```bash
+python sdradi/myad9361class.py
+```
+The result figure is shown as:
+!imgs\correctionresults.png
 
 # UI Part
 Test mayavi:

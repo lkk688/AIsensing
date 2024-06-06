@@ -83,6 +83,7 @@ def detect_signaloffset(rx_samples, tx_SAMPLES, num_samples, leadingzeros=500, a
     if tx_std is not None:
         std_multiplier = np.float16(tx_std / rx_std) * 0.9  # Calculate new multiplier for same stdev in TX and RX
         rx_samples *= std_multiplier  # Set the stdev
+    rx_samples_normalized = rx_samples
 
     # Calculate the correlation between TX and RX signal
     #find the start symbol of the first full TTI with 500 samples of noise measurements in front
@@ -117,10 +118,11 @@ def detect_signaloffset(rx_samples, tx_SAMPLES, num_samples, leadingzeros=500, a
     SINR = 10 * np.log10(rx_TTI_p / noise_p)  # Calculate SINR from received powers
     resulttext = f'SINR ={SINR:1.1f}, TTI start index = {TTI_offset}, correlation = {corr:1.2f}, TX_p/RX_p = {tx_TTI_p/rx_TTI_p:1.2f}'
     print(resulttext)
-    return rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR
+    return rx_samples_normalized, rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR
 
-def plot_noisesignalPSD(rx_samples, rx_samples_abs, flat_samples, rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR):
+def plot_noisesignalPSD(rx_samples, rx_samples_normalized, tx_SAMPLES, rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR):
     #titletext = f'SINR ={SINR:1.1f}, attempt={fails+1}, TTI start index = {TTI_offset}, correlation = {corr:1.2f}, TX_p/RX_p = {tx_TTI_p/rx_TTI_p:1.2f}'
+    tx_flat_samples = tx_SAMPLES.flatten()  # Flatten the input samples
     titletext = f'SINR ={SINR:1.1f}, TTI start index = {TTI_offset}, correlation = {corr:1.2f}'
     fig, axs = plt.subplots(3, 2)
     fig.set_size_inches(16, 7)
@@ -128,13 +130,13 @@ def plot_noisesignalPSD(rx_samples, rx_samples_abs, flat_samples, rx_TTI, rx_noi
     axs[0,0].plot(10*np.log10(abs(rx_samples)/max(abs(rx_samples))), label='RX_dB')
     axs[0,0].legend()
     axs[0,0].set_title('TTI received 3 times, starting at random time')
-    axs[0,1].plot((abs(rx_samples_abs)), label='abs(RXsample)')
+    axs[0,1].plot((abs(rx_samples_normalized)), label='abs(RXsample)')
     axs[0,1].axvline(x=TTI_offset, c='r', lw=3, label='TTI start')
     axs[0,1].plot(abs(abs(TTI_corr)/np.max(abs(TTI_corr))), label='Pearson R')
     axs[0,1].legend()
     axs[0,1].set_title('Correlator for syncing the start of the second received TTI')
     
-    axs[1,0].plot(np.abs(flat_samples), label='abs(TX samples)')
+    axs[1,0].plot(np.abs(tx_flat_samples), label='abs(TX samples)')
     #axs[1,0].set_ylim(0,tx_samples_max_sample)
     axs[1,0].legend()
     axs[1,0].set_title('Transmitted signal, one TTI')
@@ -143,7 +145,7 @@ def plot_noisesignalPSD(rx_samples, rx_samples_abs, flat_samples, rx_TTI, rx_noi
     axs[1,1].legend()
     axs[1,1].set_title('Received signal, one TTI, syncronized')
     
-    axs[2,0].psd(flat_samples, label='TX Signal')
+    axs[2,0].psd(tx_flat_samples, label='TX Signal')
     axs[2,0].legend()
     axs[2,0].set_title('Transmitted signal PSD')
     axs[2,1].psd(rx_TTI, label='RX signal')

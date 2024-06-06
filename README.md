@@ -170,6 +170,7 @@ conda install -c anaconda pyqt
 conda install -c anaconda numpy
 pip install pygame
 conda install -c anaconda pandas
+pip install opencv-python --upgrade
 ```
 
 New setup of mycondapy311:

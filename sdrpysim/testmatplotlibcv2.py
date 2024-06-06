@@ -10,7 +10,7 @@ plt.plot([1, 2, 3, 4])
 plt.ylabel('some numbers')
 plt.show()
 
-import cv2
+import cv2 #pip install opencv-python --upgrade
 import numpy as np
 from matplotlib import pyplot as plt
 

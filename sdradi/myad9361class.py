@@ -8,7 +8,7 @@ import numpy as np
 from scipy import signal
 from timeit import default_timer as timer
 import sys
-from processing import createcomplexsinusoid, calculate_spectrum, normalize_complexsignal, detect_signaloffset
+from processing import createcomplexsinusoid, calculate_spectrum, normalize_complexsignal, detect_signaloffset, plot_noisesignalPSD
 from myofdm import OFDMSymbol
 
 def printSDRproperties(sdr):
@@ -356,10 +356,10 @@ class SDR:
         elif signal_type == 'dds':
             ddstone(self.sdr, dualtune=False, dds_freq_hz = f_signal, dds_scale = 0.9)
     
-    def SDR_RXTX_offset(self, SAMPLES, leadingzeros=500, add_td_samples=16):
+    def SDR_RXTX_offset(self, SAMPLES, leadingzeros=500, add_td_samples=16, make_plot=True):
         #add_td_samples: number of additional symbols to cater fordelay spread
-        out_shape = list(SAMPLES.shape) # store the input tensor shape, 
-        num_samples = SAMPLES.shape[-1] # number of samples in the input
+        out_shape = list(SAMPLES.shape) # store the input tensor shape, [80]
+        num_samples = SAMPLES.shape[-1] # number of samples in the input 80
 
         #x_sdr = mysdr(SAMPLES = x_time, SDR_TX_GAIN=-10, SDR_RX_GAIN = 10, add_td_samples = 16, debug=True) # transmit
         self.SDR_TX_stop()
@@ -378,7 +378,10 @@ class SDR:
         while success == 0:       
             # RX samples 
             rx_samples = self.SDR_RX_receive(combinerule='drop', normalize=False)
-            rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR = detect_signaloffset(rx_samples, tx_SAMPLES=SAMPLES, num_samples=num_samples, leadingzeros=leadingzeros, add_td_samples=add_td_samples)
+            rx_samples_normalized, rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR = detect_signaloffset(rx_samples, tx_SAMPLES=SAMPLES, num_samples=num_samples, leadingzeros=leadingzeros, add_td_samples=add_td_samples)
+            if make_plot:
+                plot_noisesignalPSD(rx_samples, rx_samples_normalized, tx_SAMPLES=SAMPLES, \
+                                    rx_TTI=rx_TTI, rx_noise=rx_noise, TTI_offset=TTI_offset, TTI_corr=TTI_corr, corr=corr, SINR=SINR)
             if fails > timeout:
                 print("Too many errors, timeout")
                 sys.exit(1)
@@ -605,7 +608,7 @@ def test_SDRclass(urladdress, signal_type='dds'):
 
 def test_ofdm_SDR(urladdress, SampleRate, fc=921.1e6, leadingzeros=500, add_td_samples = 0):
     myofdm = OFDMSymbol()
-    SAMPLES = myofdm.createOFDMsignal()
+    SAMPLES = myofdm.createOFDMsignal() #(80,) complex128
     #SampleRate = rg.fft_size*rg.subcarrier_spacing # sample 
 
     bandwidth = SampleRate *1.1
@@ -626,7 +629,9 @@ def main():
     #testlibiioaccess(urladdress)
     #sdr_test(urladdress, signal_type=signal_type, Rx_CHANNEL=Rx_CHANNEL, plot_flag = plot_flag)
 
-    test_SDRclass(urladdress)
+    #test_SDRclass(urladdress)
+    fs=1000000
+    test_ofdm_SDR(urladdress=urladdress, SampleRate=fs)
 
     
 
