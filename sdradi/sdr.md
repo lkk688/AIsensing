@@ -61,7 +61,7 @@ ADALM-PLUTO for End Users: https://wiki.analog.com/university/tools/pluto/users
   * Accessing Pluto's FPGA Over JTAG: https://wiki.analog.com/university/tools/pluto/devs/fpga
   * HDL code: https://github.com/analogdevicesinc/hdl/tree/master/projects/pluto
 
-
+### Getting started for Windows
 Plug the ADALM-PLUTO to the USB port of the HOST PC. Download and install the Windows driver from [link](https://wiki.analog.com/university/tools/pluto/drivers/windows), Once the drivers are installed, and the device (Pluto or M2k) is plugged in, the following subsystems should be ready to use:
   * USB Ethernet/RNDIS Gadget. It provides a virtual Ethernet link to most versions of the Windows, Linux and OS X operating systems. The IP address of the PLUTO device is 192.168.2.1.
   * To a host, the usb device acts as an external hard drive. There will be one drive for the pluto device. Open `info.html` inside the drive to see the device information. Under “Build Settings”. By default, it is username: root ; password is analog.
@@ -171,6 +171,59 @@ Run the test code for SDR:
 ```bash
 (mycondapy310) PS D:\Developer\radarsensing> python .\sdradi\pysdr.py #transmitting a QPSK signal in the 915 MHz band, receiving it, and plotting the PSD
 python sdradi/myad9361.py #perform transmit and plot the spectrum
+```
+### Getting started for Linux
+
+Install the Linux driver from [link](https://wiki.analog.com/university/tools/pluto/drivers/linux)
+  * In order to access some USB functions without root privileges, it's recommended to install the PlutoSDR or ADALM2000 udev rules. Download and install this [package](https://wiki.analog.com/_media/university/tools/pluto/drivers/plutosdr-m2k-udev_1.0_amd64.deb)
+
+```bash
+$ wget https://wiki.analog.com/_media/university/tools/pluto/drivers/plutosdr-m2k-udev_1.0_amd64.deb
+$ sudo dpkg -i plutosdr-m2k-udev_1.0_amd64.deb
+$ sudo service udev restart
+#plug the device to the USB
+$ sudo dmesg | less #Display All Messages from Kernel Ring Buffer, enter q to exit
+    You can see usb 1-5: Product: PlutoSDR (ADALM-PLUTO)
+$ sudo kermit -l /dev/ttyACM0 -b 115200
+    Enter 'c', then type 'root' in pluto login, and 'analog' for password to enter into pluto
+    $ uname -a
+    Linux pluto 5.15.0-175882-ge14e351533f9 #1 SMP PREEMPT Fri Nov 17 10:23:58 CET 2023 armv7l GNU/Linux
+    $ ifconfig
+        usb0 inet addr:192.168.2.1
+$ mount | grep -i pluto
+$ ls -l /media/lkk/PlutoSDR/
+$ firefox /media/lkk/PlutoSDR/info.html
+$ /sbin/ifconfig
+$ ip addr show
+    enx00e022e5bbdd inet 192.168.2.10: is the emulated network device for USB
+pluto login: root
+Password: analog
+```
+The [dmesg](https://phoenixnap.com/kb/dmesg-linux) command is a Linux utility that displays kernel-related messages retrieved from the kernel ring buffer. The ring buffer stores information about hardware, device driver initialization, and messages from kernel modules that take place during system startup.. You can also monitor the kernel ring buffer in real-time using the --follow option `sudo dmesg --follow`. The option instructs the command to wait for new messages related to hardware or kernel modules after system startup. When searching for specific issues or hardware messages, pipe the dmesg output into grep to search for a particular string or pattern: `sudo dmesg | grep -i usb`.
+
+Install IIO devices: [link](https://wiki.analog.com/university/tools/pluto/drivers/linux)
+
+```bash
+$ sudo apt-get install libiio-utils
+$ iio_info -n 192.168.2.1 | grep device #find the IIO devices
+IIO context has 6 devices:
+	iio:device0: ad9361-phy
+    iio:device1: xadc
+    iio:device2: one-bit-adc-dac
+    iio:device3: cf-ad9361-dds-core-lpc (buffer capable)
+    iio:device4: cf-ad9361-lpc (buffer capable)
+    iio:device5: adi-iio-fakedev
+$ iio_readdev -n 192.168.2.1 -s 64 cf-ad9361-lpc | hexdump -x #Read from an IIO device buffer
+```
+
+Connect to the device and test the code:
+```bash
+$ iio_info -n pluto.local
+$ iio_info -u ip:pluto.local
+$ iio_info -u ip:192.168.2.1
+$ ssh root@192.168.2.1
+#password: analog
+$ python sdradi/pysdr.py
 ```
 
 ## SSH Access

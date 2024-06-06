@@ -11,7 +11,8 @@ center_freq = 915e6 # Hz
 num_samps = 100000 # number of samples per call to rx()
 
 #sdr = adi.Pluto("ip:192.168.2.1")
-sdr = adi.ad9361(uri="ip:pluto.local")
+sdr = adi.ad9361(uri="ip:192.168.2.1")
+#sdr = adi.ad9361(uri="ip:pluto.local")
 # Read back properties from hardware
 print(sdr.tx_rf_bandwidth) #18,000,000
 sdr.sample_rate = int(sample_rate) #1Mhz
