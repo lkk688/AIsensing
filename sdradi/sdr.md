@@ -274,7 +274,7 @@ Newly added `myad9361class.py` that put all sdr related code into one class. Run
 python sdradi/myad9361class.py
 ```
 The result figure is shown as:
-!imgs\correctionresults.png
+![correctionresults](imgs\correctionresults.png "Receiver Correction results")
 
 # UI Part
 Test mayavi:
