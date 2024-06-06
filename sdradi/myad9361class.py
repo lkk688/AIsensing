@@ -9,6 +9,7 @@ from scipy import signal
 from timeit import default_timer as timer
 import sys
 from processing import createcomplexsinusoid, calculate_spectrum, normalize_complexsignal, detect_signaloffset
+from myofdm import OFDMSymbol
 
 def printSDRproperties(sdr):
     print("Bandwidth of TX path:", sdr.tx_rf_bandwidth) #Bandwidth of front-end analog filter of TX path
@@ -602,52 +603,18 @@ def test_SDRclass(urladdress, signal_type='dds'):
     #print(np.mean(rxtime))
     print(np.mean(processtime))
 
-def test_ofdm_SDR(urladdress, SampleRate, SAMPLES, fc=921.1e6, leadingzeros=500, add_td_samples = 0):
+def test_ofdm_SDR(urladdress, SampleRate, fc=921.1e6, leadingzeros=500, add_td_samples = 0):
+    myofdm = OFDMSymbol()
+    SAMPLES = myofdm.createOFDMsignal()
     #SampleRate = rg.fft_size*rg.subcarrier_spacing # sample 
-    out_shape = list(SAMPLES.shape) # store the input tensor shape
-    num_samples = SAMPLES.shape[-1] # number of samples in the input
 
     bandwidth = SampleRate *1.1
     mysdr = SDR(SDR_IP=urladdress, SDR_FC=fc, SDR_SAMPLERATE=SampleRate, SDR_BANDWIDTH=bandwidth)
 
-    #x_sdr = mysdr(SAMPLES = x_time, SDR_TX_GAIN=-10, SDR_RX_GAIN = 10, add_td_samples = 16, debug=True) # transmit
-    mysdr.SDR_TX_stop()
-    mysdr.SDR_TX_setup()
-    mysdr.SDR_RX_setup(n_SAMPLES=(num_samples+leadingzeros)*3) ## set the RX buffer size to 3 times the number of samples
-    mysdr.SDR_gain_set(tx_gain=0, rx_gain=30)
-    time.sleep(0.3)  # Wait for settings to take effect
-
-    now = time.time() # for measuing the duration of the process
-    mysdr.SDR_TX_send(SAMPLES, leadingzeros=leadingzeros, cyclic=True)
-    # internal counters
-    corr_threshold = 0.3
-    fails = 0 # how many times the process failed to reach pearson r > self.corr_threshold
-    success = 0 #  how many times the process reached pearson r > self.corr_threshold
-    timeout = 10
-    while success == 0:       
-        # RX samples 
-        rx_samples = mysdr.SDR_RX_receive(combinerule='drop', normalize=False)
-        rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR = detect_signaloffset(rx_samples, tx_SAMPLES=SAMPLES, num_samples=num_samples, leadingzeros=leadingzeros, add_td_samples=add_td_samples)
-        if fails > timeout:
-            print("Too many errors, timeout")
-            sys.exit(1)
-        # check if the correlation is reasonable to assume sync is right, if not increase power and/or rx sensitivity
-        if (corr >= corr_threshold):
-            success = 1
-        else: 
-            fails=+1
-    
-    SDR_TX_GAIN = mysdr.sdr.tx_hardwaregain_chan0
-    SDR_RX_GAIN = mysdr.sdr.rx_hardwaregain_chan0
-    mysdr.SDR_TX_stop()
-    try:
-        out_shape[-1] += add_td_samples
-        out = np.reshape(rx_TTI, out_shape)
-    except Exception as e:
-        print("Something failed:", e)
-        sys.exit(1)
-    sdr_time=time.time()-now
-    return out, SINR, SDR_TX_GAIN, SDR_RX_GAIN, fails+1, corr, sdr_time
+    # SINR, SDR_TX_GAIN, SDR_RX_GAIN, Attempts, Pearson R
+    x_sdr = mysdr.SDR_RXTX_offset(SAMPLES, leadingzeros=500, add_td_samples=16)
+    #out, SINR, SDR_TX_GAIN, SDR_RX_GAIN, fails+1, corr, sdr_time
+    rx_samples = x_sdr[0]
 
 def main():
     args = parser.parse_args()

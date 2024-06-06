@@ -2776,7 +2776,7 @@ class Transmitter():
         # which indicates that the RX 0 receives from TX 0 and 1, and RX 1 receives from
         # TX 2 and 3.
         #
-        # In this notebook, as we have only a single transmitter and receiver,
+        # we have only a single transmitter and receiver,
         # the RX-TX association matrix is simply:
         #RX_TX_ASSOCIATION = np.array([[1]]) #np.ones([num_rx, 1], int)
         RX_TX_ASSOCIATION = np.ones([num_rx, num_tx], int)
@@ -3030,12 +3030,13 @@ class Transmitter():
 
 if __name__ == '__main__':
     scenario='O1_60'
-    dataset_folder='data'
-    ofdmtest = True
+    #dataset_folder='data' #r'D:\Dataset\CommunicationDataset\O1_60'
+    dataset_folder=r'D:\Dataset\CommunicationDataset\O1_60'
+    ofdmtest = False
     if ofdmtest is not True:
         transmit = Transmitter(scenario, dataset_folder, num_rx = 1, num_tx = 1, \
                     batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
-                    USE_LDPC = False, pilot_pattern = "empty", guards=False, showfig=False) #"kronecker"
+                    USE_LDPC = False, pilot_pattern = "empty", guards=False, showfig=True) #"kronecker"
         #channeltype="perfect", "awgn", "ofdm", "time"
         b_hat, BER = transmit(ebno_db = 15.0, channeltype='awgn')
     else:
