@@ -284,6 +284,7 @@ class SDR:
             processtime.append(endtime-start)
         return alldata0, processtime
 
+
     def SDR_TX_send(self, SAMPLES, max_scale=1, leadingzeros=0, cyclic=False):
         '''
         Transmit the given signal samples through the SDR transmitter.
@@ -354,11 +355,54 @@ class SDR:
         elif signal_type == 'dds':
             ddstone(self.sdr, dualtune=False, dds_freq_hz = f_signal, dds_scale = 0.9)
     
+    def SDR_RXTX_offset(self, SAMPLES, leadingzeros=500, add_td_samples=16):
+        #add_td_samples: number of additional symbols to cater fordelay spread
+        out_shape = list(SAMPLES.shape) # store the input tensor shape, 
+        num_samples = SAMPLES.shape[-1] # number of samples in the input
+
+        #x_sdr = mysdr(SAMPLES = x_time, SDR_TX_GAIN=-10, SDR_RX_GAIN = 10, add_td_samples = 16, debug=True) # transmit
+        self.SDR_TX_stop()
+        self.SDR_TX_setup()
+        self.SDR_RX_setup(n_SAMPLES=(num_samples+leadingzeros)*3) ## set the RX buffer size to 3 times the number of samples
+        self.SDR_gain_set(tx_gain=0, rx_gain=30)
+        time.sleep(0.3)  # Wait for settings to take effect
+
+        now = time.time() # for measuing the duration of the process
+        self.SDR_TX_send(SAMPLES, leadingzeros=leadingzeros, cyclic=True)
+        # internal counters
+        corr_threshold = 0.3
+        fails = 0 # how many times the process failed to reach pearson r > self.corr_threshold
+        success = 0 #  how many times the process reached pearson r > self.corr_threshold
+        timeout = 10
+        while success == 0:       
+            # RX samples 
+            rx_samples = self.SDR_RX_receive(combinerule='drop', normalize=False)
+            rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR = detect_signaloffset(rx_samples, tx_SAMPLES=SAMPLES, num_samples=num_samples, leadingzeros=leadingzeros, add_td_samples=add_td_samples)
+            if fails > timeout:
+                print("Too many errors, timeout")
+                sys.exit(1)
+            # check if the correlation is reasonable to assume sync is right, if not increase power and/or rx sensitivity
+            if (corr >= corr_threshold):
+                success = 1
+            else: 
+                fails=+1
+        
+        SDR_TX_GAIN = self.sdr.tx_hardwaregain_chan0
+        SDR_RX_GAIN = self.sdr.rx_hardwaregain_chan0
+        self.SDR_TX_stop()
+        try:
+            out_shape[-1] += add_td_samples
+            out = np.reshape(rx_TTI, out_shape)
+        except Exception as e:
+            print("Something failed:", e)
+            sys.exit(1)
+        sdr_time=time.time()-now
+        return out, SINR, SDR_TX_GAIN, SDR_RX_GAIN, fails+1, corr, sdr_time
+    
     # Read back properties from hardware https://analogdevicesinc.github.io/pyadi-iio/devices/adi.ad936x.html
     def show_params(self):
         sdr = self.sdr
         printSDRproperties(sdr)
-
 
     def find_good_max_TX_gain_value(self, SDR_RX_GAIN=-30, Max_SINR=20, make_plot=True):
         '''

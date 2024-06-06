@@ -17,6 +17,113 @@ def createcomplexsinusoid(fs, fc = 3000000, N = 1024):
     iq = i + 1j * q
     return iq
 
+#Ref: deeplearning\ofdmsim2.py, create simple OFDM signal
+class OFDMSymbol():
+    def __init__(self) -> None:
+        self.dataCarriers
+        self.mu
+
+        #mapping from groups of 4 bits to a 16QAM constellation symbol
+        self.mapping_table = {
+            (0,0,0,0) : -3-3j,
+            (0,0,0,1) : -3-1j,
+            (0,0,1,0) : -3+3j,
+            (0,0,1,1) : -3+1j,
+            (0,1,0,0) : -1-3j,
+            (0,1,0,1) : -1-1j,
+            (0,1,1,0) : -1+3j,
+            (0,1,1,1) : -1+1j,
+            (1,0,0,0) :  3-3j,
+            (1,0,0,1) :  3-1j,
+            (1,0,1,0) :  3+3j,
+            (1,0,1,1) :  3+1j,
+            (1,1,0,0) :  1-3j,
+            (1,1,0,1) :  1-1j,
+            (1,1,1,0) :  1+3j,
+            (1,1,1,1) :  1+1j
+        }
+        #The demapping table is simply the inverse mapping of the mapping table:
+        self.demapping_table = {v : k for k, v in self.mapping_table.items()}
+
+        plt.figure(figsize=(12,8)) #16 QAM Constellation
+        for b3 in [0, 1]:
+            for b2 in [0, 1]:
+                for b1 in [0, 1]:
+                    for b0 in [0, 1]:
+                        B = (b3, b2, b1, b0)
+                        Q = self.mapping_table[B]
+                        plt.plot(Q.real, Q.imag, 'bo')
+                        plt.text(Q.real, Q.imag+0.2, "".join(str(x) for x in B), ha='center')
+        plt.grid(True)
+        plt.xlim((-4, 4)); plt.ylim((-4,4)); plt.xlabel('Real part (I)'); plt.ylabel('Imaginary part (Q)')
+        plt.title('16 QAM Constellation with Gray-Mapping')
+
+    
+    def generatebits(self, payloadBits_per_OFDM):
+        #starts with a random bit sequence b, generate the according bits by a random generator that draws from a Bernoulli distribution with p=0.5
+        bits = np.random.binomial(n=1, p=0.5, size=(payloadBits_per_OFDM, )) #(220,)
+        print ("Bits count: ", len(bits))
+        print ("First 20 bits: ", bits[:20])
+        print ("Mean of bits (should be around 0.5): ", np.mean(bits))
+        return bits
+
+    #serial-to-parallel converter
+    def SP(self, bits):
+        return bits.reshape((len(self.dataCarriers), self.mu))
+    
+    #The mapper converts the groups into complex-valued constellation symbols according to the mapping_table
+    def Mapping(self, bits):
+        return np.array([self.mapping_table[tuple(b)] for b in bits])
+    
+    def OFDM_symbol(self, QAM_payload):
+        symbol = np.zeros(K, dtype=complex) # the overall K subcarriers 64
+        symbol[pilotCarriers] = pilotValue  # allocate the pilot subcarriers 
+        symbol[dataCarriers] = QAM_payload  # allocate the pilot subcarriers
+        return symbol
+
+    def IDFT(self, OFDM_data):
+        return np.fft.ifft(OFDM_data)
+
+    def DFT(self, OFDM_RX):
+        return np.fft.fft(OFDM_RX)
+
+    def addCP(self, OFDM_time): #CP: cyclic prefix: 25% of the block = 16
+        cp = OFDM_time[-CP:]               # take the last CP samples ... (16,)
+        return np.hstack([cp, OFDM_time])  # ... and add them to the beginning
+
+    def removeCP(self, signal):
+        return signal[CP:(CP+K)]
+    
+    def createOFDMsignal(self, payloadBits_per_OFDM):
+        bits = self.generatebits(payloadBits_per_OFDM=payloadBits_per_OFDM)
+        #The bits are now sent to a serial-to-parallel converter, which groups the bits for the OFDM frame into a groups of mu bits (i.e. one group for each subcarrier):
+        bits_SP = self.SP(bits) #(55, 4)
+        print ("First 5 bit groups")
+        print (bits_SP[:5,:])
+
+        #the bits groups are sent to the mapper. The mapper converts the groups into complex-valued constellation symbols according to the mapping_table.
+        QAM = self.Mapping(bits_SP) #(55,)
+        print ("First 5 QAM symbols and bits:")
+        print (bits_SP[:5,:])
+        print (QAM[:5])
+
+        #create the overall OFDM data, we need to put the data and pilots into the OFDM carriers:
+        OFDM_data = OFDM_symbol(QAM) #(64,) complex
+        print ("Number of OFDM carriers in frequency domain: ", len(OFDM_data))
+
+        #Now, the OFDM carriers contained in OFDM_data can be transformed to the time-domain by means of the IDFT operation.
+        OFDM_time = IDFT(OFDM_data) #(64,) complex
+        print ("Number of OFDM samples in time-domain before CP: ", len(OFDM_time))
+
+        #Subsequently, we add a cyclic prefix to the symbol. This operation concatenates a copy of the last CP samples of the OFDM time domain signal to the beginning. This way, a cyclic extension is achieved. 
+        OFDM_withCP = addCP(OFDM_time) #(80,) 16 (CP)+64
+        print ("Number of OFDM samples in time domain with CP: ", len(OFDM_withCP))
+
+        #Now, the signal is sent to the antenna and sent over the air to the receiver.
+        OFDM_TX = OFDM_withCP #(80,)
+
+    
+
 def calculate_spectrum(data0, fs, find_peak=True):
     f, Pxx_den = signal.periodogram(data0.real, fs) #https://docs.scipy.org/doc/scipy/reference/generated/scipy.signal.periodogram.html
     #returns f (ndarray): Array of sample frequencies.
