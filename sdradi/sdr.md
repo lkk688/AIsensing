@@ -273,7 +273,9 @@ Newly added `myad9361class.py` that put all sdr related code into one class. Run
 ```bash
 python sdradi/myad9361class.py
 ```
-The result figure is shown as:
+This code contains two test cases: 1) `test_SDRclass`, which performs continuous data transmission and receive; and 2) `test_ofdm_SDR`, which performs correction for the received sample and detect the starting point. 
+
+The `test_ofdm_SDR` mainly tests the `SDR_RXTX_offset` function. The result figure is shown as:
 ![correctionresults](../imgs/correctionresults.png "Receiver Correction results")
 
 # UI Part
