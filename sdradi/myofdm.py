@@ -1712,7 +1712,7 @@ class OFDMAMIMO():
         self.showfig = showfig
         self.pilot_pattern = pilot_pattern
 
-                # The number of transmitted streams is equal to the number of UT antennas
+        # The number of transmitted streams is equal to the number of UT antennas
         # in both uplink and downlink
         #NUM_STREAMS_PER_TX = NUM_UT_ANT
         #NUM_UT_ANT = num_rx
@@ -1757,7 +1757,7 @@ class OFDMAMIMO():
                                             dc_null=dc_null,
                                             pilot_pattern=pilot_pattern,
                                             pilot_ofdm_symbol_indices=pilot_ofdm_symbol_indices)
-        
+        self.cyclic_prefix_length = cyclic_prefix_length
         if showfig:
             RESOURCE_GRID.show() #14(OFDM symbol)*76(subcarrier) array=1064
             RESOURCE_GRID.pilot_pattern.show();
@@ -1805,7 +1805,31 @@ class OFDMAMIMO():
 
         #receiver part
         #self.mydemapper = MyDemapper("app", constellation_type="qam", num_bits_per_symbol=num_bits_per_symbol)
-    
+        # OFDM modulator and demodulator
+        #self.modulator = OFDMModulator(self.RESOURCE_GRID.cyclic_prefix_length)
+        #l_min = -6
+        #self.demodulator = OFDMDemodulator(self.RESOURCE_GRID.fft_size, l_min, self.RESOURCE_GRID.cyclic_prefix_length)
+
+    #Computes the frequency-domain representation of an OFDM waveform with cyclic prefix removal.
+    def ofdm_modulator(self, inputs):
+        # Shift DC subcarrier to first position
+        inputs = np.fft.ifftshift(inputs, axes=-1)
+
+        # Compute IFFT along the last dimension
+        x = np.fft.ifft(inputs, axis=-1)
+
+        # Obtain cyclic prefix
+        cp = x[..., -self.cyclic_prefix_length:]
+
+        # Prepend cyclic prefix
+        x = np.concatenate([cp, x], axis=-1)
+
+        # Serialize last two dimensions
+        x = x.reshape(x.shape[:-2] + (-1,))
+
+        return x
+
+
     def __call__(self, b=None):
         # Transmitter
         if b is None:
@@ -1819,7 +1843,10 @@ class OFDMAMIMO():
         x = self.mapper(c) #np.array[64,1,1,896] if empty np.array[64,1,1,768] 768*4=3072 [batch_size, num_tx, num_streams_per_tx, num_data_symbols]
         x_rg = self.rg_mapper(x) ##array[64,1,1,14,76] 14*76=1064
         #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76]
-        return x_rg
+
+        # OFDM modulation with cyclic prefix insertion
+        x_time = self.modulator(x_rg) #output: [64, 1, 1, 1148]
+        return x_time
 
 
 if __name__ == '__main__':
@@ -1833,4 +1860,5 @@ if __name__ == '__main__':
                 batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
                 USE_LDPC = False, pilot_pattern = "empty", guards=False, showfig=True) #"kronecker"
     #channeltype="perfect", "awgn", "ofdm", "time"
-    x_rg = transmit(b=None)
+    x_rg = transmit(b=None)##array[64,1,1,14,76] 14*76=1064
+    #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76]
