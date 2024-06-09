@@ -281,16 +281,16 @@ The `test_ofdm_SDR` mainly tests the `SDR_RXTX_offset` function. The result figu
 ## Modulator
 The OFDM modulator computes the frequency-domain representation of an OFDM waveform with cyclic prefix removal. For a single pair of antennas,
     the received signal sequence is given as:
-$$
+```math
 y_b = \sum_{\ell = L_\text{min}}^{L_\text{max}} \bar{h}_\ell x_{b-\ell} + w_b, \quad b \in [L_\text{min}, N_B + L_\text{max} - 1]
-$$
+```
 
 where:
 - $\bar{h}_\ell$ represents the discrete-time channel taps,
 - $x_b$ is the transmitted signal, and
 - $w_\ell$ denotes Gaussian noise.
 
-The demodulator processes the input sequence starting from the first symbol. It divides the sequence into pieces of size $\text{cyclic\_prefix\_length} + \text{fft\_size}$ and discards any trailing symbols. For each piece, it removes the cyclic prefix and computes the \(\text{fft\_size}\)-point discrete Fourier transform.
+The demodulator processes the input sequence starting from the first symbol. It divides the sequence into pieces of size $`\text{cyclic\_prefix\_length} + \text{fft\_size}`$ and discards any trailing symbols. For each piece, it removes the cyclic prefix and computes the $`\text{fft\_size}`$-point discrete Fourier transform.
 
 Since the input sequence begins at time $\(L_\text{min}\)$, the FFT window has a timing offset of $\(L_\text{min}\)$ symbols. This leads to a subcarrier-dependent phase shift of $\(e^{\frac{j2\pi k L_\text{min}}{N}}\)$, where $\(k\)$ is the subcarrier index, $\(N\)$ is the FFT size, and $\(L_\text{min} \leq 0\)$ is the largest negative time lag of the discrete-time channel impulse response. To remove this phase shift, each subcarrier is explicitly multiplied by $\(e^{\frac{-j2\pi k L_\text{min}}{N}}\)$. This step is crucial for channel estimation with sparse pilot patterns that interpolate the channel frequency response across subcarriers.
 
