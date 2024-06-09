@@ -281,12 +281,14 @@ The `test_ofdm_SDR` mainly tests the `SDR_RXTX_offset` function. The result figu
 ## Modulator
 The OFDM modulator computes the frequency-domain representation of an OFDM waveform with cyclic prefix removal. For a single pair of antennas,
     the received signal sequence is given as:
-$y_b = \sum_{\ell = L_\text{min}}^{L_\text{max}} \bar{h}_\ell x_{b-\ell} + w_b, \quad b \in [L_\text{min}, N_B + L_\text{max} - 1]$
+$$
+y_b = \sum_{\ell = L_\text{min}}^{L_\text{max}} \bar{h}_\ell x_{b-\ell} + w_b, \quad b \in [L_\text{min}, N_B + L_\text{max} - 1]
+$$
 
 where:
-- $\(\bar{h}_\ell\)$ represents the discrete-time channel taps,
-- $\(x_b\)$ is the transmitted signal, and
-- $\(w_\ell\)$ denotes Gaussian noise.
+- $\bar{h}_\ell$ represents the discrete-time channel taps,
+- $x_b$ is the transmitted signal, and
+- $w_\ell$ denotes Gaussian noise.
 
 The demodulator processes the input sequence starting from the first symbol. It divides the sequence into pieces of size $\text{cyclic\_prefix\_length} + \text{fft\_size}$ and discards any trailing symbols. For each piece, it removes the cyclic prefix and computes the \(\text{fft\_size}\)-point discrete Fourier transform.
 
