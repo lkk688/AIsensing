@@ -1522,6 +1522,185 @@ class MyResourceGrid():
         plt.xticks(range(0, data.shape[0]))
 
         return fig
+
+
+def flatten_last_dims(tensor, num_dims=2):
+    """
+    Flattens the last `n` dimensions of a tensor.
+
+    This operation flattens the last ``num_dims`` dimensions of a ``tensor``.
+    It is a simplified version of the function ``flatten_dims``.
+
+    Args:
+        tensor : A tensor.
+        num_dims (int): The number of dimensions
+            to combine. Must be greater than or equal to two and less or equal
+            than the rank of ``tensor``.
+
+    Returns:
+        A tensor of the same type as ``tensor`` with ``num_dims``-1 lesser
+        dimensions, but the same number of elements.
+    """
+
+    if num_dims==len(np.shape(tensor)): #len(tensor.shape):
+        new_shape = [-1]
+    else:
+        shape = np.shape(tensor) #tf.shape(tensor)
+        flipshape = shape[-num_dims:]
+        last_dim = np.prod(flipshape)
+        #last_dim = tf.reduce_prod(tensor.shape[-num_dims:])
+        #new_shape = tf.concat([shape[:-num_dims], [last_dim]], 0)
+        new_shape = np.concatenate([shape[:-num_dims], [last_dim]], 0)
+
+    return np.reshape(tensor, new_shape) #tf.reshape(tensor, new_shape)
+
+##Scatters updates into a tensor of shape shape according to indices
+def scatter_nd_numpy(indices, updates, shape):
+    target = np.zeros(shape, dtype=updates.dtype)
+    indices = tuple(indices.reshape(-1, indices.shape[-1]).T)
+    updates = updates.ravel()
+    np.add.at(target, indices, updates)
+    return target
+
+def tensor_scatter_nd_update(tensor, indices, updates):
+    """
+    Updates the `tensor` by scattering `updates` into it at the specified `indices`.
+
+    :param tensor: Existing tensor to update
+    :param indices: Array of indices where updates should be placed
+    :param updates: Array of values to scatter
+    :return: Updated tensor
+    """
+    # Create a tuple of indices for advanced indexing
+    index_tuple = tuple(indices.T) #(1064, 4) = > 4 tuple array (1064,) each, same to np.where output, means all places
+
+    # Scatter values from updates into tensor
+    tensornew = tensor.copy() #(1, 1, 14, 76, 64)
+    tensornew[index_tuple] = updates #updates(1064,64) to all 1064 locations
+    #(1, 1, 14, 76, 64) updates(1064, 64)
+
+    #print the last dimension data of tensornew
+    #print(tensornew[0,0,0,0,:]) #(64,)
+    #print(updates[0,:]) #(64,)
+    return tensornew #(1, 1, 14, 76, 64)
+
+def scatter_numpy(tensor, indices, values):
+    """
+    Scatters values into a tensor at specified indices.
+    
+    :param tensor: The target tensor to scatter values into.
+    :param indices: Indices where values should be placed.
+    :param values: Values to scatter.
+    :return: Updated tensor after scattering.
+    """
+    # Scatter values
+    tensor[tuple(indices.T)] = values
+
+    return tensor
+
+class MyResourceGridMapper:
+    r"""ResourceGridMapper(resource_grid, dtype=complex64, **kwargs)
+
+    Maps a tensor of modulated data symbols to a ResourceGrid.
+
+    Takes as input a tensor of modulated data symbols
+    and maps them together with pilot symbols onto an
+    OFDM `ResourceGrid`. 
+
+    Parameters
+    ----------
+    resource_grid : ResourceGrid
+    dtype
+
+    x = mapper(b) #[64,1,1,912] 912 symbols
+    x_rg = rg_mapper(x) ##[64,1,1,14,76] 14*76=1064
+
+    Input
+    -----
+    : [batch_size, num_tx, num_streams_per_tx, num_data_symbols], complex
+        The modulated data symbols to be mapped onto the resource grid.
+
+    Output
+    ------
+    : [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols=14, fft_size=76], complex
+        The full OFDM resource grid in the frequency domain.
+    """
+    def __init__(self, resource_grid, dtype=np.complex64, **kwargs):
+        self._resource_grid = resource_grid
+        """Precompute a tensor of shape
+        [num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size]
+        which is prefilled with pilots and stores indices
+        to scatter data symbols.
+        """
+        self._rg_type = self._resource_grid.build_type_grid() #(1, 1, 14, 76)
+        #[num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size]
+        #        - 0 : Data symbol
+        # - 1 : Pilot symbol
+        # - 2 : Guard carrier symbol
+        # - 3 : DC carrier symbol
+
+        #Return the indices of non-zero elements in _rg_type via pytorch
+        tupleindex = np.where(self._rg_type==1)#result is a tuple with first all the row indices, then all the column indices.
+        self._pilot_ind=np.stack(tupleindex, axis=1) #shape=(0,4)
+        #_rg_type array(1, 1, 14, 76)
+        datatupleindex = np.where(self._rg_type==0) 
+        #0 (all 0),1(all 0),2 (0-13),3 (0-75) tuple, (1064,) each, index for each dimension of _rg_type(1, 1, 14, 76)
+        self._data_ind=np.stack(datatupleindex, axis=1) #(1064, 4)
+        #self._pilot_ind = tf.where(self._rg_type==1) #shape=(0, 4)
+        #self._data_ind = tf.where(self._rg_type==0) #[1064, 4]
+
+        #test
+        # test=self._rg_type.copy() #(1, 1, 14, 76)
+        # data_test=test[datatupleindex]  #(1064,) 1064=14*76
+        # print(data_test.shape)
+        # pilot_test=test[tupleindex] #empty
+        # print(pilot_test.shape)
+
+    def __call__(self, inputs):#inputs: (64, 1, 1, 1064)
+        #inputs: [batch_size, num_tx, num_streams_per_tx, num_data_symbols]
+        # Map pilots on empty resource grid
+        pilots = flatten_last_dims(self._resource_grid.pilot_pattern.pilots, 3) #empty
+
+        #the indices tensor is the _pilot_ind tensor, which is a2D tensor that contains the indices of the pilot symbols in the resource grid. 
+        #The values tensor is the pilots tensor, which is a1D tensor that contains the pilot symbols. 
+        #The shape tensor is the _rg_type.shape tensor, which is a1D tensor that specifies the shape of the resource grid.
+        ##Scatters pilots into a tensor of shape _rg_type.shape according to _pilot_ind
+        # template = tf.scatter_nd(self._pilot_ind,
+        #                          pilots,
+        #                          self._rg_type.shape)
+        template = scatter_nd_numpy(self._pilot_ind, pilots, self._rg_type.shape) #(1, 1, 14, 76) all 0 complex?
+
+        # Expand the template to batch_size)
+        # expand the last dimension for template via numpy
+        template = np.expand_dims(template, axis=-1) ##[1, 1, 14, 76, 1]
+        #template = tf.expand_dims(template, -1) #[1, 1, 14, 76, 1]
+
+        # Broadcast the resource grid template to batch_size
+        #batch_size = tf.shape(inputs)[0]
+        batch_size = np.shape(inputs)[0]
+        shapelist=list(np.shape(template)) ##[1, 1, 14, 76, 1]
+        new_shape = np.concatenate([shapelist[:-1], [batch_size]], 0) #shape 5: array([ 1,  1, 14, 76, 64]
+        #new_shape = tf.concat([tf.shape(template)[:-1], [batch_size]], 0) #shape 5: array([ 1,  1, 14, 76, 64]
+        #template = tf.broadcast_to(template, new_shape)
+        template = np.broadcast_to(template, new_shape) #(1, 1, 14, 76, 64)
+
+        # Flatten the inputs and put batch_dim last for scatter update
+        newflatten=flatten_last_dims(inputs, 3) #inputs:(64, 1, 1, 1064) =>(64, 1064)
+        inputs = np.transpose(newflatten) #(1064, 64)
+        #inputs = tf.transpose(newflatten)
+        #The tf.tensor_scatter_nd_update function is a more efficient version of the scatter_nd function. 
+        #update the resource grid with the data symbols. The input tensor is the resource grid, the values tensor is the data symbols, 
+        #and the shape tensor is the _rg_type.shape tensor. The output tensor is the resource grid with the data symbols scattered in.
+        #Scatter inputs into an existing template tensor according to _data_ind indices 
+        #rg = tf.tensor_scatter_nd_update(template, self._data_ind, inputs)
+
+        #Scatter inputs(1064, 64) into an existing template tensor(1, 1, 14, 76, 64) according to _data_ind indices (tuple from rg_type(1, 1, 14, 76)) 
+        rg = tensor_scatter_nd_update(template, self._data_ind, inputs)
+        #rg = scatter_nd_numpy(template, self._data_ind, inputs) #(1, 1, 14, 76, 64), (1064, 4), (1064, 64)
+        #rg = tf.transpose(rg, [4, 0, 1, 2, 3])
+        rg = np.transpose(rg, [4, 0, 1, 2, 3]) #(64, 1, 1, 14, 76)
+
+        return rg
     
 class OFDMAMIMO():
     def __init__(self, num_rx = 1, num_tx = 1, \
@@ -1600,8 +1779,58 @@ class OFDMAMIMO():
         self.num_streams_per_tx = num_streams_per_tx
         self.RESOURCE_GRID = RESOURCE_GRID
 
+        #num_bits_per_symbol = 4
+        # Codeword length
+        n = int(RESOURCE_GRID.num_data_symbols * num_bits_per_symbol) #num_data_symbols:64*14=896 896*4=3584, if empty 1064*4=4256
+
+        #USE_LDPC = True
+        if USE_LDPC:
+            coderate = 0.5
+            # Number of information bits per codeword
+            k = int(n * coderate)  
+            encoder = None; #LDPC5GEncoder(k, n) #1824, 3648
+            decoder = None; #LDPC5GDecoder(encoder, hard_out=True)
+            self.decoder = decoder
+            self.encoder = encoder
+        else:
+            coderate = 1
+            # Number of information bits per codeword
+            k = int(n * coderate)  
+        self.k = k # Number of information bits per codeword
+        self.USE_LDPC = USE_LDPC
+        self.coderate = coderate
+        
+        self.mapper = Mapper("qam", num_bits_per_symbol)
+        self.rg_mapper = MyResourceGridMapper(RESOURCE_GRID) #ResourceGridMapper(RESOURCE_GRID)
+
+        #receiver part
+        #self.mydemapper = MyDemapper("app", constellation_type="qam", num_bits_per_symbol=num_bits_per_symbol)
+    
+    def __call__(self, b=None):
+        # Transmitter
+        if b is None:
+            binary_source = BinarySource()
+            # Start Transmitter self.k Number of information bits per codeword
+            b = binary_source([self.batch_size, 1, self.num_streams_per_tx, self.k]) #[64,1,1,3584] if empty [64,1,1,1536] [batch_size, num_tx, num_streams_per_tx, num_databits]
+        if self.USE_LDPC:
+            c = self.encoder(b) #tf.tensor[64,1,1,3072] [batch_size, num_tx, num_streams_per_tx, num_codewords]
+        else:
+            c = b
+        x = self.mapper(c) #np.array[64,1,1,896] if empty np.array[64,1,1,768] 768*4=3072 [batch_size, num_tx, num_streams_per_tx, num_data_symbols]
+        x_rg = self.rg_mapper(x) ##array[64,1,1,14,76] 14*76=1064
+        #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76]
+        return x_rg
+
+
 if __name__ == '__main__':
-    #Test OFDM
-    myofdm = OFDMSymbol()
-    ofdmsignal = myofdm.createOFDMsignal()
-    print(ofdmsignal)
+    #Test basic OFDM
+    # myofdm = OFDMSymbol()
+    # ofdmsignal = myofdm.createOFDMsignal()
+    # print(ofdmsignal)
+
+    #Test OFDMMIMO
+    transmit = OFDMAMIMO(num_rx = 1, num_tx = 1, \
+                batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
+                USE_LDPC = False, pilot_pattern = "empty", guards=False, showfig=True) #"kronecker"
+    #channeltype="perfect", "awgn", "ofdm", "time"
+    x_rg = transmit(b=None)
