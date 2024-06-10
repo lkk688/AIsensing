@@ -91,11 +91,57 @@ print(DeepMIMO_dataset[active_bs_idx]['user']['distance'][j])
 print(DeepMIMO_dataset[active_bs_idx]['user']['pathloss'][j])
 #The combined path-loss of the channel between the RX and TX in dB.
 ```
-
+The BS location and UE locations are shown in this figure. The first row has 181 user locations, total user locations are 18100
 ![UserStation Location](../imgs/ddeepmimo_userstationlocation.png)
 
+The channel response is `(1, 16, 10)`, means 16 bs antenna, and 10 path components:
 ![Channel Response](../imgs/deepmimo_channelresponse.png)
 
+The following two figures show the UE and BS path loss and positions:
 ![UE BS positions with path loss](../imgs/deepmimo-uebspositions.png)
 
 ![UEGrid Path Loss](../imgs/deepmimo_uegridpathloss.png)
+
+We use pytorch dataset class to wrap the deepmimo dataset, each iteration get `h` and `tau`. Define `batch_size`, and create a pytorch `DataLoader`
+```bash
+self.channeldataset = DeepMIMODataset(DeepMIMO_dataset=DeepMIMO_dataset, ue_idx=ue_idx)
+h, tau = next(iter(self.channeldataset)) #h: (1, 1, 1, 16, 10, 1), tau:(1, 1, 10)
+#complex gains `h` and delays `tau` for each path
+#print(h.shape) #[num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]
+#print(tau.shape) #[num_rx, num_tx, num_paths]
+self.data_loader = DataLoader(dataset=self.channeldataset, batch_size=batch_size, shuffle=True, pin_memory=True)
+```
+The plot of the channel impulse response is shown here (max 10 paths)
+![Channel Impulse Response](../imgs/deepmimo_chimpulse.png)
+
+These DeepMIMO related code is in `class Transmitter():`, and the initialization is in `init` function side. In addition to these DeepMIMO related code, `init` function also contains the MIMO related code `StreamManagement` and `MyResourceGrid`
+```bash
+#NUM_STREAMS_PER_TX = NUM_UT_ANT
+#NUM_UT_ANT = num_rx
+num_streams_per_tx = num_rx ##1
+RX_TX_ASSOCIATION = np.ones([num_rx, num_tx], int) #[[1]]
+self.STREAM_MANAGEMENT = StreamManagement(RX_TX_ASSOCIATION, num_streams_per_tx) #RX_TX_ASSOCIATION, NUM_STREAMS_PER_TX
+```
+If no `Guard` is added, the resource grid is shown here with `RESOURCE_GRID.num_data_symbols=14(OFDM symbol)*76(subcarrier) array=1064` as the grid size and all 1064 grids are data.
+![Resource Grid](../imgs/deepmimo_resourcegrid.png)
+
+Codeword length is `1064*(num_bits_per_symbol = 4)=4256`, Number of information bits per codeword is also `k=4256` if LDPC is not used.
+```bash
+b = binary_source([self.batch_size, 1, self.num_streams_per_tx, self.k]) #if empty [64,1,1,4256] [batch_size, num_tx, num_streams_per_tx, num_databits]
+x = self.mapper(b=c) #if empty np.array[64,1,1,1064] 1064*4=4256 [batch_size, num_tx, num_streams_per_tx, num_data_symbols]
+```
+After `mapper`, the bits information (4256bits) has been converted to `[64,1,1,1064]` means 1064 symbols (`num_bits_per_symbol = 4`). `rg_mapper` will map the 1064 symbols into the resource grid `14*76=1064`
+```bash
+x_rg = self.rg_mapper(x) ##array[64,1,1,14,76] 14*76=1064
+#output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76]
+```
+
+ResourceGrid bandwidth is `bandwidth= self.fft_size(76)*self.subcarrier_spacing=4560000`
+
+`cir_to_time_channel` Compute the channel taps forming the discrete complex-baseband representation of the channel from the channel impulse response (``a``, ``tau``). This function assumes that a sinc filter is used for pulse shaping and receive filtering. Therefore, given a channel impulse response `$(a_{m}(t), \tau_{m}), 0 \leq m \leq M-1$`, the channel taps are computed as follows:
+$$
+        \bar{h}_{b, \ell}
+        = \sum_{m=0}^{M-1} a_{m}\left(\frac{b}{W}\right)
+            \text{sinc}\left( \ell - W\tau_{m} \right)
+$$
+for `$\ell$` ranging from ``$l_min$`` to ``$l_max$``, and where `$W$` is the ``$bandwidth$``.

@@ -2779,7 +2779,7 @@ class Transmitter():
         # we have only a single transmitter and receiver,
         # the RX-TX association matrix is simply:
         #RX_TX_ASSOCIATION = np.array([[1]]) #np.ones([num_rx, 1], int)
-        RX_TX_ASSOCIATION = np.ones([num_rx, num_tx], int)
+        RX_TX_ASSOCIATION = np.ones([num_rx, num_tx], int) #[[1]]
         self.STREAM_MANAGEMENT = StreamManagement(RX_TX_ASSOCIATION, num_streams_per_tx) #RX_TX_ASSOCIATION, NUM_STREAMS_PER_TX
 
         if guards:
@@ -2870,7 +2870,8 @@ class Transmitter():
         #x_rg:[batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76]
 
         h_b, tau_b = self.get_htau_batch()
-        #print(h_b.shape) #[batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps] print(tau_b.shape) #[batch, num_rx, num_tx, num_paths]
+        #print(h_b.shape) #(64, 1, 1, 1, 16, 10, 1)[batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps] 
+        #print(tau_b.shape) #(64, 1, 1, 10)[batch, num_rx, num_tx, num_paths]
         if channeltype=="ofdm":
             # Generate the OFDM channel response
             #computes the Fourier transform of the continuous-time channel impulse response at a set of `frequencies`, corresponding to the different subcarriers.
@@ -2959,7 +2960,7 @@ class Transmitter():
             c = self.encoder(b) #tf.tensor[64,1,1,3072] [batch_size, num_tx, num_streams_per_tx, num_codewords]
         else:
             c = b
-        x = self.mapper(c) #np.array[64,1,1,896] if empty np.array[64,1,1,768] 768*4=3072 [batch_size, num_tx, num_streams_per_tx, num_data_symbols]
+        x = self.mapper(c) #np.array[64,1,1,896] if empty np.array[64,1,1,1064] 1064*4=4256 [batch_size, num_tx, num_streams_per_tx, num_data_symbols]
         x_rg = self.rg_mapper(x) ##array[64,1,1,14,76] 14*76=1064
         #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76]
 
