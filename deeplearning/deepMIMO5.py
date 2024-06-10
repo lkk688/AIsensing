@@ -499,7 +499,7 @@ def get_deepMIMOdata(scenario='O1_60', dataset_folder=r'D:\Dataset\Communication
 
     # The OFDM_channels parameter allows choosing between the generation of channel impulse
     # responses (if set to 0) or frequency domain channels (if set to 1).
-    # It is set to 0 for this simulation, as the channel responses in frequency domain
+    # It is set to 0 for this simulation, as the channel responses in frequency domain will be generated
     parameters['OFDM_channels'] = 0
 
     # Generate data
@@ -519,10 +519,10 @@ def get_deepMIMOdata(scenario='O1_60', dataset_folder=r'D:\Dataset\Communication
     # Keys of a channel
     print(DeepMIMO_dataset[0]['user'].keys()) #['paths', 'LoS', 'location', 'distance', 'pathloss', 'channel']
     # Number of UEs
-    print(len(DeepMIMO_dataset[0]['user']['channel'])) #9231
-    print(DeepMIMO_dataset[active_bs_idx]['user']['channel'].shape) #(num_ue_locations=9231, 1, bs_antenna=16, strongest_path=10) 
+    print(len(DeepMIMO_dataset[0]['user']['channel'])) #9231 18100
+    print(DeepMIMO_dataset[active_bs_idx]['user']['channel'].shape) #(num_ue_locations=18100, 1, bs_antenna=16, strongest_path=10) 
     # Shape of the channel matrix
-    print(DeepMIMO_dataset[0]['user']['channel'].shape) #(9231, 1, 16, 10)
+    print(DeepMIMO_dataset[0]['user']['channel'].shape) #(18100, 1, 16, 10)
     #i=0
     j=0
     print(DeepMIMO_dataset[active_bs_idx]['user']['channel'][j])
@@ -532,7 +532,7 @@ def get_deepMIMOdata(scenario='O1_60', dataset_folder=r'D:\Dataset\Communication
     
     # Path properties of BS 0 - UE 0
     print(DeepMIMO_dataset[active_bs_idx]['user']['paths'][j]) #Ray-tracing Path Parameters in dictionary
-    #Azimuth and zenith angle-of-arrivals – degrees (DoA_phi, DoA_theta)
+    #'num_paths': 9, Azimuth and zenith angle-of-arrivals – degrees (DoA_phi, DoA_theta), size of 9 array
     # Azimuth and zenith angle-of-departure – degrees (DoD_phi, DoD_theta)
     # Time of arrival – seconds (ToA)
     # Phase – degrees (phase)
@@ -2900,15 +2900,15 @@ class Transmitter():
         elif channeltype=="perfect":
             y=x_rg
         elif channeltype=="awgn":
-            y=x_rg
+            y=x_rg #(64, 1, 1, 14, 76)
             noise=complex_normal(y.shape, var=1.0)
             print(noise.dtype)
             noise = noise.astype(y.dtype)
             noise *= np.sqrt(no)
             y=y+noise
         elif channeltype=="time":
-            bandwidth = self.RESOURCE_GRID.bandwidth
-            l_min, l_max = time_lag_discrete_time_channel(bandwidth)
+            bandwidth = self.RESOURCE_GRID.bandwidth #4560000
+            l_min, l_max = time_lag_discrete_time_channel(bandwidth) #-6, 20
             l_tot = l_max-l_min+1 #27
             # Compute the discrete-time channel impulse reponse
             h_time = cir_to_time_channel(bandwidth, h_b, tau_b, l_min=l_min, l_max=l_max, normalize=True) 
@@ -3030,8 +3030,8 @@ class Transmitter():
 
 if __name__ == '__main__':
     scenario='O1_60'
-    #dataset_folder='data' #r'D:\Dataset\CommunicationDataset\O1_60'
-    dataset_folder=r'D:\Dataset\CommunicationDataset\O1_60'
+    dataset_folder='data' #r'D:\Dataset\CommunicationDataset\O1_60'
+    #dataset_folder=r'D:\Dataset\CommunicationDataset\O1_60'
     ofdmtest = False
     if ofdmtest is not True:
         transmit = Transmitter(scenario, dataset_folder, num_rx = 1, num_tx = 1, \
@@ -3039,6 +3039,7 @@ if __name__ == '__main__':
                     USE_LDPC = False, pilot_pattern = "empty", guards=False, showfig=True) #"kronecker"
         #channeltype="perfect", "awgn", "ofdm", "time"
         b_hat, BER = transmit(ebno_db = 15.0, channeltype='awgn')
+        b_hat, BER = transmit(ebno_db = 15.0, channeltype='time')
     else:
         transmit = Transmitter(scenario, dataset_folder, num_rx = 1, num_tx = 1, \
                     batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \

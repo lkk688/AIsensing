@@ -969,12 +969,12 @@ class ApplyTimeChannel(tf.keras.layers.Layer):
         # zero symbol. The vector of transmitted symbols is padded with one
         # zero at the end.
         first_colum = np.concatenate([  np.arange(0, num_time_samples),
-                                        np.full([l_tot-1], num_time_samples)])
+                                        np.full([l_tot-1], num_time_samples)]) #(1090,)
         #The first_column (1D array) is created by concatenating two arrays: 
             #The first part generates an array of integers from 0 to num_time_samples - 1
             #the second part creates an array of length l_tot - 1 filled with the value num_time_samples
 
-        first_row = np.concatenate([[0], np.full([l_tot-1], num_time_samples)]) #1D array
+        first_row = np.concatenate([[0], np.full([l_tot-1], num_time_samples)]) #1D array (27,)
             #The first part is [0], which is a single-element array containing just the value 0.
             #The second part is np.full([l_tot-1], num_time_samples), which is the same as in the first_column.
 
