@@ -1701,7 +1701,68 @@ class MyResourceGridMapper:
         rg = np.transpose(rg, [4, 0, 1, 2, 3]) #(64, 1, 1, 14, 76)
 
         return rg
-    
+
+class OFDMModulator():
+    def __init__(self, fft_size, l_min, cyclic_prefix_length=0) -> None:
+        #(L_\text{min}) is the largest negative time lag of the discrete-time channel impulse response.
+        self.fft_size = fft_size #int "`fft_size` must be positive."
+        self.l_min = l_min #int "l_min must be nonpositive."
+        self.cyclic_prefix_length = cyclic_prefix_length #"`cyclic_prefix_length` must be nonnegative."
+
+    #The code calculates a phase compensation factor for an OFDM (Orthogonal Frequency Division Multiplexing) system.
+    #It computes the phase shift needed to remove the timing offset introduced by the cyclic prefix in the OFDM signal.
+    #The phase compensation factor is stored in self._phase_compensation.
+    #The formula for the phase compensation factor is: [ \text{phase_compensation} = e^{j2\pi k L_\text{min} / N} ] 
+        #where: (k) is the subcarrier index, N is fft_size
+    #The code computes the phase compensation factor for all subcarriers using a range of values from 0 to self.fft_size
+    def compute_phase_compensation(self):
+        fft_size = self.fft_size
+        l_min = self.l_min
+        k_values = np.arange(fft_size, dtype=np.float32) #0-63
+        tmp = -2 * np.pi * l_min / fft_size *  #(64,)
+        self.phase_compensation = np.exp(1j * tmp)
+
+    #Truncation and OFDM Symbol Calculation:
+    #It determines the number of elements that will be truncated from the input shape.
+    #The truncation occurs due to the cyclic prefix and the FFT size.
+    #The remaining elements after truncation correspond to full OFDM symbols.
+    #The number of full OFDM symbols is stored in self._num_ofdm_symbols.
+    def calculate_num_ofdm_symbols(self, input_shape):
+        fft_size = self.fft_size
+        cyclic_prefix_length = self.cyclic_prefix_length
+        rest = np.mod(input_shape[-1], fft_size + cyclic_prefix_length)
+        self.num_ofdm_symbols = np.floor_divide(input_shape[-1] - rest, fft_size + cyclic_prefix_length)
+
+    #Computes the frequency-domain representation of an OFDM waveform with cyclic prefix removal.
+    def ofdm_modulator(self, inputs):
+        # Shift DC subcarrier to first position
+        inputs = np.fft.ifftshift(inputs, axes=-1)
+
+        # Compute IFFT along the last dimension
+        x = np.fft.ifft(inputs, axis=-1)
+
+        # Obtain cyclic prefix
+        cp = x[..., -self.cyclic_prefix_length:]
+
+        # Prepend cyclic prefix
+        x = np.concatenate([cp, x], axis=-1)
+
+        # Serialize last two dimensions
+        x = x.reshape(x.shape[:-2] + (-1,))
+
+        return x
+
+def testOFDMModulator(batch_size=64, num_elements=1024):
+    # Example usage:
+    input_shape = (batch_size, num_elements)  # Replace with actual input shape
+    fft_size = 64  # Replace with the desired FFT size
+    cyclic_prefix_length = 16  # Replace with the cyclic prefix length
+    l_min = -10  # Replace with the largest negative time lag
+    myofdm = OFDMModulator(fft_size=fft_size, l_min=0, cyclic_prefix_length=cyclic_prefix_length)
+    phase_compensation = myofdm.compute_phase_compensation()
+    num_ofdm_symbols = myofdm.calculate_num_ofdm_symbols(input_shape)
+    print(num_ofdm_symbols)
+
 class OFDMAMIMO():
     def __init__(self, num_rx = 1, num_tx = 1, \
                  batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
@@ -1810,25 +1871,6 @@ class OFDMAMIMO():
         #l_min = -6
         #self.demodulator = OFDMDemodulator(self.RESOURCE_GRID.fft_size, l_min, self.RESOURCE_GRID.cyclic_prefix_length)
 
-    #Computes the frequency-domain representation of an OFDM waveform with cyclic prefix removal.
-    def ofdm_modulator(self, inputs):
-        # Shift DC subcarrier to first position
-        inputs = np.fft.ifftshift(inputs, axes=-1)
-
-        # Compute IFFT along the last dimension
-        x = np.fft.ifft(inputs, axis=-1)
-
-        # Obtain cyclic prefix
-        cp = x[..., -self.cyclic_prefix_length:]
-
-        # Prepend cyclic prefix
-        x = np.concatenate([cp, x], axis=-1)
-
-        # Serialize last two dimensions
-        x = x.reshape(x.shape[:-2] + (-1,))
-
-        return x
-
 
     def __call__(self, b=None):
         # Transmitter
@@ -1854,6 +1896,8 @@ if __name__ == '__main__':
     # myofdm = OFDMSymbol()
     # ofdmsignal = myofdm.createOFDMsignal()
     # print(ofdmsignal)
+
+    testOFDMModulator()
 
     #Test OFDMMIMO
     transmit = OFDMAMIMO(num_rx = 1, num_tx = 1, \
