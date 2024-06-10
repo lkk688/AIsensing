@@ -92,7 +92,10 @@ print(DeepMIMO_dataset[active_bs_idx]['user']['pathloss'][j])
 #The combined path-loss of the channel between the RX and TX in dB.
 ```
 
-[UserStation Location](../imgs/ddeepmimo_userstationlocation.png)
-[Channel Response](../imgs/deepmimo_channelresponse.png)
-[UE BS positions with path loss](../imgs/deepmimo-uebspositions.png)
-[UEGrid Path Loss](../imgs/deepmimo_uegridpathloss.png)
+![UserStation Location](../imgs/ddeepmimo_userstationlocation.png)
+
+![Channel Response](../imgs/deepmimo_channelresponse.png)
+
+![UE BS positions with path loss](../imgs/deepmimo-uebspositions.png)
+
+![UEGrid Path Loss](../imgs/deepmimo_uegridpathloss.png)
