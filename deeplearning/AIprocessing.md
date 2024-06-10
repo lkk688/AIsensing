@@ -138,10 +138,10 @@ x_rg = self.rg_mapper(x) ##array[64,1,1,14,76] 14*76=1064
 
 ResourceGrid bandwidth is `bandwidth= self.fft_size(76)*self.subcarrier_spacing=4560000`
 
-`cir_to_time_channel` Compute the channel taps forming the discrete complex-baseband representation of the channel from the channel impulse response (``a``, ``tau``). This function assumes that a sinc filter is used for pulse shaping and receive filtering. Therefore, given a channel impulse response `$(a_{m}(t), \tau_{m}), 0 \leq m \leq M-1$`, the channel taps are computed as follows:
-$$
-        \bar{h}_{b, \ell}
-        = \sum_{m=0}^{M-1} a_{m}\left(\frac{b}{W}\right)
-            \text{sinc}\left( \ell - W\tau_{m} \right)
-$$
-for `$\ell$` ranging from ``$l_min$`` to ``$l_max$``, and where `$W$` is the ``$bandwidth$``.
+`cir_to_time_channel` Compute the channel taps forming the discrete complex-baseband representation of the channel from the channel impulse response (``a``, ``tau``). This function assumes that a sinc filter is used for pulse shaping and receive filtering. Therefore, given a channel impulse response $(a_{m}(t), \tau_{m}), 0 \leq m \leq M-1$, the channel taps are computed as follows:
+```math
+\bar{h}_{b, \ell}
+= \sum_{m=0}^{M-1} a_{m}\left(\frac{b}{W}\right)
+   \text{sinc}\left( \ell - W\tau_{m} \right)
+```
+for $`\ell`$ ranging from $l_min$ to $l_max$, and where $W$ is the $bandwidth$.
