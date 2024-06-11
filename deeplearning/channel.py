@@ -937,8 +937,8 @@ class ApplyTimeChannel(tf.keras.layers.Layer):
     def __init__(self, num_time_samples, l_tot, add_awgn=True,
                  dtype=tf.complex64, **kwargs):
 
-        super().__init__(trainable=False, dtype=dtype, **kwargs)
-        #super().__init__(trainable=False, **kwargs)
+        #super().__init__(trainable=False, dtype=dtype, **kwargs)
+        super().__init__(trainable=False, **kwargs)
 
         self._add_awgn = add_awgn
         #self.currenttype = dtype
@@ -1008,6 +1008,8 @@ class ApplyTimeChannel(tf.keras.layers.Layer):
         #The fourth dimension [0,1] adds one zero-padding element along the num_time_samples dimension.
         #The purpose of this padding is to ensure that the dimensions of x are compatible for broadcasting and matrix multiplication.
 
+        #It inserts ``num_dims`` dimensions of length one starting from the dimension ``axis``
+        #output = insert_dims(tensor, num_dims, axis)
         x = insert_dims(x, 2, axis=1) #inserts a new dimension into the x tensor (64, 1, 1, 1065)
         #The inserted dimension is placed at index 2 (third dimension) along the axis 1.
 
