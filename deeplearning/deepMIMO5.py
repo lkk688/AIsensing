@@ -2492,11 +2492,348 @@ class MyDemapper:
 
         return llr_reshaped
 
-from sionna_tf import MyLMMSEEqualizer, ZFPrecoder, LMMSEEqualizer, Demapper, RemoveNulledSubcarriers, SymbolLogits2LLRs, OFDMModulator, OFDMDemodulator #KroneckerPilotPattern
-from channel import MyLSChannelEstimator, LSChannelEstimator, cir_to_time_channel, time_lag_discrete_time_channel, ApplyTimeChannel
+from sionna_tf import MyLMMSEEqualizer, LMMSEEqualizer, SymbolLogits2LLRs, OFDMDemodulator #ZFPrecoder, OFDMModulator, KroneckerPilotPattern, Demapper, RemoveNulledSubcarriers, 
+from channel import MyLSChannelEstimator, LSChannelEstimator, ApplyTimeChannel#, time_lag_discrete_time_channel #, ApplyTimeChannel #cir_to_time_channel
 from ldpc.encoding import LDPC5GEncoder
 from ldpc.decoding import LDPC5GDecoder
 
+import scipy
+def time_lag_discrete_time_channel(bandwidth, maximum_delay_spread=3e-6):
+    # pylint: disable=line-too-long
+    r"""
+    Compute the smallest and largest time-lag for the descrete complex baseband
+    channel, i.e., :math:`L_{\text{min}}` and :math:`L_{\text{max}}`.
+
+    The smallest time-lag (:math:`L_{\text{min}}`) returned is always -6, as this value
+    was found small enough for all models included in Sionna.
+
+    The largest time-lag (:math:`L_{\text{max}}`) is computed from the ``bandwidth``
+    and ``maximum_delay_spread`` as follows:
+
+    .. math::
+        L_{\text{max}} = \lceil W \tau_{\text{max}} \rceil + 6
+
+    where :math:`L_{\text{max}}` is the largest time-lag, :math:`W` the ``bandwidth``,
+    and :math:`\tau_{\text{max}}` the ``maximum_delay_spread``.
+
+    The default value for the ``maximum_delay_spread`` is 3us, which was found
+    to be large enough to include most significant paths with all channel models
+    included in Sionna assuming a nominal delay spread of 100ns.
+
+    Note
+    ----
+    The values of :math:`L_{\text{min}}` and :math:`L_{\text{max}}` computed
+    by this function are only recommended values.
+    :math:`L_{\text{min}}` and :math:`L_{\text{max}}` should be set according to
+    the considered channel model. For OFDM systems, one also needs to be careful
+    that the effective length of the complex baseband channel is not larger than
+    the cyclic prefix length.
+
+    Input
+    ------
+    bandwidth : float
+        Bandwith (:math:`W`) [Hz]
+
+    maximum_delay_spread : float
+        Maximum delay spread [s]. Defaults to 3us.
+
+    Output
+    -------
+    l_min : int
+        Smallest time-lag (:math:`L_{\text{min}}`) for the descrete complex baseband
+        channel. Set to -6, , as this value was found small enough for all models
+        included in Sionna.
+
+    l_max : int
+        Largest time-lag (:math:`L_{\text{max}}`) for the descrete complex baseband
+        channel
+    """
+    l_min = np.int32(-6)
+    l_max = np.int32(np.ceil(maximum_delay_spread * bandwidth) + 6)
+    return l_min, l_max #-6, 20
+
+class MyApplyTimeChannel:
+    r"""ApplyTimeChannel(num_time_samples, l_tot, add_awgn=True, dtype=tf.complex64, **kwargs)
+
+    Apply time domain channel responses ``h_time`` to channel inputs ``x``,
+    by filtering the channel inputs with time-variant channel responses.
+
+    This class inherits from the Keras `Layer` class and can be used as layer
+    in a Keras model.
+
+    For each batch example, ``num_time_samples`` + ``l_tot`` - 1 time steps of a
+    channel realization are required to filter the channel inputs.
+
+    The channel output consists of ``num_time_samples`` + ``l_tot`` - 1
+    time samples, as it is the result of filtering the channel input of length
+    ``num_time_samples`` with the time-variant channel filter  of length
+    ``l_tot``. In the case of a single-input single-output link and given a sequence of channel
+    inputs :math:`x_0,\cdots,x_{N_B}`, where :math:`N_B` is ``num_time_samples``, this
+    layer outputs
+
+    .. math::
+        y_b = \sum_{\ell = 0}^{L_{\text{tot}}} x_{b-\ell} \bar{h}_{b,\ell} + w_b
+
+    where :math:`L_{\text{tot}}` corresponds ``l_tot``, :math:`w_b` to the additive noise, and
+    :math:`\bar{h}_{b,\ell}` to the :math:`\ell^{th}` tap of the :math:`b^{th}` channel sample.
+    This layer outputs :math:`y_b` for :math:`b` ranging from 0 to
+    :math:`N_B + L_{\text{tot}} - 1`, and :math:`x_{b}` is set to 0 for :math:`b \geq N_B`.
+
+    For multiple-input multiple-output (MIMO) links, the channel output is computed for each antenna
+    of each receiver and by summing over all the antennas of all transmitters.
+
+    Parameters
+    ----------
+
+    num_time_samples : int
+        Number of time samples forming the channel input (:math:`N_B`)
+
+    l_tot : int
+        Length of the channel filter (:math:`L_{\text{tot}} = L_{\text{max}} - L_{\text{min}} + 1`)
+
+    add_awgn : bool
+        If set to `False`, no white Gaussian noise is added.
+        Defaults to `True`.
+
+    dtype : tf.DType
+        Complex datatype to use for internal processing and output.
+        Defaults to `tf.complex64`.
+
+    Input
+    -----
+
+    (x, h_time, no) or (x, h_time):
+        Tuple:
+
+    x :  [batch size, num_tx, num_tx_ant, num_time_samples], tf.complex
+        Channel inputs
+
+    h_time : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_samples + l_tot - 1, l_tot], tf.complex
+        Channel responses.
+        For each batch example, ``num_time_samples`` + ``l_tot`` - 1 time steps of a
+        channel realization are required to filter the channel inputs.
+
+    no : Scalar or Tensor, tf.float
+        Scalar or tensor whose shape can be broadcast to the shape of the channel outputs: [batch size, num_rx, num_rx_ant, num_time_samples + l_tot - 1].
+        Only required if ``add_awgn`` is set to `True`.
+        The noise power ``no`` is per complex dimension. If ``no`` is a
+        scalar, noise of the same variance will be added to the outputs.
+        If ``no`` is a tensor, it must have a shape that can be broadcast to
+        the shape of the channel outputs. This allows, e.g., adding noise of
+        different variance to each example in a batch. If ``no`` has a lower
+        rank than the channel outputs, then ``no`` will be broadcast to the
+        shape of the channel outputs by adding dummy dimensions after the
+        last axis.
+
+    Output
+    -------
+    y : [batch size, num_rx, num_rx_ant, num_time_samples + l_tot - 1], tf.complex
+        Channel outputs.
+        The channel output consists of ``num_time_samples`` + ``l_tot`` - 1
+        time samples, as it is the result of filtering the channel input of length
+        ``num_time_samples`` with the time-variant channel filter  of length
+        ``l_tot``.
+    """
+    def __init__(self, num_time_samples, l_tot, add_awgn=True):
+        self._add_awgn = add_awgn
+
+        # The channel transfert function is implemented by first gathering from
+        # the vector of transmitted baseband symbols
+        # x = [x_0,...,x_{num_time_samples-1}]^T  the symbols that are then
+        # multiplied by the channel tap coefficients.
+        # We build here the matrix of indices G, with size
+        # `num_time_samples + l_tot - 1` x `l_tot` that is used to perform this
+        # gathering.
+        # For example, if there are 4 channel taps
+        # h = [h_0, h_1, h_2, h_3]^T
+        # and `num_time_samples` = 10 time steps then G  would be
+        #       [[0, 10, 10, 10]
+        #        [1,  0, 10, 10]
+        #        [2,  1,  0, 10]
+        #        [3,  2,  1,  0]
+        #        [4,  3,  2,  1]
+        #        [5,  4,  3,  2]
+        #        [6,  5,  4,  3]
+        #        [7,  6,  5,  4]
+        #        [8,  7,  6,  5]
+        #        [9,  8,  7,  6]
+        #        [10, 9,  8,  7]
+        #        [10,10,  9,  8]
+        #        [10,10, 10,  9]
+        # Note that G is a Toeplitz matrix.
+        # In this example, the index `num_time_samples`=10 corresponds to the
+        # zero symbol. The vector of transmitted symbols is padded with one
+        # zero at the end.
+        first_colum = np.concatenate([  np.arange(0, num_time_samples),
+                                        np.full([l_tot-1], num_time_samples)]) #num_time_samples=1064 =>(1090,)
+        #The first_column (1D array) is created by concatenating two arrays: 
+            #The first part generates an array of integers from 0 to num_time_samples - 1
+            #the second part creates an array of length l_tot - 1 filled with the value num_time_samples
+
+        first_row = np.concatenate([[0], np.full([l_tot-1], num_time_samples)]) #1D array (27,)
+            #The first part is [0], which is a single-element array containing just the value 0.
+            #The second part is np.full([l_tot-1], num_time_samples), which is the same as in the first_column.
+
+        #Toeplitz Matrix Creation
+        self._g = scipy.linalg.toeplitz(first_colum, first_row) #(1090, 27)
+        #A Toeplitz matrix has constant diagonals, where the first column (first_column) 
+        #serves as the diagonal and the first row (first_row) serves as the first row of the matrix.
+        #The resulting matrix _g is a square matrix with dimensions (l_tot, l_tot).
+
+    def __call__(self, inputs):
+        if self._add_awgn:
+            x, h_time, no = inputs #x: (64, 1, 1, 1064), h_time: (64, 1, 1, 1, 16, 1, 27)
+        else:
+            x, h_time = inputs
+        
+        #x :  [batch size, num_tx, num_tx_ant, num_time_samples]
+        # Preparing the channel input for broadcasting and matrix multiplication
+        x = np.pad(x, [(0, 0), (0, 0), (0, 0), (0, 1)]) #(64, 1, 1, 1065)
+        #The first dimension [0,0] indicates no padding along the batch size dimension.
+        #The second dimension [0,0] indicates no padding along the num_tx dimension.
+        #The third dimension [0,0] indicates no padding along the num_tx_ant dimension.
+        #The fourth dimension [0,1] adds one zero-padding element along the num_time_samples dimension.
+        #The purpose of this padding is to ensure that the dimensions of x are compatible for broadcasting and matrix multiplication.
+
+        x = np.expand_dims(x, axis=2) #(64, 1, 1, 1, 1065) inserts a new dimension into the x tensor 
+        #The inserted dimension is placed at index 2 (third dimension) along the axis 1.
+
+        #tf.gather(params, indices, axis) is a TensorFlow function that slices the input tensor params along the specified axis using the indices provided in the tensor indices
+        #gather slices from the input tensor x based on indices specified by the matrix self._g along the last axis (axis=-1).
+        x = x[..., self._g] #(64, 1, 1, 1, 1090, 27) x = tf.gather(x, self._g, axis=-1)
+        #self._g is a matrix of shape [num_time_samples, num_time_samples], the operation will gather slices from x along the last axis (i.e., num_time_samples) using the indices specified by self._g.
+        #The resulting tensor will have the same shape as x, but with values rearranged based on the indices in self._g
+        #x :  [batch size, num_tx, num_tx_ant, num_time_samples, l_tot]
+
+        # Apply the channel response
+        #h_time : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_samples + l_tot - 1, l_tot]
+        #The first line computes the element-wise product (*) between h_time and another tensor x. The result is a new tensor y.
+        #The tf.reduce_sum(y, axis=-1) computes the sum along the last axis (axis with index -1). 
+        #This reduces the dimensionality of y by one, resulting in a tensor with shape [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_samples + l_tot - 1].
+        y = np.sum(h_time * x, axis=-1) #y = tf.reduce_sum(h_time*x, axis=-1)
+
+        #The inner tf.reduce_sum(y, axis=4) computes the sum along the fourth axis (assuming y has the shape described above)
+        #The result of the inner reduction will have shape [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_samples + l_tot - 1].
+        #y = tf.reduce_sum(tf.reduce_sum(y, axis=4), axis=3)
+        # Sum along the fourth axis (axis=4) and then along the third axis (axis=3)
+        y = np.sum(np.sum(y, axis=4), axis=3)
+        #The outer tf.reduce_sum(..., axis=3) computes the sum along the third axis of the intermediate result.
+        #The final result is assigned back to the variable y.
+        #The resulting tensor y will have shape [batch size, num_rx, num_rx_ant, num_time_samples + l_tot - 1].
+        
+        return y
+        
+
+#Compute the channel taps forming the discrete complex-baseband
+# representation of the channel from the channel impulse response (``a``, ``tau``).
+def cir_to_time_channel(bandwidth, a, tau, l_min, l_max, normalize=False):
+    r"""
+    Compute the channel taps forming the discrete complex-baseband
+    representation of the channel from the channel impulse response
+    (``a``, ``tau``).
+
+    This function assumes that a sinc filter is used for pulse shaping and receive
+    filtering. Therefore, given a channel impulse response
+    :math:`(a_{m}(t), \tau_{m}), 0 \leq m \leq M-1`, the channel taps
+    are computed as follows:
+
+    .. math::
+        \bar{h}_{b, \ell}
+        = \sum_{m=0}^{M-1} a_{m}\left(\frac{b}{W}\right)
+            \text{sinc}\left( \ell - W\tau_{m} \right)
+
+    for :math:`\ell` ranging from ``l_min`` to ``l_max``, and where :math:`W` is
+    the ``bandwidth``.
+
+    Input
+    ------
+    bandwidth : float
+        Bandwidth [Hz]
+
+    a : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps], complex
+        Path coefficients
+
+    tau : [batch size, num_rx, num_tx, num_paths] or [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths], float
+        Path delays [s]
+
+    l_min : int
+        Smallest time-lag for the discrete complex baseband channel (:math:`L_{\text{min}}`)
+
+    l_max : int
+        Largest time-lag for the discrete complex baseband channel (:math:`L_{\text{max}}`)
+
+    normalize : bool
+        If set to `True`, the channel is normalized over the block size
+        to ensure unit average energy per time step. Defaults to `False`.
+
+    Output
+    -------
+    hm :  [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, l_max - l_min + 1], complex
+        Channel taps coefficients
+    """
+    real_dtype = tau.dtype #float
+
+    #tau: (64, 1, 1, 10)
+    if len(tau.shape) == 4:
+        # Expand dimensions to broadcast with 'a'
+        # Expand dims to broadcast with h. Add the following dimensions:
+        #  - number of rx antennas (2)
+        #  - number of tx antennas (4)
+        tau = np.expand_dims(np.expand_dims(tau, axis=2), axis=4) #[64, 1, num_rx_antenna=1(added), 1, num_tx_antenna=1(added), 10]
+        # Manually tile to handle high-rank tensors
+        tau = np.tile(tau, [1, 1, 1, 1, a.shape[4], 1]) #(64, 1, 1, 1, 16(added num_tx_ant), 10)
+
+    # Add a time samples dimension for broadcasting
+    tau = np.expand_dims(tau, axis=6) #[64, 1, 1, 1, 16, 10, 1(time)]
+
+    # Time lags for which to compute the channel taps
+    l = np.arange(l_min, l_max + 1, dtype=real_dtype) #(27,)
+
+    # Bring tau and l to broadcastable shapes
+    tau = np.expand_dims(tau, axis=-1) #(64, 1, 1, 1, 16, 10, 1, 1(added for time lag))
+    l = myexpand_to_rank(l, tau.ndim, axis=0) #[1, 1, 1, 1, 1, 1, 1, 27]
+
+    # sinc pulse shaping
+    g = np.sinc(l - tau * bandwidth)#[64, 1, 1, 1, 16, 10, 1, 27]
+    g = g.astype(np.complex128)
+    a = np.expand_dims(a, axis=-1) #[64, 1, 1, 1, 16, 10, 1, 1(added for time lag)]
+
+    # For every tap, sum the sinc-weighted coefficients
+    hm = np.sum(a * g, axis=-3) #[64, 1, 1, 1, 16, 10(pathes reduced), 1, 27]=>[64, 1, 1, 1, 16, 1, 27]
+
+    if normalize:
+        # Normalize energy per block
+        c = np.mean(np.sum(np.abs(hm) ** 2, axis=6, keepdims=True), axis=(2, 4, 5), keepdims=True)
+        c = np.sqrt(c).astype(np.complex128) #c:[64, 1, 1, 1, 1, 1, 1]
+        hm = hm / c
+
+    return hm #[64, 1, 1, 1, 16, 1, 27]
+
+class OFDMModulator(): #Computes the frequency-domain representation of an OFDM waveform with cyclic prefix removal.
+    def __init__(self, cyclic_prefix_length=0) -> None:
+        #(L_\text{min}) is the largest negative time lag of the discrete-time channel impulse response.
+        #self.fft_size = fft_size #int "`fft_size` must be positive."
+        #self.l_min = l_min #int "l_min must be nonpositive."
+        self.cyclic_prefix_length = cyclic_prefix_length #"`cyclic_prefix_length` must be nonnegative."
+
+    def __call__(self, inputs):
+        # Shift DC subcarrier to first position
+        inputs = np.fft.ifftshift(inputs, axes=-1) #(64, 1, 1, 14, 76)
+
+        # Compute IFFT along the last dimension
+        x = np.fft.ifft(inputs, axis=-1) #(64, 1, 1, 14, 76)
+
+        # Obtain cyclic prefix
+        last_dimension = np.shape(inputs)[-1] #76
+        cp = x[..., last_dimension-self.cyclic_prefix_length:] #(64, 1, 1, 14, 0)
+
+        # Prepend cyclic prefix
+        x = np.concatenate([cp, x], axis=-1) #(64, 1, 1, 14, 76)
+
+        # Serialize last two dimensions
+        x = x.reshape(x.shape[:-2] + (-1,))
+
+        return x #(64, 1, 1, 1064)
 
 def testprocess():
     scenario='O1_60'
@@ -2870,8 +3207,8 @@ class Transmitter():
         #x_rg:[batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76]
 
         h_b, tau_b = self.get_htau_batch()
-        #print(h_b.shape) #(64, 1, 1, 1, 16, 10, 1)[batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps] 
-        #print(tau_b.shape) #(64, 1, 1, 10)[batch, num_rx, num_tx, num_paths]
+        #print(h_b.shape) #complex (64, 1, 1, 1, 16, 10, 1)[batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps] 
+        #print(tau_b.shape) #float (64, 1, 1, 10)[batch, num_rx, num_tx, num_paths]
         if channeltype=="ofdm":
             # Generate the OFDM channel response
             #computes the Fourier transform of the continuous-time channel impulse response at a set of `frequencies`, corresponding to the different subcarriers.
@@ -2913,20 +3250,21 @@ class Transmitter():
             l_tot = l_max-l_min+1 #27
             # Compute the discrete-time channel impulse reponse
             h_time = cir_to_time_channel(bandwidth, h_b, tau_b, l_min=l_min, l_max=l_max, normalize=True) 
-            #h_time: [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, l_max - l_min + 1] [64, 1, 1, 1, 16, 1, 27]
+            #h_time: [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, l_max - l_min + 1] complex[64, 1, 1, 1, 16, 1, 27]
             if self.showfig:
                 plt.figure()
                 plt.title("Discrete-time channel impulse response")
                 plt.stem(np.abs(h_time[0,0,0,0,0,0]))
                 plt.xlabel(r"Time step $\ell$")
                 plt.ylabel(r"$|\bar{h}|$");
-            channel_time = ApplyTimeChannel(self.RESOURCE_GRID.num_time_samples, l_tot=l_tot, add_awgn=True)
+            channel_time = ApplyTimeChannel(self.RESOURCE_GRID.num_time_samples, l_tot=l_tot, add_awgn=False)
+            #channel_time = MyApplyTimeChannel(self.RESOURCE_GRID.num_time_samples, l_tot=l_tot, add_awgn=False)
             # OFDM modulator and demodulator
             modulator = OFDMModulator(self.RESOURCE_GRID.cyclic_prefix_length)
             demodulator = OFDMDemodulator(self.RESOURCE_GRID.fft_size, l_min, self.RESOURCE_GRID.cyclic_prefix_length)
 
             # OFDM modulation with cyclic prefix insertion
-            x_time = modulator(x_rg) #output: [64, 1, 1, 1148]
+            x_time = modulator(x_rg) #output: (64, 1, 1, 1064)
             # Compute the channel output
             # This computes the full convolution between the time-varying
             # discrete-time channel impulse reponse and the discrete-time
@@ -2934,7 +3272,16 @@ class Transmitter():
             # insufficiently long cyclic prefix will become visible. This
             # is in contrast to frequency-domain modeling which imposes
             # no inter-symbol interfernce.
-            y_time = channel_time([x_time, h_time, no]) #[64, 1, 1, 1174]
+            #y_time = channel_time([x_time, h_time, no]) #[64, 1, 1, 1174]
+            import tensorflow as tf
+            if isinstance(x_time, np.ndarray):
+                #x_time=tf.convert_to_tensor(x_time)
+                # Convert to TensorFlow complex
+                x_time = tf.constant(x_time, dtype=tf.complex64)
+            if isinstance(h_time, np.ndarray):
+                #h_time=tf.convert_to_tensor(h_time)
+                h_time = tf.constant(h_time, dtype=tf.complex64)
+            y_time = channel_time([x_time, h_time]) #(64, 1, 1, 1090) float32
 
             # OFDM demodulation and cyclic prefix removal
             y = demodulator(y_time)
@@ -2961,7 +3308,7 @@ class Transmitter():
         else:
             c = b
         x = self.mapper(c) #np.array[64,1,1,896] if empty np.array[64,1,1,1064] 1064*4=4256 [batch_size, num_tx, num_streams_per_tx, num_data_symbols]
-        x_rg = self.rg_mapper(x) ##array[64,1,1,14,76] 14*76=1064
+        x_rg = self.rg_mapper(x) ##complex array[64,1,1,14,76] 14*76=1064
         #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76]
 
         #set noise level

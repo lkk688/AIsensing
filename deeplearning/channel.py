@@ -848,6 +848,7 @@ def rad_2_deg(x):
     """
     return x*tf.constant(180.0/PI, x.dtype)
 
+#ref: https://github.com/NVlabs/sionna/blob/main/sionna/channel/apply_time_channel.py
 import scipy
 class ApplyTimeChannel(tf.keras.layers.Layer):
     # pylint: disable=line-too-long
@@ -936,10 +937,11 @@ class ApplyTimeChannel(tf.keras.layers.Layer):
     def __init__(self, num_time_samples, l_tot, add_awgn=True,
                  dtype=tf.complex64, **kwargs):
 
-        #super().__init__(trainable=False, dtype=dtype, **kwargs)
-        super().__init__(trainable=False, **kwargs)
+        super().__init__(trainable=False, dtype=dtype, **kwargs)
+        #super().__init__(trainable=False, **kwargs)
 
         self._add_awgn = add_awgn
+        #self.currenttype = dtype
 
         # The channel transfert function is implemented by first gathering from
         # the vector of transmitted baseband symbols
@@ -988,6 +990,7 @@ class ApplyTimeChannel(tf.keras.layers.Layer):
 
         if self._add_awgn:
             self._awgn = AWGN(dtype=self.dtype)
+            #self._awgn = AWGN(dtype=self.currenttype)
 
     def call(self, inputs):
 
@@ -995,36 +998,36 @@ class ApplyTimeChannel(tf.keras.layers.Layer):
             x, h_time, no = inputs
         else:
             x, h_time = inputs
-
+    
         #x :  [batch size, num_tx, num_tx_ant, num_time_samples]
         # Preparing the channel input for broadcasting and matrix multiplication
-        x = tf.pad(x, [[0,0], [0,0], [0,0], [0,1]])
+        x = tf.pad(x, [[0,0], [0,0], [0,0], [0,1]]) #(64, 1, 1, 1065)
         #The first dimension [0,0] indicates no padding along the batch size dimension.
         #The second dimension [0,0] indicates no padding along the num_tx dimension.
         #The third dimension [0,0] indicates no padding along the num_tx_ant dimension.
         #The fourth dimension [0,1] adds one zero-padding element along the num_time_samples dimension.
         #The purpose of this padding is to ensure that the dimensions of x are compatible for broadcasting and matrix multiplication.
 
-        x = insert_dims(x, 2, axis=1) #inserts a new dimension into the x tensor 
+        x = insert_dims(x, 2, axis=1) #inserts a new dimension into the x tensor (64, 1, 1, 1065)
         #The inserted dimension is placed at index 2 (third dimension) along the axis 1.
 
         #tf.gather(params, indices, axis) is a TensorFlow function that slices the input tensor params along the specified axis using the indices provided in the tensor indices
         #gather slices from the input tensor x based on indices specified by the matrix self._g along the last axis (axis=-1).
-        x = tf.gather(x, self._g, axis=-1)
+        x = tf.gather(x, self._g, axis=-1) #(64, 1, 1, 1, 1, 1090, 27)
         #self._g is a matrix of shape [num_time_samples, num_time_samples], the operation will gather slices from x along the last axis (i.e., num_time_samples) using the indices specified by self._g.
         #The resulting tensor will have the same shape as x, but with values rearranged based on the indices in self._g
-        #x :  [batch size, num_tx, num_tx_ant, num_time_samples]
+        #x :  [batch size, num_tx, num_tx_ant, num_time_samples, l_tot]
 
         # Apply the channel response
         #h_time : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_samples + l_tot - 1, l_tot]
         #The first line computes the element-wise product (*) between h_time and another tensor x. The result is a new tensor y.
         #The tf.reduce_sum(y, axis=-1) computes the sum along the last axis (axis with index -1). 
         #This reduces the dimensionality of y by one, resulting in a tensor with shape [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_samples + l_tot - 1].
-        y = tf.reduce_sum(h_time*x, axis=-1)
+        y = tf.reduce_sum(h_time*x, axis=-1) #(64, 1, 1, 1, 16, 1090)
 
         #The inner tf.reduce_sum(y, axis=4) computes the sum along the fourth axis (assuming y has the shape described above)
         #The result of the inner reduction will have shape [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_samples + l_tot - 1].
-        y = tf.reduce_sum(tf.reduce_sum(y, axis=4), axis=3)
+        y = tf.reduce_sum(tf.reduce_sum(y, axis=4), axis=3) #(64, 1, 1, 1090) float32
         #The outer tf.reduce_sum(..., axis=3) computes the sum along the third axis of the intermediate result.
         #The final result is assigned back to the variable y.
         #The resulting tensor y will have shape [batch size, num_rx, num_rx_ant, num_time_samples + l_tot - 1].

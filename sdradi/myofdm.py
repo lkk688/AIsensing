@@ -1702,7 +1702,7 @@ class MyResourceGridMapper:
 
         return rg
 
-class OFDMModulator():
+class OFDMModulator(): #Computes the frequency-domain representation of an OFDM waveform with cyclic prefix removal.
     def __init__(self, fft_size, l_min, cyclic_prefix_length=0) -> None:
         #(L_\text{min}) is the largest negative time lag of the discrete-time channel impulse response.
         self.fft_size = fft_size #int "`fft_size` must be positive."
@@ -1719,7 +1719,7 @@ class OFDMModulator():
         fft_size = self.fft_size
         l_min = self.l_min
         k_values = np.arange(fft_size, dtype=np.float32) #0-63
-        tmp = -2 * np.pi * l_min / fft_size *  #(64,)
+        tmp = -2 * np.pi * l_min / fft_size *  (64,)
         self.phase_compensation = np.exp(1j * tmp)
 
     #Truncation and OFDM Symbol Calculation:
@@ -1733,7 +1733,6 @@ class OFDMModulator():
         rest = np.mod(input_shape[-1], fft_size + cyclic_prefix_length)
         self.num_ofdm_symbols = np.floor_divide(input_shape[-1] - rest, fft_size + cyclic_prefix_length)
 
-    #Computes the frequency-domain representation of an OFDM waveform with cyclic prefix removal.
     def ofdm_modulator(self, inputs):
         # Shift DC subcarrier to first position
         inputs = np.fft.ifftshift(inputs, axes=-1)
@@ -1742,7 +1741,8 @@ class OFDMModulator():
         x = np.fft.ifft(inputs, axis=-1)
 
         # Obtain cyclic prefix
-        cp = x[..., -self.cyclic_prefix_length:]
+        last_dimension = np.shape(inputs)[-1]
+        cp = x[..., last_dimension-self.cyclic_prefix_length:]
 
         # Prepend cyclic prefix
         x = np.concatenate([cp, x], axis=-1)
@@ -1757,8 +1757,8 @@ def testOFDMModulator(batch_size=64, num_elements=1024):
     input_shape = (batch_size, num_elements)  # Replace with actual input shape
     fft_size = 64  # Replace with the desired FFT size
     cyclic_prefix_length = 16  # Replace with the cyclic prefix length
-    l_min = -10  # Replace with the largest negative time lag
-    myofdm = OFDMModulator(fft_size=fft_size, l_min=0, cyclic_prefix_length=cyclic_prefix_length)
+    l_min = -6  # Replace with the largest negative time lag
+    myofdm = OFDMModulator(fft_size=fft_size, l_min=l_min, cyclic_prefix_length=cyclic_prefix_length)
     phase_compensation = myofdm.compute_phase_compensation()
     num_ofdm_symbols = myofdm.calculate_num_ofdm_symbols(input_shape)
     print(num_ofdm_symbols)

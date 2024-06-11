@@ -137,31 +137,18 @@ x_rg = self.rg_mapper(x) ##array[64,1,1,14,76] 14*76=1064
 ```
 
 
+If chose the time-domain channel, i.e., `channeltype=="time"`, ResourceGrid bandwidth is `bandwidth= self.fft_size(76)*self.subcarrier_spacing=4560000`. `l_min, l_max = time_lag_discrete_time_channel(bandwidth) #-6, 20` computes the smallest and largest time-lag for the descrete complex baseband channel. The smallest time-lag returned is always -6. This value was deemed small enough for all models. The largest time-lag is computed from the `bandwidth` and `maximum_delay_spread` as follows: $ L_{\text{max}} = \lceil W \tau_{\text{max}} \rceil + 6 $, where: $L_{\text{max}}$ represents the largest time-lag, $W$ corresponds to the bandwidth, $\tau_{\text{max}}$ is the maximum delay spread. The default value for `maximum_delay_spread` is 3 microseconds (3us). This value was found to be large enough to include most significant paths with all channel models, assuming a nominal delay spread of 100 nanoseconds.
 
-If chose the time-domain channel, i.e., `channeltype=="time"`, ResourceGrid bandwidth is `bandwidth= self.fft_size(76)*self.subcarrier_spacing=4560000`. `l_min, l_max = time_lag_discrete_time_channel(bandwidth) #-6, 20` computes the smallest and largest time-lag for the descrete complex baseband channel.
-1. **Smallest Time-Lag** (:math:`L_{\text{min}}`):
-   - The smallest time-lag returned is always -6. This value was deemed small enough for all models.
+`cir_to_time_channel`: Compute the channel taps forming the discrete complex-baseband representation of the channel from the Channel Impulse Response (CIR) (``a``, ``tau``). The channel impulse response represents how a channel responds to an impulse (delta function) transmitted through it.
+It characterizes the channel’s behavior over time, including multipath effects, delays, and attenuation.
 
-2. **Largest Time-Lag** (:math:`L_{\text{max}}`):
-   - The largest time-lag is computed from the `bandwidth` and `maximum_delay_spread` as follows:
-     \[ L_{\text{max}} = \lceil W \tau_{\text{max}} \rceil + 6 \]
-     where:
-     - :math:`L_{\text{max}}` represents the largest time-lag.
-     - :math:`W` corresponds to the bandwidth.
-     - :math:`\tau_{\text{max}}` is the maximum delay spread.
-
-3. **Default Value for `maximum_delay_spread`**:
-   - The default value for `maximum_delay_spread` is 3 microseconds (3us).
-   - This value was found to be large enough to include most significant paths with all channel models, assuming a nominal delay spread of 100 nanoseconds.
-
-Remember to adjust the values of `bandwidth` and `maximum_delay_spread` based on your specific scenario.
-
-
-
-`cir_to_time_channel`: Compute the channel taps forming the discrete complex-baseband representation of the channel from the channel impulse response (``a``, ``tau``). This function assumes that a sinc filter is used for pulse shaping and receive filtering. Therefore, given a channel impulse response $(a_{m}(t), \tau_{m}), 0 \leq m \leq M-1$, the channel taps are computed as follows:
+The function of `cir_to_time_channel` assumes that a sinc filter is used for pulse shaping and receive filtering. Therefore, given a channel impulse response $(a_{m}(t), \tau_{m}), 0 \leq m \leq M-1$, the channel taps are computed as follows:
 ```math
 \bar{h}_{b, \ell}
 = \sum_{m=0}^{M-1} a_{m}\left(\frac{b}{W}\right)
    \text{sinc}\left( \ell - W\tau_{m} \right)
 ```
-for $`\ell`$ ranging from $l_{min}$ to $l_{max}$, and where $W$ is the $bandwidth$.
+for $`\ell`$ ranging from $l_{min}$ to $l_{max}$, and where $W$ is the $bandwidth$. Each tap ($\bar{h}_{b, \ell}$) represents the combined effect of all paths at a specific time lag ($\ell$). The sinc function accounts for the time delay and phase shift due to each path. Input $a$ is Path coefficients: `[batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps], complex`, e.g., `(64, 1, 1, 1, 16, 10, 1)`. $tau$ is Path delays [s]: `[batch size, num_rx, num_tx, num_paths], float`, e.g., `(64, 1, 1, 10)`. Output $hm$ is Channel taps coefficients: `[batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, l_max - l_min + 1], complex`, e.g., `[64, 1, 1, 1, 16, 1, 27]`.
+The generated `h` is shown in this figure:
+![Discrete Time CIR](../imgs/ofdm_discretetimeCIR.png)
+        
