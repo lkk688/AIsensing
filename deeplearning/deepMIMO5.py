@@ -2492,7 +2492,7 @@ class MyDemapper:
 
         return llr_reshaped
 
-from sionna_tf import MyLMMSEEqualizer, LMMSEEqualizer, SymbolLogits2LLRs, OFDMDemodulator #ZFPrecoder, OFDMModulator, KroneckerPilotPattern, Demapper, RemoveNulledSubcarriers, 
+from sionna_tf import MyLMMSEEqualizer, LMMSEEqualizer, SymbolLogits2LLRs#, OFDMDemodulator #ZFPrecoder, OFDMModulator, KroneckerPilotPattern, Demapper, RemoveNulledSubcarriers, 
 from channel import MyLSChannelEstimator, LSChannelEstimator, ApplyTimeChannel#, time_lag_discrete_time_channel #, ApplyTimeChannel #cir_to_time_channel
 from ldpc.encoding import LDPC5GEncoder
 from ldpc.decoding import LDPC5GDecoder
@@ -2725,6 +2725,12 @@ class MyApplyTimeChannel:
         #The outer tf.reduce_sum(..., axis=3) computes the sum along the third axis of the intermediate result.
         #The final result is assigned back to the variable y.
         #The resulting tensor y will have shape [batch size, num_rx, num_rx_ant, num_time_samples + l_tot - 1].
+
+        if self._add_awgn:
+            noise=complex_normal(y.shape, var=1.0)
+            noise = noise.astype(y.dtype)
+            noise *= np.sqrt(no)
+            y=y+noise
         
         return y
         
@@ -2910,8 +2916,105 @@ class OFDMDemodulator():
         #(L_\text{min}) is the largest negative time lag of the discrete-time channel impulse response.
         self.fft_size = fft_size #int "`fft_size` must be positive."
         self.l_min = l_min #int "l_min must be nonpositive."
-        self.cyclic_prefix_length = cyclic_prefix_length #"`cyclic_prefix_length` must be nonnegative."
+        self.cyclic_prefix_length = cyclic_prefix_length #"`cyclic_prefix_length` must be nonnegative." 
+        self.compute_phase_compensation()      
     
+    #The code calculates a phase compensation factor for an OFDM (Orthogonal Frequency Division Multiplexing) system.
+    #It computes the phase shift needed to remove the timing offset introduced by the cyclic prefix in the OFDM signal.
+    #The phase compensation factor is stored in self._phase_compensation.
+    #The formula for the phase compensation factor is: [ \text{phase_compensation} = e^{j2\pi k L_\text{min} / N} ] 
+        #where: (k) is the subcarrier index, N is fft_size
+    #The code computes the phase compensation factor for all subcarriers using a range of values from 0 to self.fft_size
+    def compute_phase_compensation(self):
+        fft_size = self.fft_size
+        l_min = self.l_min
+        k_values = np.arange(fft_size, dtype=np.float32) #0-63
+        #tmp = -2 * np.pi * l_min / fft_size *  (64,)
+        tmp = -2 * np.pi * self.l_min / self.fft_size * np.arange(self.fft_size, dtype=np.float32)
+        self.phase_compensation = np.exp(1j * tmp)
+
+    #Truncation and OFDM Symbol Calculation:
+    #It determines the number of elements that will be truncated from the input shape.
+    #The truncation occurs due to the cyclic prefix and the FFT size.
+    #The remaining elements after truncation correspond to full OFDM symbols.
+    #The number of full OFDM symbols is stored in self._num_ofdm_symbols.
+    def calculate_num_ofdm_symbols(self, input_shape):
+        fft_size = self.fft_size
+        cyclic_prefix_length = self.cyclic_prefix_length
+        self._rest = np.mod(input_shape[-1], fft_size + cyclic_prefix_length) #1090/(76+0)=26
+        self.num_ofdm_symbols = np.floor_divide(input_shape[-1] - self._rest, fft_size + cyclic_prefix_length) #14
+    
+    def __call__(self, inputs, phase_compensation=False): #(64, 1, 1, 1090)
+        """Demodulate OFDM waveform onto a resource grid.
+
+        Args:
+            inputs (complex64):
+                `[...,num_ofdm_symbols*(fft_size+cyclic_prefix_length)]`.
+
+        Returns:
+            `complex64` : The demodulated inputs of shape
+            `[...,num_ofdm_symbols, fft_size]`.
+        """
+        input_shape = inputs.shape #(64, 1, 1, 1090)
+        self.calculate_num_ofdm_symbols(input_shape=input_shape)
+
+        # Cut last samples that do not fit into an OFDM symbol
+        inputs = inputs if self._rest==0 else inputs[...,:-self._rest] #(64, 1, 1, 1064)
+
+        # Reshape input to separate OFDM symbols
+        new_shape = np.concatenate([np.shape(inputs)[:-1], [self.num_ofdm_symbols],
+                            [self.fft_size + self.cyclic_prefix_length]], axis=0) #[64,  1,  1, 14, 76]
+        x = np.reshape(inputs, new_shape) #(64, 1, 1, 14, 76)
+
+        # Remove cyclic prefix, cyclic_prefix_length=0
+        x = x[...,self.cyclic_prefix_length:] #(64, 1, 1, 14, 76)
+
+        # Compute FFT
+        x = np.fft.fft(x)
+
+        if phase_compensation:
+            # Apply phase shift compensation to all subcarriers
+            #rot = np.cast[self.phase_compensation, x.dtype]
+            rot = self.phase_compensation.astype(x.dtype) #(76,)
+            #rot = np.expand_dims(rot, axis=0)
+            rot = myexpand_to_rank(rot, x.ndim, axis=0)  #(1, 1, 1, 1, 76) rot = expand_to_rank(rot, tf.rank(x), 0)
+            x = x * rot #(64, 1, 1, 14, 76)
+
+        # Shift DC subcarrier to the middle
+        x = np.fft.fftshift(x, axes=-1)
+
+        return x #(64, 1, 1, 14, 76)
+
+def ofdm_modulator(resource_grid, fft_size, cyclic_prefix_length):
+    # Add cyclic prefix
+    resource_grid_with_cp = np.concatenate([resource_grid[:, -cyclic_prefix_length:], resource_grid], axis=1) #(5,80)
+
+    # Compute IFFT
+    time_domain_signal = np.fft.ifft(resource_grid_with_cp, axis=1) #(5,80)
+
+    return time_domain_signal
+
+def ofdm_demodulator(time_domain_signal, fft_size, cyclic_prefix_length):
+    # Remove cyclic prefix
+    time_domain_signal_no_cp = time_domain_signal[:, cyclic_prefix_length:] #(5, 64)
+
+    # Compute FFT
+    frequency_domain_signal = np.fft.fft(time_domain_signal_no_cp, axis=1)
+
+    return frequency_domain_signal
+
+def testOFDMModulatorDemodulator():
+    # Generate random resource grid
+    resource_grid_test = np.random.randn(5, 64) + 1j * np.random.randn(5, 64) #(5, 64)
+
+    # Modulate and demodulate
+    modulated_test = ofdm_modulator(resource_grid_test, fft_size=64, cyclic_prefix_length=0)
+    demodulated_test = ofdm_demodulator(modulated_test, fft_size=64, cyclic_prefix_length=0)
+
+    # Check if the demodulated signal matches the original resource grid
+    print("Resource grid (original):\n", resource_grid_test)
+    print("Resource grid (demodulated):\n", demodulated_test)
+    print("Demodulation error (L2 norm):", np.linalg.norm(resource_grid_test - demodulated_test))
 
 def testprocess():
     scenario='O1_60'
@@ -3342,6 +3445,7 @@ class Transmitter():
             demodulator = OFDMDemodulator(self.RESOURCE_GRID.fft_size, l_min, self.RESOURCE_GRID.cyclic_prefix_length)
 
             # OFDM modulation with cyclic prefix insertion
+            #x_rg:[batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76]
             x_time = modulator(x_rg) #output: (64, 1, 1, 1064)
             # Compute the channel output
             # This computes the full convolution between the time-varying
@@ -3351,18 +3455,18 @@ class Transmitter():
             # is in contrast to frequency-domain modeling which imposes
             # no inter-symbol interfernce.
             #y_time = channel_time([x_time, h_time, no]) #[64, 1, 1, 1174]
-            # import tensorflow as tf
-            # if isinstance(x_time, np.ndarray):
-            #     #x_time=tf.convert_to_tensor(x_time)
-            #     # Convert to TensorFlow complex
-            #     x_time = tf.constant(x_time, dtype=tf.complex64)
-            # if isinstance(h_time, np.ndarray):
-            #     #h_time=tf.convert_to_tensor(h_time)
-            #     h_time = tf.constant(h_time, dtype=tf.complex64)
-            y_time = channel_time([x_time, h_time]) #(64, 1, 1, 1090) float32
+            y_time = channel_time([x_time, h_time]) #(64, 1, 1, 1090) complex
 
+            y_test = demodulator(x_time)
+            differences = np.abs(x_rg - y_test)
+            threshold=1e-7
+            num_differences = np.sum(differences > threshold)
+            print("Number of differences:", num_differences)
+            print(np.allclose(x_rg, y_test))
+            print("Demodulation error (L2 norm):", np.linalg.norm(x_rg - y_test))
             # OFDM demodulation and cyclic prefix removal
             y = demodulator(y_time)
+            y = y_test
             #y: [64, 1, 1, 14, 76]
         return y
     
@@ -3455,6 +3559,8 @@ class Transmitter():
 
 
 if __name__ == '__main__':
+
+    #testOFDMModulatorDemodulator()
     scenario='O1_60'
     dataset_folder='data' #r'D:\Dataset\CommunicationDataset\O1_60'
     #dataset_folder=r'D:\Dataset\CommunicationDataset\O1_60'
