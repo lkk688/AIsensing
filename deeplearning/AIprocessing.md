@@ -119,6 +119,7 @@ h_b=h_b.numpy()
 The plot of the channel impulse response is shown here (max 10 paths)
 ![Channel Impulse Response](../imgs/deepmimo_chimpulse.png)
 
+## Get CIR from Other Channels
 The $h_b$, $tau_b$ generated is Channel Impulse Response (CIR), $h_b$'s shape meaning is `complex [batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]`, $tau_b$'s shape `float [batch, num_rx, num_tx, num_paths]`. We can also use simulation to generate CIR based on assumptions of Gaussian distributed i.i.d. path coefficients and uniformly distributed i.i.d. path delays:
 ```bash
 # Random path coefficients
@@ -130,7 +131,7 @@ tau = np.random.uniform(size=[dataset_size, num_rx, num_tx, num_paths])
 If using CIR dataset, the `channel_model` will also generate $h$ and $tau$:
 ```bash
 batch_size = 64 # The batch_size cannot be changed after the creation of the channel model
-channel_model = sn.channel.CIRDataset(generator,
+channel_model = channel.CIRDataset(generator,
                                       batch_size,
                                       num_rx,
                                       num_rx_ant,
@@ -146,9 +147,10 @@ a, tau = cdl(batch_size=32, num_time_steps=rg.num_ofdm_symbols, sampling_frequen
 ```
 The path gains a have shape `[batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]` and the delays tau have shape `[batch_size, num_rx, num_tx, num_paths]`. The delays are assumed to be static within the time-window of interest. Only the complex path gains change over time. 
 
-If we want to use the continuous-time channel impulse response to simulate OFDM transmissions under ideal conditions, i.e., no inter-symbol interference, inter-carrier interference, etc., we need to convert it to the frequency domain. For the simulation of communication system based on OFDM, we can use the channel model to generate channel frequency responses $h_{freq}$.
+### channel frequency responses (frequency-domain)
+If we want to use the continuous-time channel impulse response to simulate OFDM transmissions under ideal conditions, i.e., no inter-symbol interference, inter-carrier interference, etc., we need to convert it to the frequency domain. For the simulation of communication system based on OFDM, we can use the channel model to generate channel frequency responses $h_{freq}$. 
 ```bash
-ofdm_channel = sn.channel.GenerateOFDMChannel(channel_model, resource_grid)
+ofdm_channel = channel.GenerateOFDMChannel(channel_model, resource_grid)
 # Generate a batch of frequency responses
 # Shape: [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm_symbols, num_subcarriers]
 h_freq = ofdm_channel()
@@ -162,6 +164,26 @@ h_freq = cir_to_ofdm_channel(frequencies, a, tau, normalize=True)
 channel_freq = ApplyOFDMChannel(add_awgn=True)
 ```
 
+In the member function `def generateChannel(self, x_rg, no, channeltype='ofdm'):` of `class Transmitter` in `deepMIMO5.py`, it contains the `cir_to_ofdm_channel` function and generate the channel frequency responses
+```bash
+# Generate the OFDM channel response
+#computes the Fourier transform of the continuous-time channel impulse response at a set of `frequencies`, corresponding to the different subcarriers.
+#h: [64, 1, 1, 1, 16, 10, 1], tau: [64, 1, 1, 10] => (64, 1, 1, 1, 16, 1, 76) 
+h_freq = mygenerate_OFDMchannel(h_b, tau_b, self.fft_size, subcarrier_spacing=60000.0, dtype=np.complex64, normalize_channel=True)
+#h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, fft_size]
+# Generate the OFDM channel
+channel_freq = MyApplyOFDMChannel(add_awgn=True)
+#h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, fft_size]
+#(64, 1, 1, 1, 16, 1, 76)
+y = channel_freq([x_rg, h_freq, no]) #h_freq is array
+#Channel outputs y : [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], complex    
+#print(y.shape) #[64, 1, 1, 14, 76] dim (3,4 removed)
+```
+
+The figure of the channel frequency response is shown here:
+![Channel Frequency Response](../imgs/ofdmchannelfreq.png)
+
+### discrete-time impulse response (time-domain)
 In the same way as we have created the frequency channel impulse response from the continuous-time response, we can use the latter to compute a discrete-time impulse response. This can then be used to model the channel in the time-domain through discrete convolution with an input signal. Time-domain channel modeling is necessary whenever we want to deviate from the perfect OFDM scenario, e.g., OFDM without cyclic prefix, inter-subcarrier interference due to carrier-frequency offsets, phase noise, or very high Doppler spread scenarios, as well as other single or multicarrier waveforms (OTFS, FBMC, UFMC, etc).
 
 A discrete-time impulse response can be obtained with the help of the function cir_to_time_channel that requires a bandwidth parameter. This function first applies a perfect low-pass filter of the provided bandwith to the continuous-time channel impulse response and then samples the filtered response at the Nyquist rate. The resulting discrete-time impulse response is then truncated to finite length, depending on the delay spread. l_min and l_max denote truncation boundaries and the resulting channel has l_tot=l_max-l_min+1 filter taps. A detailed mathematical description of this process is provided in the API documentation of the channel models. You can freely chose both parameters if you do not want to rely on the default values.
@@ -177,6 +199,18 @@ h_time = cir_to_time_channel(rg.bandwidth, a, tau, l_min=l_min, l_max=l_max, nor
 channel_time = ApplyTimeChannel(rg.num_time_samples, l_tot=l_tot, add_awgn=True)
 ```
 
+In the member function `def generateChannel(self, x_rg, no, channeltype='ofdm'):` of `class Transmitter` in `deepMIMO5.py`, it contains the `cir_to_time_channel` function and generate the discrete-time channel impulse reponse
+```bash
+h_time = cir_to_time_channel(bandwidth, h_b, tau_b, l_min=l_min, l_max=l_max, normalize=True) 
+#h_time: [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, l_max - l_min + 1] complex[64, 1, 1, 1, 16, 1, 27]
+channel_time = MyApplyTimeChannel(self.RESOURCE_GRID.num_time_samples, l_tot=l_tot, add_awgn=False)
+y_time = channel_time([x_time, h_time]) #(64, 1, 1, 1090) complex
+```
+The plot of the discrete-time impulse reponse is shown:
+
+![Discretetime CIR](../imgs/ofdm_discretetimeCIR.png)
+
+## OFDM Processing:  `StreamManagement` and `ResourceGrid`
 
 These DeepMIMO related code is in `class Transmitter():`, and the initialization is in `init` function side. In addition to these DeepMIMO related code, `init` function also contains the MIMO related code `StreamManagement` and `MyResourceGrid`
 ```bash
@@ -189,6 +223,7 @@ self.STREAM_MANAGEMENT = StreamManagement(RX_TX_ASSOCIATION, num_streams_per_tx)
 If no `Guard` is added, the resource grid is shown here with `RESOURCE_GRID.num_data_symbols=14(OFDM symbol)*76(subcarrier) array=1064` as the grid size and all 1064 grids are data.
 ![Resource Grid](../imgs/deepmimo_resourcegrid.png)
 
+
 Codeword length is `1064*(num_bits_per_symbol = 4)=4256`, Number of information bits per codeword is also `k=4256` if LDPC is not used.
 ```bash
 b = binary_source([self.batch_size, 1, self.num_streams_per_tx, self.k]) #if empty [64,1,1,4256] [batch_size, num_tx, num_streams_per_tx, num_databits]
@@ -199,6 +234,12 @@ After `mapper`, the bits information (4256bits) has been converted to `[64,1,1,1
 x_rg = self.rg_mapper(x) ##array[64,1,1,14,76] 14*76=1064
 #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76]
 ```
+
+If adding `Guard`, the resource grid shown here with `RESOURCE_GRID.num_data_symbols=14(OFDM symbol)*76(subcarrier) array=1064` as the grid size.
+![Resource Grid](../imgs/ofdmresourcegrid.png)
+
+The pilot pattern is shown here and 1064 grids contains the data, DC and pilot. `RESOURCE_GRID.num_data_symbols=768` instead of 1024. 
+![PilotDataPattern](../imgs/ofdmdatapilot.png)
 
 
 If chose the time-domain channel, i.e., `channeltype=="time"`, ResourceGrid bandwidth is `bandwidth= self.fft_size(76)*self.subcarrier_spacing=4560000`. `l_min, l_max = time_lag_discrete_time_channel(bandwidth) #-6, 20` computes the smallest and largest time-lag for the descrete complex baseband channel. The smallest time-lag returned is always -6. This value was deemed small enough for all models. The largest time-lag is computed from the `bandwidth` and `maximum_delay_spread` as follows: $ L_{\text{max}} = \lceil W \tau_{\text{max}} \rceil + 6 $, where: $L_{\text{max}}$ represents the largest time-lag, $W$ corresponds to the bandwidth, $\tau_{\text{max}}$ is the maximum delay spread. The default value for `maximum_delay_spread` is 3 microseconds (3us). This value was found to be large enough to include most significant paths with all channel models, assuming a nominal delay spread of 100 nanoseconds.

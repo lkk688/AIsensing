@@ -2166,53 +2166,6 @@ def hard_decisions(llr, datatype=np.int32):
     #return tf.cast(tf.math.greater(llr, zero), dtype=llr.dtype)
     return np.greater(llr, 0.0).astype(datatype)
     #return tf.cast(tf.math.greater(llr, zero), dtype=datatype)
-
-#Apply single-tap channel frequency responses to channel inputs.
-#channel_freq = ApplyOFDMChannel(add_awgn=True)
-
-def ApplyOFDMChannel(symbol_resourcegrid, channel_frequency, noiselevel=0, add_awgn=True):
-    r"""
-    For each OFDM symbol :math:`s` and subcarrier :math:`n`, the single-tap channel
-        is applied as follows:
-
-        .. math::
-            y_{s,n} = \widehat{h}_{s, n} x_{s,n} + w_{s,n}
-
-        where :math:`y_{s,n}` is the channel output computed by this layer,
-        :math:`\widehat{h}_{s, n}` the frequency channel response (``h_freq``),
-        :math:`x_{s,n}` the channel input ``x``, and :math:`w_{s,n}` the additive noise.
-
-        For multiple-input multiple-output (MIMO) links, the channel output is computed for each antenna of each receiver and 
-        by summing over all the antennas of all transmitters.
-    """
-    #input: (x, h_freq, no) or (x, h_freq):
-    #inputs x :  [batch size, num_tx, num_tx_ant, num_ofdm_symbols, fft_size], complex
-    #h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm_symbols, num_subcarriers], complex Channel frequency responses
-    #h_freq: (64, 1, 1, 1, 16, 1, 76)
-    x_rg = symbol_resourcegrid
-    h_freq = channel_frequency
-    no = noiselevel
-
-    #output:
-    #y = channel_freq([x_rg, h_freq, no]) #h_freq is array
-    #Channel outputs y : [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], complex    
-    #print(y.shape) #[64, 1, 1, 14, 76] dim (3,4 removed)
-
-    # Apply the channel response .ndim
-    x = myexpand_to_rank(x_rg, h_freq.ndim, axis=1) #array[64, 1(added), 1(added), 1, 1, 14, 76]
-    #y = tf.reduce_sum(tf.reduce_sum(h_freq*x, axis=4), axis=3) #[64, 1, 1, 14, 76] (16 removed)
-    hx = np.sum(h_freq*x, axis=4) #array(64, 1, 1, 1, 14, 76)
-    y = np.sum(hx, axis=3) #array(64, 1, 1, 14, 76) dim (3,4 removed)
-    #[batch_size, num_rx, num_rx_ant, num_ofdm_symbols,fft_size]
-
-    if add_awgn:
-        noise=complex_normal(y.shape, var=1.0)
-        print(noise.dtype)
-        noise = noise.astype(y.dtype)
-        noise *= np.sqrt(no)
-        y=y+noise
-    
-    return y ##[batch_size, num_rx, num_rx_ant, num_ofdm_symbols,fft_size] (64, 1, 1, 14, 76)
         
 def calculate_BER(bits, bits_est):
     errors = (bits != bits_est).sum()
@@ -2498,6 +2451,134 @@ from ldpc.encoding import LDPC5GEncoder
 from ldpc.decoding import LDPC5GDecoder
 
 import scipy
+
+#Apply single-tap channel frequency responses to channel inputs.
+#channel_freq = ApplyOFDMChannel(add_awgn=True)
+
+class MyApplyOFDMChannel:
+    r"""
+    For each OFDM symbol :math:`s` and subcarrier :math:`n`, the single-tap channel
+        is applied as follows:
+
+        .. math::
+            y_{s,n} = \widehat{h}_{s, n} x_{s,n} + w_{s,n}
+
+        where :math:`y_{s,n}` is the channel output computed by this layer,
+        :math:`\widehat{h}_{s, n}` the frequency channel response (``h_freq``),
+        :math:`x_{s,n}` the channel input ``x``, and :math:`w_{s,n}` the additive noise.
+
+        For multiple-input multiple-output (MIMO) links, the channel output is computed for each antenna of each receiver and 
+        by summing over all the antennas of all transmitters.
+    
+        Input
+        -----
+
+        (x, h_freq, no) or (x, h_freq):
+            Tuple:
+
+        x :  [batch size, num_tx, num_tx_ant, num_ofdm_symbols, fft_size], tf.complex
+            Channel inputs
+
+        h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm_symbols, fft_size], tf.complex
+            Channel frequency responses
+
+        no : Scalar or Tensor, tf.float
+            Scalar or tensor whose shape can be broadcast to the shape of the
+            channel outputs:
+            [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size].
+            Only required if ``add_awgn`` is set to `True`.
+            The noise power ``no`` is per complex dimension. If ``no`` is a
+            scalar, noise of the same variance will be added to the outputs.
+            If ``no`` is a tensor, it must have a shape that can be broadcast to
+            the shape of the channel outputs. This allows, e.g., adding noise of
+            different variance to each example in a batch. If ``no`` has a lower
+            rank than the channel outputs, then ``no`` will be broadcast to the
+            shape of the channel outputs by adding dummy dimensions after the
+            last axis.
+
+        Output
+        -------
+        y : [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], tf.complex
+            Channel outputs
+            
+    """
+    def __init__(self, add_awgn=True) -> None:
+        self._add_awgn = add_awgn
+
+    def __call__(self, inputs):
+        #input: (x, h_freq, no) or (x, h_freq):
+        #inputs x :  [batch size, num_tx, num_tx_ant, num_ofdm_symbols, fft_size], complex
+        #h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm_symbols, num_subcarriers], complex Channel frequency responses
+        #h_freq: (64, 1, 1, 1, 16, 1, 76)
+        if self._add_awgn:
+            x, h_freq, no = inputs #x: [64, 1, 16, 14, 76], h_freq: [64, 1, 1, 1, 16, 1, 76]
+        else:
+            x, h_freq = inputs 
+        
+        # Apply the channel response .ndim
+        x = myexpand_to_rank(x, h_freq.ndim, axis=1) #array[64, 1(added), 1(added), 1, 1, 14, 76]
+        #y = tf.reduce_sum(tf.reduce_sum(h_freq*x, axis=4), axis=3) #[64, 1, 1, 14, 76] (16 removed)
+        hx = np.sum(h_freq*x, axis=4) #array(64, 1, 1, 1, 14, 76)
+        y = np.sum(hx, axis=3) #array(64, 1, 1, 14, 76) dim (3,4 removed)
+        #[batch_size, num_rx, num_rx_ant, num_ofdm_symbols,fft_size]
+
+        if self._add_awgn:
+            noise=complex_normal(y.shape, var=1.0)
+            noise = noise.astype(y.dtype)
+            noise *= np.sqrt(no)
+            y=y+noise
+        
+        return y ##[batch_size, num_rx, num_rx_ant, num_ofdm_symbols,fft_size] (64, 1, 1, 14, 76)
+#output:
+    #y = channel_freq([x_rg, h_freq, no]) #h_freq is array
+    #Channel outputs y : [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], complex    
+    #print(y.shape) #[64, 1, 1, 14, 76] dim (3,4 removed)
+
+
+# def ApplyOFDMChannel(symbol_resourcegrid, channel_frequency, noiselevel=0, add_awgn=True):
+#     r"""
+#     For each OFDM symbol :math:`s` and subcarrier :math:`n`, the single-tap channel
+#         is applied as follows:
+
+#         .. math::
+#             y_{s,n} = \widehat{h}_{s, n} x_{s,n} + w_{s,n}
+
+#         where :math:`y_{s,n}` is the channel output computed by this layer,
+#         :math:`\widehat{h}_{s, n}` the frequency channel response (``h_freq``),
+#         :math:`x_{s,n}` the channel input ``x``, and :math:`w_{s,n}` the additive noise.
+
+#         For multiple-input multiple-output (MIMO) links, the channel output is computed for each antenna of each receiver and 
+#         by summing over all the antennas of all transmitters.
+#     """
+#     #input: (x, h_freq, no) or (x, h_freq):
+#     #inputs x :  [batch size, num_tx, num_tx_ant, num_ofdm_symbols, fft_size], complex
+#     #h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm_symbols, num_subcarriers], complex Channel frequency responses
+#     #h_freq: (64, 1, 1, 1, 16, 1, 76)
+#     x_rg = symbol_resourcegrid
+#     h_freq = channel_frequency
+#     no = noiselevel
+
+#     #output:
+#     #y = channel_freq([x_rg, h_freq, no]) #h_freq is array
+#     #Channel outputs y : [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], complex    
+#     #print(y.shape) #[64, 1, 1, 14, 76] dim (3,4 removed)
+
+#     # Apply the channel response .ndim
+#     x = myexpand_to_rank(x_rg, h_freq.ndim, axis=1) #array[64, 1(added), 1(added), 1, 1, 14, 76]
+#     #y = tf.reduce_sum(tf.reduce_sum(h_freq*x, axis=4), axis=3) #[64, 1, 1, 14, 76] (16 removed)
+#     hx = np.sum(h_freq*x, axis=4) #array(64, 1, 1, 1, 14, 76)
+#     y = np.sum(hx, axis=3) #array(64, 1, 1, 14, 76) dim (3,4 removed)
+#     #[batch_size, num_rx, num_rx_ant, num_ofdm_symbols,fft_size]
+
+#     if add_awgn:
+#         noise=complex_normal(y.shape, var=1.0)
+#         print(noise.dtype)
+#         noise = noise.astype(y.dtype)
+#         noise *= np.sqrt(no)
+#         y=y+noise
+    
+#     return y ##[batch_size, num_rx, num_rx_ant, num_ofdm_symbols,fft_size] (64, 1, 1, 14, 76)
+
 def time_lag_discrete_time_channel(bandwidth, maximum_delay_spread=3e-6):
     # pylint: disable=line-too-long
     r"""
@@ -2819,6 +2900,36 @@ def cir_to_time_channel(bandwidth, a, tau, l_min, l_max, normalize=False):
         hm = hm / c
 
     return hm #[64, 1, 1, 1, 16, 1, 27]
+
+class RemoveNulledSubcarriers:
+    r"""RemoveNulledSubcarriers(resource_grid)
+
+    Removes nulled guard and/or DC subcarriers from a resource grid.
+
+    Parameters
+    ----------
+    resource_grid : ResourceGrid
+        An instance of :class:`~sionna.ofdm.ResourceGrid`.
+
+    Input
+    -----
+    : [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size], complex64
+        Full resource grid.
+
+    Output
+    ------
+    : [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, num_effective_subcarriers], complex64
+        Resource grid without nulled subcarriers.
+    """
+    def __init__(self, resource_grid):
+        self._sc_ind = resource_grid.effective_subcarrier_ind
+        print("sc_ind shape:", self._sc_ind.shape) #(64,) [5,6,7,8...]
+
+    def __call__(self, inputs): #inputs (64, 1, 1, 1, 16, 1, 76)
+        #return tf.gather(inputs, self._sc_ind, axis=-1)
+        # Assuming 'inputs' is a NumPy array and '_sc_ind' is an integer or array of indices
+        result = np.take(inputs, self._sc_ind, axis=-1) #(64, 1, 1, 1, 16, 1, 64)
+        return result
 
 class OFDMModulator(): #Computes the frequency-domain representation of an OFDM waveform with cyclic prefix removal.
     def __init__(self, cyclic_prefix_length=0) -> None:
@@ -3181,7 +3292,14 @@ def testprocess():
     # Generate the OFDM channel
     #h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, fft_size]
     #(64, 1, 1, 1, 16, 1, 76)
-    y = ApplyOFDMChannel(symbol_resourcegrid=x_rg, channel_frequency=h_freq, noiselevel=no, add_awgn=False)
+    # Generate the OFDM channel
+    channel_freq = MyApplyOFDMChannel(add_awgn=True)
+    #h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, fft_size]
+    #(64, 1, 1, 1, 16, 1, 76)
+    y = channel_freq([x_rg, h_freq, no]) #h_freq is array
+    #Channel outputs y : [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], complex    
+    #print(y.shape) #[64, 1, 1, 14, 76] dim (3,4 removed)
+    #y = ApplyOFDMChannel(symbol_resourcegrid=x_rg, channel_frequency=h_freq, noiselevel=no, add_awgn=False)
     # y is the symbol received after the channel and noise
     #Channel outputs y : [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], complex    
     print(y.shape) #[64, 1, 1, 14, 76] dim (3,4 removed)
@@ -3399,9 +3517,9 @@ class Transmitter():
             #(64, 1, 1, 1, 16, 1, 76)
 
             if self.showfig:
-                #remove_nulled_scs = RemoveNulledSubcarriers(RESOURCE_GRID)
-                #h_perf = remove_nulled_scs(h_freq)[0,0,0,0,0,0] #get the last dimension: fft_size [76]
-                h_freq_plt = h_freq[0,0,0,0,0,0] #get the last dimension: fft_size [76]
+                remove_nulled_scs = RemoveNulledSubcarriers(self.RESOURCE_GRID)
+                h_freq_plt = remove_nulled_scs(h_freq)[0,0,0,0,0,0] #get the last dimension: fft_size [76]
+                #h_freq_plt = h_freq[0,0,0,0,0,0] #get the last dimension: fft_size [76]
                 plt.figure()
                 plt.plot(np.real(h_freq_plt))
                 plt.plot(np.imag(h_freq_plt))
@@ -3411,9 +3529,14 @@ class Transmitter():
                 plt.title("Comparison of channel frequency responses");
 
             # Generate the OFDM channel
+            channel_freq = MyApplyOFDMChannel(add_awgn=True)
             #h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, fft_size]
             #(64, 1, 1, 1, 16, 1, 76)
-            y = ApplyOFDMChannel(symbol_resourcegrid=x_rg, channel_frequency=h_freq, noiselevel=no, add_awgn=True)
+            y = channel_freq([x_rg, h_freq, no]) #h_freq is array
+            #Channel outputs y : [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], complex    
+            #print(y.shape) #[64, 1, 1, 14, 76] dim (3,4 removed)
+
+            #y = ApplyOFDMChannel(symbol_resourcegrid=x_rg, channel_frequency=h_freq, noiselevel=no, add_awgn=True)
             # y is the symbol received after the channel and noise
             #Channel outputs y : [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], complex    
         elif channeltype=="perfect":
@@ -3528,9 +3651,9 @@ class Transmitter():
             #lmmse_equ = LMMSEEqualizer(self.RESOURCE_GRID, self.STREAM_MANAGEMENT)
             lmmse_equ = MyLMMSEEqualizer(self.RESOURCE_GRID, self.STREAM_MANAGEMENT)
 
-            #Observed resource grid y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols,fft_size], tf.complex
+            #Observed resource grid y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols,fft_size], (64, 1, 1, 14, 76) complex
             #no : [batch_size, num_rx, num_rx_ant] 
-            h_hat, err_var = ls_est([y, no]) #(64, 1, 1, 1, 1, 14, 76), (1, 1, 1, 1, 1, 14, 76)
+            h_hat, err_var = ls_est([y, no]) #tf tensor (64, 1, 1, 1, 1, 14, 76), (1, 1, 1, 1, 1, 14, 76)
             #h_ls : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols,fft_size], tf.complex
             #Channel estimates accross the entire resource grid for all transmitters and streams
 
@@ -3564,7 +3687,7 @@ if __name__ == '__main__':
     scenario='O1_60'
     dataset_folder='data' #r'D:\Dataset\CommunicationDataset\O1_60'
     #dataset_folder=r'D:\Dataset\CommunicationDataset\O1_60'
-    ofdmtest = False
+    ofdmtest = True
     if ofdmtest is not True:
         transmit = Transmitter(scenario, dataset_folder, num_rx = 1, num_tx = 1, \
                     batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
