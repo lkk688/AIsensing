@@ -3506,6 +3506,7 @@ class Transmitter():
         #x_rg:[batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76]
 
         h_b, tau_b = self.get_htau_batch()
+        h_out = None
         #print(h_b.shape) #complex (64, 1, 1, 1, 16, 10, 1)[batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps] 
         #print(tau_b.shape) #float (64, 1, 1, 10)[batch, num_rx, num_tx, num_paths]
         if channeltype=="ofdm":
@@ -3516,9 +3517,10 @@ class Transmitter():
             #h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, fft_size]
             #(64, 1, 1, 1, 16, 1, 76)
 
+            remove_nulled_scs = RemoveNulledSubcarriers(self.RESOURCE_GRID)
+            h_out = remove_nulled_scs(h_freq) #(64, 1, 1, 1, 16, 1, 64)
             if self.showfig:
-                remove_nulled_scs = RemoveNulledSubcarriers(self.RESOURCE_GRID)
-                h_freq_plt = remove_nulled_scs(h_freq)[0,0,0,0,0,0] #get the last dimension: fft_size [76]
+                h_freq_plt = h_out[0,0,0,0,0,0] #get the last dimension: fft_size [76]
                 #h_freq_plt = h_freq[0,0,0,0,0,0] #get the last dimension: fft_size [76]
                 plt.figure()
                 plt.plot(np.real(h_freq_plt))
@@ -3555,6 +3557,7 @@ class Transmitter():
             # Compute the discrete-time channel impulse reponse
             h_time = cir_to_time_channel(bandwidth, h_b, tau_b, l_min=l_min, l_max=l_max, normalize=True) 
             #h_time: [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, l_max - l_min + 1] complex[64, 1, 1, 1, 16, 1, 27]
+            h_out = h_time
             if self.showfig:
                 plt.figure()
                 plt.title("Discrete-time channel impulse response")
@@ -3591,7 +3594,7 @@ class Transmitter():
             y = demodulator(y_time)
             y = y_test
             #y: [64, 1, 1, 14, 76]
-        return y
+        return y, h_out
     
     def get_htau_batch(self, returnformat='numpy'):
         h_b, tau_b = next(iter(self.data_loader)) #h_b: [64, 1, 1, 1, 16, 10, 1], tau_b=[64, 1, 1, 10]
@@ -3602,7 +3605,7 @@ class Transmitter():
             h_b=h_b.numpy()
         return h_b, tau_b
 
-    def __call__(self, b=None, ebno_db = 15.0, channeltype='ofdm'):
+    def __call__(self, b=None, ebno_db = 15.0, channeltype='ofdm', perfect_csi=True):
         # Transmitter
         if b is None:
             binary_source = BinarySource()
@@ -3624,7 +3627,7 @@ class Transmitter():
         # Convert it to a NumPy float
         no = np.float32(no) #0.0158
 
-        y = self.generateChannel(x_rg, no, channeltype=channeltype)
+        y, h_out = self.generateChannel(x_rg, no, channeltype=channeltype)
         # y is the symbol received after the channel and noise
         #Channel outputs y : [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], complex    
         print(y.shape) #[64, 1, 1, 14, 76] dim (3,4 removed)
@@ -3632,7 +3635,7 @@ class Transmitter():
         #print(y.imag)
 
         print(self.RESOURCE_GRID.pilot_pattern) #<__main__.EmptyPilotPattern object at 0x7f2659dfd9c0>
-        if self.pilot_pattern == "empty": #"kronecker", "empty"
+        if self.pilot_pattern == "empty" and perfect_csi == False: #"kronecker", "empty"
             #no channel estimation
             llr = self.mydemapper([y, no]) #[64, 1, 1, 14, 304]
             # Reshape the array by collapsing the last two dimensions
@@ -3643,20 +3646,27 @@ class Transmitter():
             b_perfect = hard_decisions(llr_perfect, np.int32) ##(64, 1, 1, 4256) 0,1 [64, 1, 1, 14, 304] 2128
             #BER=calculate_BER(b, b_perfect)
             #print("Perfect BER:", BER)
-        else: # channel estimation
-            print("Num of Pilots:", len(self.RESOURCE_GRID.pilot_pattern.pilots)) #1
-            # Receiver
-            #ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
-            ls_est = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
+        else: # channel estimation or perfect_csi
+            if perfect_csi == True:
+                # For perfect CSI, the receiver gets the channel frequency response as input
+                # However, the channel estimator only computes estimates on the non-nulled
+                # subcarriers. Therefore, we need to remove them here from `h_freq` (done inside the self.generateChannel).
+                # This step can be skipped if no subcarriers are nulled. 
+                h_hat, err_var = h_out, 0. #(64, 1, 1, 1, 16, 1, 64)
+            else: #perform channel estimation via pilots
+                print("Num of Pilots:", len(self.RESOURCE_GRID.pilot_pattern.pilots)) #1
+                # Receiver
+                #ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
+                ls_est = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
+
+                #Observed resource grid y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols,fft_size], (64, 1, 1, 14, 76) complex
+                #no : [batch_size, num_rx, num_rx_ant] 
+                h_hat, err_var = ls_est([y, no]) #tf tensor (64, 1, 1, 1, 1, 14, 64), (1, 1, 1, 1, 1, 14, 64)
+                #h_ls : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols,fft_size], tf.complex
+                #Channel estimates accross the entire resource grid for all transmitters and streams
+
             #lmmse_equ = LMMSEEqualizer(self.RESOURCE_GRID, self.STREAM_MANAGEMENT)
             lmmse_equ = MyLMMSEEqualizer(self.RESOURCE_GRID, self.STREAM_MANAGEMENT)
-
-            #Observed resource grid y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols,fft_size], (64, 1, 1, 14, 76) complex
-            #no : [batch_size, num_rx, num_rx_ant] 
-            h_hat, err_var = ls_est([y, no]) #tf tensor (64, 1, 1, 1, 1, 14, 76), (1, 1, 1, 1, 1, 14, 76)
-            #h_ls : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols,fft_size], tf.complex
-            #Channel estimates accross the entire resource grid for all transmitters and streams
-
             #input (y, h_hat, err_var, no)
             #Received OFDM resource grid after cyclic prefix removal and FFT y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], tf.complex
             #Channel estimates for all streams from all transmitters h_hat : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols, num_effective_subcarriers], tf.complex
@@ -3667,7 +3677,7 @@ class Transmitter():
             no_eff=no_eff.numpy() #(64, 1, 1, 912)
             no_eff=np.mean(no_eff)
 
-            llr_est = self.mydemapper([x_hat, no_eff]) #(64, 1, 1, 3648)
+            llr_est = self.mydemapper([x_hat, no_eff]) #(64, 1, 1, 3072)
             #output: [batch size, num_rx, num_rx_ant, n * num_bits_per_symbol]
 
         #llr_est #(64, 1, 1, 4256)
@@ -3700,7 +3710,8 @@ if __name__ == '__main__':
                     batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
                     USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=True) #"kronecker" "empty"
         #channeltype="perfect", "awgn", "ofdm", "time"
-        b_hat, BER = transmit(ebno_db = 15.0, channeltype='ofdm')
+        b_hat, BER = transmit(ebno_db = 15.0, channeltype='ofdm', perfect_csi=False)
+        b_hat, BER = transmit(ebno_db = 15.0, channeltype='ofdm', perfect_csi=True)
     print("Finished")
 
     

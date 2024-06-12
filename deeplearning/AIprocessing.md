@@ -238,7 +238,7 @@ x_rg = self.rg_mapper(x) ##array[64,1,1,14,76] 14*76=1064
 If adding `Guard`, the resource grid shown here with `RESOURCE_GRID.num_data_symbols=14(OFDM symbol)*76(subcarrier) array=1064` as the grid size.
 ![Resource Grid](../imgs/ofdmresourcegrid.png)
 
-The pilot pattern is shown here and 1064 grids contains the data, DC and pilot. `RESOURCE_GRID.num_data_symbols=768` instead of 1024. 
+The pilot pattern is shown here and 1064 grids contains the data, DC and pilot. `RESOURCE_GRID.num_data_symbols=768` instead of 1064. 
 ![PilotDataPattern](../imgs/ofdmdatapilot.png)
 
 

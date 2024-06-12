@@ -3566,7 +3566,7 @@ class MyOFDMEqualizer():
         # Remove nulled subcarriers from y (guards, dc). New shape:
         # [batch_size, num_rx, num_rx_ant, ...
         #  ..., num_ofdm_symbols, num_effective_subcarriers]
-        y_eff = self._removed_nulled_scs(y)
+        y_eff = self._removed_nulled_scs(y) #[64, 1, 1, 14, 64]
 
         ####################################################
         ### Prepare the observation y for MIMO detection ###
@@ -3596,18 +3596,18 @@ class MyOFDMEqualizer():
         # [num_rx, num_tx, num_streams_per_tx, batch_size, num_rx_ant, ,...
         #  ..., num_ofdm_symbols, num_effective_subcarriers]
         perm = [1, 3, 4, 0, 2, 5, 6]
-        h_dt = tf.transpose(h_hat, perm)
+        h_dt = tf.transpose(h_hat, perm) #h: (64, 1, 1, 1, 16, 1, 64) =>[1, 1, 16, 64, 1, 1, 64]
 
         # Flatten first tthree dimensions:
         # [num_rx*num_tx*num_streams_per_tx, batch_size, num_rx_ant, ...
         #  ..., num_ofdm_symbols, num_effective_subcarriers]
-        h_dt = flatten_dims(h_dt, 3, 0)
+        h_dt = flatten_dims(h_dt, 3, 0) #(16, 64, 1, 1, 64)
 
         # Gather desired and undesired channels
         ind_desired = self._stream_management.detection_desired_ind
         ind_undesired = self._stream_management.detection_undesired_ind
-        h_dt_desired = tf.gather(h_dt, ind_desired, axis=0)
-        h_dt_undesired = tf.gather(h_dt, ind_undesired, axis=0)
+        h_dt_desired = tf.gather(h_dt, ind_desired, axis=0) #(1, 64, 1, 1, 64)
+        h_dt_undesired = tf.gather(h_dt, ind_undesired, axis=0) #(0, 64, 1, 1, 64)
 
         # Split first dimension to separate RX and TX:
         # [num_rx, num_streams_per_rx, batch_size, num_rx_ant, ...
@@ -3615,17 +3615,17 @@ class MyOFDMEqualizer():
         h_dt_desired = split_dim(h_dt_desired,
                                  [self._stream_management.num_rx,
                                   self._stream_management.num_streams_per_rx],
-                                 0)
+                                 0) #(1, 1, 64, 1, 1, 64)
         h_dt_undesired = split_dim(h_dt_undesired,
-                                   [self._stream_management.num_rx, -1], 0)
+                                   [self._stream_management.num_rx, -1], 0) #(1, 0, 64, 1, 1, 64)
 
         # Permutate dims to
         # [batch_size, num_rx, num_ofdm_symbols, num_effective_subcarriers,..
         #  ..., num_rx_ant, num_streams_per_rx(num_Interfering_streams_per_rx)]
         perm = [2, 0, 4, 5, 3, 1]
-        h_dt_desired = tf.transpose(h_dt_desired, perm)
+        h_dt_desired = tf.transpose(h_dt_desired, perm) #(64, 1, 1, 64, 1, 1)
         h_dt_desired = tf.cast(h_dt_desired, self._dtype)
-        h_dt_undesired = tf.transpose(h_dt_undesired, perm)
+        h_dt_undesired = tf.transpose(h_dt_undesired, perm) #(64, 1, 1, 64, 1, 0)
 
         ##################################
         ### Prepare the noise variance ###
@@ -3639,7 +3639,7 @@ class MyOFDMEqualizer():
         no_dt = tf.broadcast_to(no_dt, tf.shape(y)[:3])
         no_dt = expand_to_rank(no_dt, tf.rank(y), -1)
         no_dt = tf.transpose(no_dt, [0,1,3,4,2])
-        no_dt = tf.cast(no_dt, self._dtype)
+        no_dt = tf.cast(no_dt, self._dtype) #(64, 1, 1, 1, 1) complex
 
         ##################################################
         ### Compute the interference covariance matrix ###
@@ -3648,7 +3648,7 @@ class MyOFDMEqualizer():
         s_inf = tf.matmul(h_dt_undesired, h_dt_undesired, adjoint_b=True)
 
         #Thermal noise
-        s_no = tf.linalg.diag(no_dt)
+        s_no = tf.linalg.diag(no_dt) #(64, 1, 1, 1, 1, 1)
 
         # Channel estimation errors
         # As we have only error variance information for each element,
@@ -3657,7 +3657,7 @@ class MyOFDMEqualizer():
         s_csi = tf.linalg.diag(tf.reduce_sum(err_var_dt, -1))
 
         # Final covariance matrix
-        s = s_inf + s_no + s_csi
+        s = s_inf + s_no + s_csi #(64, 1, 1, 64, 1, 1)
         s = tf.cast(s, self._dtype)
 
         ############################################################
@@ -3665,7 +3665,7 @@ class MyOFDMEqualizer():
         ############################################################
         # [batch_size, num_rx, num_ofdm_symbols, num_effective_subcarriers,...
         #  ..., num_stream_per_rx]
-        x_hat, no_eff = self._equalizer(y_dt, h_dt_desired, s)
+        x_hat, no_eff = self._equalizer(y_dt, h_dt_desired, s) #x_hat: (64, 1, 14, 64, 1)
 
         ################################################
         ### Extract data symbols for all detected TX ###
@@ -3703,7 +3703,7 @@ class MyOFDMEqualizer():
         no_eff = flatten_dims(no_eff, 2, 2)
 
         # Broadcast no_eff to the shape of x_hat
-        no_eff = tf.broadcast_to(no_eff, tf.shape(x_hat))
+        no_eff = tf.broadcast_to(no_eff, tf.shape(x_hat)) #??[1,1,64,64] vs. [1,1,896,64]
 
         # Gather data symbols
         # [num_tx, num_streams, num_data_symbols, batch_size]
