@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 plt.rcParams['font.size'] = 8.0
 from matplotlib import colors
 
+from tfmodules import MyLMMSEEqualizer, LMMSEEqualizer, SymbolLogits2LLRs
+
 #Ref: deeplearning\ofdmsim2.py, create simple OFDM signal
 class OFDMSymbol():
     #K: number of OFDM subcarriers
@@ -758,6 +760,7 @@ class Mapper:
             return x, int_rep
         else:
             return x
+
 
 class MyDemapper:
     r"""
@@ -2334,8 +2337,7 @@ class OFDMAMIMO():
         #receiver part
         #OFDM demodulator
         bandwidth = RESOURCE_GRID.bandwidth #4560000
-        self.SampleRate = RESOURCE_GRID.fft_size*RESOURCE_GRID.subcarrier_spacing # sample rate
-        self.RESOURCE_GRID = RESOURCE_GRID
+        self.SampleRate = RESOURCE_GRID.fft_size*RESOURCE_GRID.subcarrier_spacing # sample rate #4560000
 
         l_min, l_max = time_lag_discrete_time_channel(bandwidth) #-6, 20
         l_tot = l_max-l_min+1 #27
@@ -2364,9 +2366,9 @@ class OFDMAMIMO():
         #input: [...,num_ofdm_symbols,fft_size], complex A resource grid in the frequency domain.
         #Output: [...,num_ofdm_symbols*(fft_size+cyclic_prefix_length)], complex Time-domain OFDM signal.
     
-        return x_time
+        return x_time, x_rg
 
-    def receive(self, rx_samples, sinr):
+    def receive(self, rx_samples, sinr=10):
         # OFDM demodulation and cyclic prefix removal
         y = self.demodulator(rx_samples)
         #Input: [...,num_ofdm_symbols*(fft_size+cyclic_prefix_length)+n], complex, 
@@ -2376,13 +2378,14 @@ class OFDMAMIMO():
         #y: [64, 1, 1, 14, 76]
 
         #Compute the noise variance `No` for a given `Eb/No` in dB.
-        no = ebnodb2no(sinr, self.num_bits_per_symbol, self.coderate, self.RESOURCE_GRID) # SINR estimate
+        no = ebnodb2no(sinr, self.num_bits_per_symbol, self.coderate) # SINR estimate
         # h_hat, err_var = ls_est([y, no]) 
 
         # x_hat, no_eff = lmmse_equ([y, h_hat, err_var, no])
         # llr = self.demapper([x_hat, no_eff])
         # b_hat = decoder(llr)
         # ber = compute_ber(b, b_hat)
+        return y
 
 
 
@@ -2393,9 +2396,18 @@ if __name__ == '__main__':
     # print(ofdmsignal)
 
     #Test OFDMMIMO
-    transmit = OFDMAMIMO(num_rx = 1, num_tx = 1, \
+    myofdm = OFDMAMIMO(num_rx = 1, num_tx = 1, \
                 batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
                 USE_LDPC = False, pilot_pattern = "empty", guards=False, showfig=True) #"kronecker"
     #channeltype="perfect", "awgn", "ofdm", "time"
-    x_rg = transmit(b=None)##array[64,1,1,14,76] 14*76=1064
+    x_time, x_rg = myofdm.transmit(b=None)##array[64,1,1,14,76] 14*76=1064
     #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76]
+
+    y= myofdm.receive(x_time)
+
+    differences = np.abs(x_rg - y)
+    threshold=1e-7
+    num_differences = np.sum(differences > threshold)
+    print("Number of differences:", num_differences)
+    print(np.allclose(x_rg, y))
+    print("Demodulation error (L2 norm):", np.linalg.norm(x_rg - y))
