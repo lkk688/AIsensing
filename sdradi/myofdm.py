@@ -2403,12 +2403,25 @@ if __name__ == '__main__':
     # print(ofdmsignal)
 
     #Test OFDMMIMO
+    showfig = True
     myofdm = OFDMAMIMO(num_rx = 1, num_tx = 1, \
                 batch_size =1, fft_size = 128, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
-                USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=True) #pilot_pattern= "kronecker" "empty"
+                USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=showfig) #pilot_pattern= "kronecker" "empty"
     #channeltype="perfect", "awgn", "ofdm", "time"
     x_time, x_rg = myofdm.transmit(b=None)##array[64,1,1,14,76] 14*76=1064
-    #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76]
+    #output: complex Time-domain OFDM signal [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols*(fft_size+cyclic_prefix_length)]
+    if showfig:
+        xtime_plt = x_time[0,0,0] #get the last dimension: 1876
+        #h_freq_plt = h_freq[0,0,0,0,0,0] #get the last dimension
+        plt.figure()
+        #plt.plot(xtime_plt)
+        plt.plot(np.real(xtime_plt))
+        plt.plot(np.imag(xtime_plt))
+        plt.xlabel("Time")
+        plt.ylabel("OFDM Signal")
+        plt.legend(["Ideal (real part)", "Ideal (imaginary part)"]);
+        plt.title("Time domain OFDM Signal");
+        plt.pause(1)
 
     y= myofdm.receive(x_time)
 
