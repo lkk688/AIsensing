@@ -452,6 +452,34 @@ def complex_normal(shape, var=1.0):
 
     return x
 
+def ebnodb2no(ebno_db, num_bits_per_symbol, coderate):
+    r"""Compute the noise variance `No` for a given `Eb/No` in dB.
+    Input
+    -----
+    ebno_db : float
+        The `Eb/No` value in dB.
+
+    num_bits_per_symbol : int
+        The number of bits per symbol.
+
+    coderate : float
+        The coderate used.
+
+    resource_grid : ResourceGrid
+        An (optional) instance for OFDM transmissions.
+
+    Output
+    ------
+    : float
+        The value of :math:`N_o` in linear scale.
+    """
+    #ebno = tf.math.pow(tf.cast(10., dtype), ebno_db/10.)
+    ebno = np.power(10, ebno_db/10.0)
+    energy_per_symbol = 1
+    tmp= (ebno * coderate * float(num_bits_per_symbol)) / float(energy_per_symbol)
+    n0 = 1/tmp
+    return n0
+
 def pam_gray(b):
     # pylint: disable=line-too-long
     r"""Maps a vector of bits to a PAM constellation points with Gray labeling.
@@ -730,6 +758,217 @@ class Mapper:
             return x, int_rep
         else:
             return x
+
+class MyDemapper:
+    r"""
+    Demapper(demapping_method, constellation_type=None, num_bits_per_symbol=None, constellation=None, hard_out=False, with_prior=False, dtype=tf.complex64, **kwargs)
+
+    Computes log-likelihood ratios (LLRs) or hard-decisions on bits
+    for a tensor of received symbols.
+    If the flag ``with_prior`` is set, prior knowledge on the bits is assumed to be available.
+
+    This class defines a layer implementing different demapping
+    functions. All demapping functions are fully differentiable when soft-decisions
+    are computed.
+
+    Parameters
+    ----------
+    demapping_method : One of ["app", "maxlog"], str
+        The demapping method used.
+
+    constellation_type : One of ["qam", "pam", "custom"], str
+        For "custom", an instance of :class:`~sionna.mapping.Constellation`
+        must be provided.
+
+    num_bits_per_symbol : int
+        The number of bits per constellation symbol, e.g., 4 for QAM16.
+        Only required for ``constellation_type`` in ["qam", "pam"].
+
+    constellation : Constellation
+        An instance of :class:`~sionna.mapping.Constellation` or `None`.
+        In the latter case, ``constellation_type``
+        and ``num_bits_per_symbol`` must be provided.
+
+    hard_out : bool
+        If `True`, the demapper provides hard-decided bits instead of soft-values.
+        Defaults to `False`.
+
+    with_prior : bool
+        If `True`, it is assumed that prior knowledge on the bits is available.
+        This prior information is given as LLRs as an additional input to the layer.
+        Defaults to `False`.
+
+    dtype : One of [tf.complex64, tf.complex128] tf.DType (dtype)
+        The dtype of `y`. Defaults to tf.complex64.
+        The output dtype is the corresponding real dtype (tf.float32 or tf.float64).
+
+    Input
+    -----
+    (y,no) or (y, prior, no) :
+        Tuple:
+
+    y : [...,n], tf.complex
+        The received symbols.
+
+    prior : [num_bits_per_symbol] or [...,num_bits_per_symbol], tf.float
+        Prior for every bit as LLRs.
+        It can be provided either as a tensor of shape `[num_bits_per_symbol]` for the
+        entire input batch, or as a tensor that is "broadcastable"
+        to `[..., n, num_bits_per_symbol]`.
+        Only required if the ``with_prior`` flag is set.
+
+    no : Scalar or [...,n], tf.float
+        The noise variance estimate. It can be provided either as scalar
+        for the entire input batch or as a tensor that is "broadcastable" to
+        ``y``.
+
+    Output
+    ------
+    : [...,n*num_bits_per_symbol], tf.float
+        LLRs or hard-decisions for every bit.
+
+    Note
+    ----
+    With the "app" demapping method, the LLR for the :math:`i\text{th}` bit
+    is computed according to
+
+    .. math::
+        LLR(i) = \ln\left(\frac{\Pr\left(b_i=1\lvert y,\mathbf{p}\right)}{\Pr\left(b_i=0\lvert y,\mathbf{p}\right)}\right) =\ln\left(\frac{
+                \sum_{c\in\mathcal{C}_{i,1}} \Pr\left(c\lvert\mathbf{p}\right)
+                \exp\left(-\frac{1}{N_o}\left|y-c\right|^2\right)
+                }{
+                \sum_{c\in\mathcal{C}_{i,0}} \Pr\left(c\lvert\mathbf{p}\right)
+                \exp\left(-\frac{1}{N_o}\left|y-c\right|^2\right)
+                }\right)
+
+    where :math:`\mathcal{C}_{i,1}` and :math:`\mathcal{C}_{i,0}` are the
+    sets of constellation points for which the :math:`i\text{th}` bit is
+    equal to 1 and 0, respectively. :math:`\mathbf{p} = \left[p_0,\dots,p_{K-1}\right]`
+    is the vector of LLRs that serves as prior knowledge on the :math:`K` bits that are mapped to
+    a constellation point and is set to :math:`\mathbf{0}` if no prior knowledge is assumed to be available,
+    and :math:`\Pr(c\lvert\mathbf{p})` is the prior probability on the constellation symbol :math:`c`:
+
+    .. math::
+        \Pr\left(c\lvert\mathbf{p}\right) = \prod_{k=0}^{K-1} \text{sigmoid}\left(p_k \ell(c)_k\right)
+
+    where :math:`\ell(c)_k` is the :math:`k^{th}` bit label of :math:`c`, where 0 is
+    replaced by -1.
+    The definition of the LLR has been
+    chosen such that it is equivalent with that of logits. This is
+    different from many textbooks in communications, where the LLR is
+    defined as :math:`LLR(i) = \ln\left(\frac{\Pr\left(b_i=0\lvert y\right)}{\Pr\left(b_i=1\lvert y\right)}\right)`.
+
+    With the "maxlog" demapping method, LLRs for the :math:`i\text{th}` bit
+    are approximated like
+
+    .. math::
+        \begin{align}
+            LLR(i) &\approx\ln\left(\frac{
+                \max_{c\in\mathcal{C}_{i,1}} \Pr\left(c\lvert\mathbf{p}\right)
+                    \exp\left(-\frac{1}{N_o}\left|y-c\right|^2\right)
+                }{
+                \max_{c\in\mathcal{C}_{i,0}} \Pr\left(c\lvert\mathbf{p}\right)
+                    \exp\left(-\frac{1}{N_o}\left|y-c\right|^2\right)
+                }\right)\\
+                &= \max_{c\in\mathcal{C}_{i,0}}
+                    \left(\ln\left(\Pr\left(c\lvert\mathbf{p}\right)\right)-\frac{|y-c|^2}{N_o}\right) -
+                 \max_{c\in\mathcal{C}_{i,1}}\left( \ln\left(\Pr\left(c\lvert\mathbf{p}\right)\right) - \frac{|y-c|^2}{N_o}\right)
+                .
+        \end{align}
+    """
+    def __init__(self,
+                 demapping_method,
+                 constellation_type=None,
+                 num_bits_per_symbol=None,
+                 hard_out=False,
+                 with_prior=False,
+                 #dtype=tf.complex64,
+                 #**kwargs
+                ):
+        self.points = CreateConstellation(constellation_type, num_bits_per_symbol) #(16,) complex
+        self.num_bits_per_symbol = num_bits_per_symbol #4
+        self.with_prior = with_prior #False
+        self.hard_out = hard_out #False
+        self._logits2llrs = SymbolLogits2LLRs(demapping_method,
+                                              num_bits_per_symbol,
+                                              hard_out,
+                                              with_prior)
+    
+    def demap(self, inputs):
+        
+        # Add noise to squared distances
+        #squared_dist += no
+        squared_dist += no #(64, 512, 4)
+        
+        # Compute log probabilities
+        #log_probs = -0.5 * tf.math.log(squared_dist)
+        log_probs = -0.5 * np.log(squared_dist) #(64, 512, 4)
+        
+        # Compute log-likelihood ratios
+        #llrs = log_probs - tf.reduce_logsumexp(log_probs, axis=-1, keepdims=True)
+        llrs = log_probs - np.logsumexp(log_probs, axis=-1, keepdims=True) #(64, 512, 4)
+        
+        # Demap to bits
+        #bits = tf.argmax(llrs, axis=-1)
+        bits = np.argmax(llrs, axis=-1) #(64, 512)
+        
+        # Return bits
+        return bits
+
+    def __call__(self, inputs):
+        #return self._logits2llrs(inputs)
+        if self.with_prior:
+            y, prior, no = inputs
+        else:
+            y, no = inputs #(64, 1, 1, 14, 76), [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size]
+        
+        # Reshape constellation points to [1,...1,num_points]
+        #points_shape = [1]*y.shape.rank + self.points.shape
+        points_shape = [1]*len(y.shape) +list(self.points.shape) #[1,1]+[4] = [1, 1, 4] : [1, 1, 1, 1, 1, 16]
+        #points = tf.reshape(self.constellation.points, points_shape)
+        points_reshape =np.reshape(self.points, points_shape) #(1, 1, 4) #(16,)=> (1, 1, 1, 1, 1, 16)
+
+        # Compute squared distances from y to all points
+        # shape [...,n,num_points]
+        #squared_dist = tf.pow(tf.abs(tf.expand_dims(y, axis=-1) - points_reshape), 2)
+        ynew=np.expand_dims(y, axis=-1) #(64, 512, 1): (64, 1, 1, 14, 76, 1(added))
+        #squared_dist=((ynew-points_reshape)**2) #(64, 512, 4)
+        dist = np.abs(ynew-points_reshape) #(64, 512, 4) float32: (64, 1, 1, 14, 76, 16) distance to all 16 points
+        squared_dist = dist **2
+        
+        #Convert no to numpy and cast to the same data type as squared_dist
+        #no=np.array(no, dtype=squared_dist.dtype)
+        #no=no.astype(squared_dist.dtype)
+        no=np.expand_dims(no, axis=-1)
+        # Compute exponents
+        exponents = -squared_dist/no #(64, 1, 1, 14, 76, 16)
+
+        if self.with_prior:
+            llr = self._logits2llrs([exponents, prior])
+        else:
+            #exponents = tf.convert_to_tensor(exponents) #move into the logits2llrs function
+            llr = self._logits2llrs(exponents) #(64, 512, 2): tensor 
+            #input: [...,n, num_points] => [...,n, num_bits_per_symbol] LLRs or hard-decisions for every bit.
+            #output [64, 1, 1, 14, 76, 4] [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size, bits]
+        
+        llr = llr.numpy() #convert tf to numpy
+        yshape_list = list(np.shape(y)) #[64, 1, 1, 14, 76] [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size]
+        part1= yshape_list[:-1] #[64, 1, 1, 14]
+        part2= yshape_list[-1]*self.num_bits_per_symbol #304 (76*4)
+        out_shape = np.concatenate([part1, [part2]], 0) #[ 64,   1,   1,  14, 304] 
+        # Reshape LLRs to [...,n*num_bits_per_symbol]
+        llr_reshaped = np.reshape(llr, out_shape) #[ 64,   1,   1,  14, 304] combined last two dimension
+        #[...,n*num_bits_per_symbol] [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size(n subcarrier) * num_bits_per_symbol]
+
+        # print(tf.shape(y)) #[64, 512]
+        # print(tf.shape(y)[:-1]) # [64]
+        # print(y.shape[-1]) #512
+        # out_shape = tf.concat([tf.shape(y)[:-1],
+        #                        [y.shape[-1] * \
+        #                         self.num_bits_per_symbol]], 0)
+        # llr_reshaped = tf.reshape(llr, out_shape) #(64, 1024)
+
+        return llr_reshaped
 
 class BinarySource:
     """BinarySource(dtype=float32, seed=None, **kwargs)
@@ -1702,13 +1941,226 @@ class MyResourceGridMapper:
 
         return rg
 
+def time_lag_discrete_time_channel(bandwidth, maximum_delay_spread=3e-6):
+    # pylint: disable=line-too-long
+    r"""
+    Compute the smallest and largest time-lag for the descrete complex baseband
+    channel, i.e., :math:`L_{\text{min}}` and :math:`L_{\text{max}}`.
+
+    The smallest time-lag (:math:`L_{\text{min}}`) returned is always -6, as this value
+    was found small enough for all models included in Sionna.
+
+    The largest time-lag (:math:`L_{\text{max}}`) is computed from the ``bandwidth``
+    and ``maximum_delay_spread`` as follows:
+
+    .. math::
+        L_{\text{max}} = \lceil W \tau_{\text{max}} \rceil + 6
+
+    where :math:`L_{\text{max}}` is the largest time-lag, :math:`W` the ``bandwidth``,
+    and :math:`\tau_{\text{max}}` the ``maximum_delay_spread``.
+
+    The default value for the ``maximum_delay_spread`` is 3us, which was found
+    to be large enough to include most significant paths with all channel models
+    included in Sionna assuming a nominal delay spread of 100ns.
+
+    Note
+    ----
+    The values of :math:`L_{\text{min}}` and :math:`L_{\text{max}}` computed
+    by this function are only recommended values.
+    :math:`L_{\text{min}}` and :math:`L_{\text{max}}` should be set according to
+    the considered channel model. For OFDM systems, one also needs to be careful
+    that the effective length of the complex baseband channel is not larger than
+    the cyclic prefix length.
+
+    Input
+    ------
+    bandwidth : float
+        Bandwith (:math:`W`) [Hz]
+
+    maximum_delay_spread : float
+        Maximum delay spread [s]. Defaults to 3us.
+
+    Output
+    -------
+    l_min : int
+        Smallest time-lag (:math:`L_{\text{min}}`) for the descrete complex baseband
+        channel. Set to -6, , as this value was found small enough for all models
+        included in Sionna.
+
+    l_max : int
+        Largest time-lag (:math:`L_{\text{max}}`) for the descrete complex baseband
+        channel
+    """
+    l_min = np.int32(-6)
+    l_max = np.int32(np.ceil(maximum_delay_spread * bandwidth) + 6)
+    return l_min, l_max #-6, 20
+
 class OFDMModulator(): #Computes the frequency-domain representation of an OFDM waveform with cyclic prefix removal.
+    """
+    OFDMModulator(cyclic_prefix_length)
+
+    Computes the time-domain representation of an OFDM resource grid
+    with (optional) cyclic prefix.
+
+    Parameters
+    ----------
+    cyclic_prefix_length : int
+        Integer indicating the length of the
+        cyclic prefix that it prepended to each OFDM symbol. It cannot
+        be longer than the FFT size.
+
+    Input
+    -----
+    : [...,num_ofdm_symbols,fft_size], complex
+        A resource grid in the frequency domain.
+
+    Output
+    ------
+    : [...,num_ofdm_symbols*(fft_size+cyclic_prefix_length)], complex
+        Time-domain OFDM signal.
+    """
+    def __init__(self, cyclic_prefix_length=0) -> None:
+        #(L_\text{min}) is the largest negative time lag of the discrete-time channel impulse response.
+        #self.fft_size = fft_size #int "`fft_size` must be positive."
+        #self.l_min = l_min #int "l_min must be nonpositive."
+        self.cyclic_prefix_length = cyclic_prefix_length #"`cyclic_prefix_length` must be nonnegative."
+
+    def __call__(self, inputs):
+        # Shift DC subcarrier to first position
+        inputs = np.fft.ifftshift(inputs, axes=-1) #(64, 1, 1, 14, 76)
+
+        # Compute IFFT along the last dimension
+        x = np.fft.ifft(inputs, axis=-1) #(64, 1, 1, 14, 76)
+
+        # Obtain cyclic prefix
+        last_dimension = np.shape(inputs)[-1] #76
+        cp = x[..., last_dimension-self.cyclic_prefix_length:] #(64, 1, 1, 14, 0)
+
+        # Prepend cyclic prefix
+        x = np.concatenate([cp, x], axis=-1) #(64, 1, 1, 14, 76)
+
+        # Serialize last two dimensions
+        x = x.reshape(x.shape[:-2] + (-1,))
+
+        return x #(64, 1, 1, 1064)
+
+def myexpand_to_rank(tensor, target_rank, axis=-1):
+    """Inserts as many axes to a tensor as needed to achieve a desired rank.
+
+    This operation inserts additional dimensions to a ``tensor`` starting at
+    ``axis``, so that so that the rank of the resulting tensor has rank
+    ``target_rank``. The dimension index follows Python indexing rules, i.e.,
+    zero-based, where a negative index is counted backward from the end.
+
+    Args:
+        tensor : A tensor.
+        target_rank (int) : The rank of the output tensor.
+            If ``target_rank`` is smaller than the rank of ``tensor``,
+            the function does nothing.
+        axis (int) : The dimension index at which to expand the
+               shape of ``tensor``. Given a ``tensor`` of `D` dimensions,
+               ``axis`` must be within the range `[-(D+1), D]` (inclusive).
+
+    Returns:
+        A tensor with the same data as ``tensor``, with
+        ``target_rank``- rank(``tensor``) additional dimensions inserted at the
+        index specified by ``axis``.
+        If ``target_rank`` <= rank(``tensor``), ``tensor`` is returned.
+    """
+    #num_dims = tf.maximum(target_rank - tf.rank(tensor), 0)
+    num_dims = np.maximum(target_rank - tensor.ndim, 0) #difference in rank, >0 7
+    #Adds multiple length-one dimensions to a tensor.
+    #It inserts ``num_dims`` dimensions of length one starting from the dimension ``axis``
+    #output = insert_dims(tensor, num_dims, axis)
+    rank = tensor.ndim #1
+    axis = axis if axis>=0 else rank+axis+1 #0
+    #shape = tf.shape(tensor)
+    shape = np.shape(tensor) #(76,)
+    new_shape = np.concatenate([shape[:axis],
+                           np.ones([num_dims], np.int32),
+                           shape[axis:]], 0) #(8,) array([ 1.,  1.,  1.,  1.,  1.,  1.,  1., 76.])
+    # new_shape = tf.concat([shape[:axis],
+    #                        tf.ones([num_dims], tf.int32),
+    #                        shape[axis:]], 0)
+    #output = tf.reshape(tensor, new_shape)
+    new_shape = new_shape.astype(np.int32)
+    output = np.reshape(tensor, new_shape) #(76,)
+
+    return output #(1, 1, 1, 1, 1, 1, 1, 76)
+
+class OFDMDemodulator():
+    r"""
+    OFDMDemodulator(fft_size, l_min, cyclic_prefix_length, **kwargs)
+
+    Computes the frequency-domain representation of an OFDM waveform
+    with cyclic prefix removal.
+
+    The demodulator assumes that the input sequence is generated by the
+    :class:`~sionna.channel.TimeChannel`. For a single pair of antennas,
+    the received signal sequence is given as:
+
+    .. math::
+
+        y_b = \sum_{\ell =L_\text{min}}^{L_\text{max}} \bar{h}_\ell x_{b-\ell} + w_b, \quad b \in[L_\text{min}, N_B+L_\text{max}-1]
+
+    where :math:`\bar{h}_\ell` are the discrete-time channel taps,
+    :math:`x_{b}` is the the transmitted signal,
+    and :math:`w_\ell` Gaussian noise.
+
+    Starting from the first symbol, the demodulator cuts the input
+    sequence into pieces of size ``cyclic_prefix_length + fft_size``,
+    and throws away any trailing symbols. For each piece, the cyclic
+    prefix is removed and the ``fft_size``-point discrete Fourier
+    transform is computed.
+
+    Since the input sequence starts at time :math:`L_\text{min}`,
+    the FFT-window has a timing offset of :math:`L_\text{min}` symbols,
+    which leads to a subcarrier-dependent phase shift of
+    :math:`e^{\frac{j2\pi k L_\text{min}}{N}}`, where :math:`k`
+    is the subcarrier index, :math:`N` is the FFT size,
+    and :math:`L_\text{min} \le 0` is the largest negative time lag of
+    the discrete-time channel impulse response. This phase shift
+    is removed in this layer, by explicitly multiplying
+    each subcarrier by  :math:`e^{\frac{-j2\pi k L_\text{min}}{N}}`.
+    This is a very important step to enable channel estimation with
+    sparse pilot patterns that needs to interpolate the channel frequency
+    response accross subcarriers. It also ensures that the
+    channel frequency response `seen` by the time-domain channel
+    is close to the :class:`~sionna.channel.OFDMChannel`.
+
+    Parameters
+    ----------
+    fft_size : int
+        FFT size (, i.e., the number of subcarriers).
+
+    l_min : int
+        The largest negative time lag of the discrete-time channel
+        impulse response. It should be the same value as that used by the
+        `cir_to_time_channel` function.
+
+    cyclic_prefix_length : int
+        Integer indicating the length of the cyclic prefix that
+        is prepended to each OFDM symbol.
+
+    Input
+    -----
+    :[...,num_ofdm_symbols*(fft_size+cyclic_prefix_length)+n], tf.complex
+        Tensor containing the time-domain signal along the last dimension.
+        `n` is a nonnegative integer.
+
+    Output
+    ------
+    :[...,num_ofdm_symbols,fft_size], tf.complex
+        Tensor containing the OFDM resource grid along the last
+        two dimension.
+    """
     def __init__(self, fft_size, l_min, cyclic_prefix_length=0) -> None:
         #(L_\text{min}) is the largest negative time lag of the discrete-time channel impulse response.
         self.fft_size = fft_size #int "`fft_size` must be positive."
         self.l_min = l_min #int "l_min must be nonpositive."
-        self.cyclic_prefix_length = cyclic_prefix_length #"`cyclic_prefix_length` must be nonnegative."
-
+        self.cyclic_prefix_length = cyclic_prefix_length #"`cyclic_prefix_length` must be nonnegative." 
+        self.compute_phase_compensation()      
+    
     #The code calculates a phase compensation factor for an OFDM (Orthogonal Frequency Division Multiplexing) system.
     #It computes the phase shift needed to remove the timing offset introduced by the cyclic prefix in the OFDM signal.
     #The phase compensation factor is stored in self._phase_compensation.
@@ -1719,7 +2171,8 @@ class OFDMModulator(): #Computes the frequency-domain representation of an OFDM 
         fft_size = self.fft_size
         l_min = self.l_min
         k_values = np.arange(fft_size, dtype=np.float32) #0-63
-        tmp = -2 * np.pi * l_min / fft_size *  (64,)
+        #tmp = -2 * np.pi * l_min / fft_size *  (64,)
+        tmp = -2 * np.pi * self.l_min / self.fft_size * np.arange(self.fft_size, dtype=np.float32)
         self.phase_compensation = np.exp(1j * tmp)
 
     #Truncation and OFDM Symbol Calculation:
@@ -1730,38 +2183,49 @@ class OFDMModulator(): #Computes the frequency-domain representation of an OFDM 
     def calculate_num_ofdm_symbols(self, input_shape):
         fft_size = self.fft_size
         cyclic_prefix_length = self.cyclic_prefix_length
-        rest = np.mod(input_shape[-1], fft_size + cyclic_prefix_length)
-        self.num_ofdm_symbols = np.floor_divide(input_shape[-1] - rest, fft_size + cyclic_prefix_length)
+        self._rest = np.mod(input_shape[-1], fft_size + cyclic_prefix_length) #1090/(76+0)=26
+        self.num_ofdm_symbols = np.floor_divide(input_shape[-1] - self._rest, fft_size + cyclic_prefix_length) #14
+    
+    def __call__(self, inputs, phase_compensation=False): #(64, 1, 1, 1090)
+        """Demodulate OFDM waveform onto a resource grid.
 
-    def ofdm_modulator(self, inputs):
-        # Shift DC subcarrier to first position
-        inputs = np.fft.ifftshift(inputs, axes=-1)
+        Args:
+            inputs (complex64):
+                `[...,num_ofdm_symbols*(fft_size+cyclic_prefix_length)]`.
 
-        # Compute IFFT along the last dimension
-        x = np.fft.ifft(inputs, axis=-1)
+        Returns:
+            `complex64` : The demodulated inputs of shape
+            `[...,num_ofdm_symbols, fft_size]`.
+        """
+        input_shape = inputs.shape #(64, 1, 1, 1090)
+        self.calculate_num_ofdm_symbols(input_shape=input_shape)
 
-        # Obtain cyclic prefix
-        last_dimension = np.shape(inputs)[-1]
-        cp = x[..., last_dimension-self.cyclic_prefix_length:]
+        # Cut last samples that do not fit into an OFDM symbol
+        inputs = inputs if self._rest==0 else inputs[...,:-self._rest] #(64, 1, 1, 1064)
 
-        # Prepend cyclic prefix
-        x = np.concatenate([cp, x], axis=-1)
+        # Reshape input to separate OFDM symbols
+        new_shape = np.concatenate([np.shape(inputs)[:-1], [self.num_ofdm_symbols],
+                            [self.fft_size + self.cyclic_prefix_length]], axis=0) #[64,  1,  1, 14, 76]
+        x = np.reshape(inputs, new_shape) #(64, 1, 1, 14, 76)
 
-        # Serialize last two dimensions
-        x = x.reshape(x.shape[:-2] + (-1,))
+        # Remove cyclic prefix, cyclic_prefix_length=0
+        x = x[...,self.cyclic_prefix_length:] #(64, 1, 1, 14, 76)
 
-        return x
+        # Compute FFT
+        x = np.fft.fft(x)
 
-def testOFDMModulator(batch_size=64, num_elements=1024):
-    # Example usage:
-    input_shape = (batch_size, num_elements)  # Replace with actual input shape
-    fft_size = 64  # Replace with the desired FFT size
-    cyclic_prefix_length = 16  # Replace with the cyclic prefix length
-    l_min = -6  # Replace with the largest negative time lag
-    myofdm = OFDMModulator(fft_size=fft_size, l_min=l_min, cyclic_prefix_length=cyclic_prefix_length)
-    phase_compensation = myofdm.compute_phase_compensation()
-    num_ofdm_symbols = myofdm.calculate_num_ofdm_symbols(input_shape)
-    print(num_ofdm_symbols)
+        if phase_compensation:
+            # Apply phase shift compensation to all subcarriers
+            #rot = np.cast[self.phase_compensation, x.dtype]
+            rot = self.phase_compensation.astype(x.dtype) #(76,)
+            #rot = np.expand_dims(rot, axis=0)
+            rot = myexpand_to_rank(rot, x.ndim, axis=0)  #(1, 1, 1, 1, 76) rot = expand_to_rank(rot, tf.rank(x), 0)
+            x = x * rot #(64, 1, 1, 14, 76)
+
+        # Shift DC subcarrier to the middle
+        x = np.fft.fftshift(x, axes=-1)
+
+        return x #(64, 1, 1, 14, 76)
 
 class OFDMAMIMO():
     def __init__(self, num_rx = 1, num_tx = 1, \
@@ -1808,7 +2272,7 @@ class OFDMAMIMO():
         #pilot_pattern = "kronecker" #"kronecker", "empty"
         #fft_size = 76
         #num_ofdm_symbols=14
-        RESOURCE_GRID = MyResourceGrid( num_ofdm_symbols=num_ofdm_symbols,
+        RESOURCE_GRID = MyResourceGrid(num_ofdm_symbols=num_ofdm_symbols,
                                             fft_size=fft_size,
                                             subcarrier_spacing=60e3, #30e3,
                                             num_tx=num_tx, #1
@@ -1864,15 +2328,24 @@ class OFDMAMIMO():
         self.mapper = Mapper("qam", num_bits_per_symbol)
         self.rg_mapper = MyResourceGridMapper(RESOURCE_GRID) #ResourceGridMapper(RESOURCE_GRID)
 
+        # OFDM modulator 
+        self.modulator = OFDMModulator(RESOURCE_GRID.cyclic_prefix_length)
+
         #receiver part
-        #self.mydemapper = MyDemapper("app", constellation_type="qam", num_bits_per_symbol=num_bits_per_symbol)
-        # OFDM modulator and demodulator
-        #self.modulator = OFDMModulator(self.RESOURCE_GRID.cyclic_prefix_length)
-        #l_min = -6
-        #self.demodulator = OFDMDemodulator(self.RESOURCE_GRID.fft_size, l_min, self.RESOURCE_GRID.cyclic_prefix_length)
+        #OFDM demodulator
+        bandwidth = RESOURCE_GRID.bandwidth #4560000
+        self.SampleRate = RESOURCE_GRID.fft_size*RESOURCE_GRID.subcarrier_spacing # sample rate
+        self.RESOURCE_GRID = RESOURCE_GRID
+
+        l_min, l_max = time_lag_discrete_time_channel(bandwidth) #-6, 20
+        l_tot = l_max-l_min+1 #27
+        self.demodulator = OFDMDemodulator(self.RESOURCE_GRID.fft_size, l_min, self.RESOURCE_GRID.cyclic_prefix_length)
+
+        self.mydemapper = MyDemapper("app", constellation_type="qam", num_bits_per_symbol=num_bits_per_symbol)
 
 
-    def __call__(self, b=None):
+    #def __call__(self, b=None):
+    def transmit(self, b=None):
         # Transmitter
         if b is None:
             binary_source = BinarySource()
@@ -1887,8 +2360,30 @@ class OFDMAMIMO():
         #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76]
 
         # OFDM modulation with cyclic prefix insertion
-        x_time = self.modulator(x_rg) #output: [64, 1, 1, 1148]
+        x_time = self.modulator(x_rg) #output: [64, 1, 1, 1064]
+        #input: [...,num_ofdm_symbols,fft_size], complex A resource grid in the frequency domain.
+        #Output: [...,num_ofdm_symbols*(fft_size+cyclic_prefix_length)], complex Time-domain OFDM signal.
+    
         return x_time
+
+    def receive(self, rx_samples, sinr):
+        # OFDM demodulation and cyclic prefix removal
+        y = self.demodulator(rx_samples)
+        #Input: [...,num_ofdm_symbols*(fft_size+cyclic_prefix_length)+n], complex, 
+        #Tensor containing the time-domain signal along the last dimension. `n` is a nonnegative integer.
+        #Output:[...,num_ofdm_symbols,fft_size], complex
+        #Tensor containing the OFDM resource grid along the last two dimension.
+        #y: [64, 1, 1, 14, 76]
+
+        #Compute the noise variance `No` for a given `Eb/No` in dB.
+        no = ebnodb2no(sinr, self.num_bits_per_symbol, self.coderate, self.RESOURCE_GRID) # SINR estimate
+        # h_hat, err_var = ls_est([y, no]) 
+
+        # x_hat, no_eff = lmmse_equ([y, h_hat, err_var, no])
+        # llr = self.demapper([x_hat, no_eff])
+        # b_hat = decoder(llr)
+        # ber = compute_ber(b, b_hat)
+
 
 
 if __name__ == '__main__':
@@ -1896,8 +2391,6 @@ if __name__ == '__main__':
     # myofdm = OFDMSymbol()
     # ofdmsignal = myofdm.createOFDMsignal()
     # print(ofdmsignal)
-
-    testOFDMModulator()
 
     #Test OFDMMIMO
     transmit = OFDMAMIMO(num_rx = 1, num_tx = 1, \

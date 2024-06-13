@@ -2932,6 +2932,29 @@ class RemoveNulledSubcarriers:
         return result
 
 class OFDMModulator(): #Computes the frequency-domain representation of an OFDM waveform with cyclic prefix removal.
+    """
+    OFDMModulator(cyclic_prefix_length)
+
+    Computes the time-domain representation of an OFDM resource grid
+    with (optional) cyclic prefix.
+
+    Parameters
+    ----------
+    cyclic_prefix_length : int
+        Integer indicating the length of the
+        cyclic prefix that it prepended to each OFDM symbol. It cannot
+        be longer than the FFT size.
+
+    Input
+    -----
+    : [...,num_ofdm_symbols,fft_size], complex
+        A resource grid in the frequency domain.
+
+    Output
+    ------
+    : [...,num_ofdm_symbols*(fft_size+cyclic_prefix_length)], complex
+        Time-domain OFDM signal.
+    """
     def __init__(self, cyclic_prefix_length=0) -> None:
         #(L_\text{min}) is the largest negative time lag of the discrete-time channel impulse response.
         #self.fft_size = fft_size #int "`fft_size` must be positive."
