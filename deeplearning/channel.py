@@ -2210,7 +2210,7 @@ class MyLSChannelEstimator():
 
         # Interpolate channel estimates over the resource grid
         if self._interpolation_type is not None:
-            h_hat, err_var = self._interpol(h_hat, err_var)
+            h_hat, err_var = self._interpol(h_hat, err_var) #h_hat: (64, 1, 1, 1, 1, 128)=>(64, 1, 1, 1, 1, 14, 64)
             err_var = tf.maximum(err_var, tf.cast(0, err_var.dtype))
 
         return h_hat, err_var

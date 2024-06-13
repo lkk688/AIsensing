@@ -155,6 +155,8 @@ ofdm_channel = channel.GenerateOFDMChannel(channel_model, resource_grid)
 # Shape: [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm_symbols, num_subcarriers]
 h_freq = ofdm_channel()
 ```
+The format of `h_freq` is `[batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm_symbols, num_subcarriers]`, where `num_ofdm_symbols` refers to the number of individual OFDM symbols within a transmission burst. Each OFDM symbol contains multiple subcarriers (frequency bins). These symbols are grouped together to form a burst of data.
+
 This can also be done with the function `cir_to_ofdm_channel` that computes the Fourier transform of the continuous-time channel impulse response at a set of frequencies, corresponding to the different subcarriers. The frequencies can be obtained with the help of the convenience function subcarrier_frequencies.
 ```bash
 frequencies = subcarrier_frequencies(rg.fft_size, rg.subcarrier_spacing)

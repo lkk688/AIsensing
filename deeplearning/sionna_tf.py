@@ -3699,8 +3699,8 @@ class MyOFDMEqualizer():
         # Flatten resource grid dimensions
         # [num_tx, num_streams, num_ofdm_symbols*num_effective_subcarriers,...
         #  ..., batch_size]
-        x_hat = flatten_dims(x_hat, 2, 2)
-        no_eff = flatten_dims(no_eff, 2, 2)
+        x_hat = flatten_dims(x_hat, 2, 2) #(1, 1, 896, 64)
+        no_eff = flatten_dims(no_eff, 2, 2) #(1, 1, 64, 64)
 
         # Broadcast no_eff to the shape of x_hat
         no_eff = tf.broadcast_to(no_eff, tf.shape(x_hat)) #??[1,1,64,64] vs. [1,1,896,64]
