@@ -3389,6 +3389,7 @@ def testprocess():
 class Transmitter():
     def __init__(self, scenario, dataset_folder, num_rx = 1, num_tx = 1, \
                  batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
+                 subcarrier_spacing=15e3, num_guard_carriers=[15,16], pilot_ofdm_symbol_indices=[2], \
                 USE_LDPC = True, pilot_pattern = "kronecker", guards = True, showfig = True) -> None:
         self.fft_size = fft_size
         self.batch_size = batch_size
@@ -3443,9 +3444,11 @@ class Transmitter():
 
         if guards:
             cyclic_prefix_length = 6 #0 #6 Length of the cyclic prefix
-            num_guard_carriers = [5,6] #[0, 0] #List of two integers defining the number of guardcarriers at the left and right side of the resource grid.
+            if num_guard_carriers is None and type(num_guard_carriers) is not list:
+                num_guard_carriers = [5,6] #[0, 0] #List of two integers defining the number of guardcarriers at the left and right side of the resource grid.
             dc_null=True #False
-            pilot_ofdm_symbol_indices=[2,11]
+            if pilot_ofdm_symbol_indices is None and type(pilot_ofdm_symbol_indices) is not list:
+                pilot_ofdm_symbol_indices=[2,11]
         else:
             cyclic_prefix_length = 0 #0 #6 Length of the cyclic prefix
             num_guard_carriers = [0, 0] #List of two integers defining the number of guardcarriers at the left and right side of the resource grid.
@@ -3456,7 +3459,7 @@ class Transmitter():
         #num_ofdm_symbols=14
         RESOURCE_GRID = MyResourceGrid( num_ofdm_symbols=num_ofdm_symbols,
                                             fft_size=fft_size,
-                                            subcarrier_spacing=60e3, #30e3,
+                                            subcarrier_spacing=subcarrier_spacing, #60e3, #30e3,
                                             num_tx=num_tx, #1
                                             num_streams_per_tx=num_streams_per_tx, #1
                                             cyclic_prefix_length=cyclic_prefix_length,
@@ -3724,6 +3727,7 @@ if __name__ == '__main__':
     if ofdmtest is not True:
         transmit = Transmitter(scenario, dataset_folder, num_rx = 1, num_tx = 1, \
                     batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
+                    subcarrier_spacing=60e3, \
                     USE_LDPC = False, pilot_pattern = "empty", guards=False, showfig=True) #"kronecker"
         #channeltype="perfect", "awgn", "ofdm", "time"
         b_hat, BER = transmit(ebno_db = 15.0, channeltype='awgn')
@@ -3731,6 +3735,7 @@ if __name__ == '__main__':
     else:
         transmit = Transmitter(scenario, dataset_folder, num_rx = 1, num_tx = 1, \
                     batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
+                    subcarrier_spacing=60e3, \
                     USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=True) #"kronecker" "empty"
         #channeltype="perfect", "awgn", "ofdm", "time"
         b_hat, BER = transmit(ebno_db = 15.0, channeltype='ofdm', perfect_csi=False)

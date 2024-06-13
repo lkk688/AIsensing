@@ -2233,6 +2233,7 @@ class OFDMDemodulator():
 class OFDMAMIMO():
     def __init__(self, num_rx = 1, num_tx = 1, \
                  batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
+                 subcarrier_spacing=15e3, num_guard_carriers=[15,16], pilot_ofdm_symbol_indices=[2], \
                 USE_LDPC = True, pilot_pattern = "kronecker", guards = True, showfig = True) -> None:
         self.fft_size = fft_size
         self.batch_size = batch_size
@@ -2260,13 +2261,16 @@ class OFDMAMIMO():
         # the RX-TX association matrix is simply:
         #RX_TX_ASSOCIATION = np.array([[1]]) #np.ones([num_rx, 1], int)
         RX_TX_ASSOCIATION = np.ones([num_rx, num_tx], int)
+        #A binary NumPy array where ``rx_tx_association[i,j]=1`` means that receiver `i` gets one or multiple streams from transmitter `j`.
         self.STREAM_MANAGEMENT = StreamManagement(RX_TX_ASSOCIATION, num_streams_per_tx) #RX_TX_ASSOCIATION, NUM_STREAMS_PER_TX
 
         if guards:
             cyclic_prefix_length = 6 #0 #6 Length of the cyclic prefix
-            num_guard_carriers = [5,6] #[0, 0] #List of two integers defining the number of guardcarriers at the left and right side of the resource grid.
+            if num_guard_carriers is None and type(num_guard_carriers) is not list:
+                num_guard_carriers = [5,6] #[0, 0] #List of two integers defining the number of guardcarriers at the left and right side of the resource grid.
             dc_null=True #False
-            pilot_ofdm_symbol_indices=[2,11]
+            if pilot_ofdm_symbol_indices is None and type(pilot_ofdm_symbol_indices) is not list:
+                pilot_ofdm_symbol_indices=[2,11]
         else:
             cyclic_prefix_length = 0 #0 #6 Length of the cyclic prefix
             num_guard_carriers = [0, 0] #List of two integers defining the number of guardcarriers at the left and right side of the resource grid.
@@ -2277,7 +2281,7 @@ class OFDMAMIMO():
         #num_ofdm_symbols=14
         RESOURCE_GRID = MyResourceGrid(num_ofdm_symbols=num_ofdm_symbols,
                                             fft_size=fft_size,
-                                            subcarrier_spacing=60e3, #30e3,
+                                            subcarrier_spacing=subcarrier_spacing, #60e3, #30e3,
                                             num_tx=num_tx, #1
                                             num_streams_per_tx=num_streams_per_tx, #1
                                             cyclic_prefix_length=cyclic_prefix_length,
@@ -2288,7 +2292,9 @@ class OFDMAMIMO():
         self.cyclic_prefix_length = cyclic_prefix_length
         if showfig:
             RESOURCE_GRID.show() #14(OFDM symbol)*76(subcarrier) array=1064
+            plt.pause(1)
             RESOURCE_GRID.pilot_pattern.show();
+            plt.pause(1)
             #The pilot patterns are defined over the resource grid of *effective subcarriers* from which the nulled DC and guard carriers have been removed. 
             #This leaves us in our case with 76 - 1 (DC) - 5 (left guards) - 6 (right guards) = 64 effective subcarriers.
 
@@ -2303,6 +2309,7 @@ class OFDMAMIMO():
                         markerfmt="C{}.".format(i), linefmt="C{}-".format(i),
                         label="Stream {}".format(i))
             plt.legend()
+            plt.pause(1)
         print("Average energy per pilot symbol: {:1.2f}".format(np.mean(np.abs(RESOURCE_GRID.pilot_pattern.pilots[0,0])**2)))
         self.num_streams_per_tx = num_streams_per_tx
         self.RESOURCE_GRID = RESOURCE_GRID
@@ -2397,8 +2404,8 @@ if __name__ == '__main__':
 
     #Test OFDMMIMO
     myofdm = OFDMAMIMO(num_rx = 1, num_tx = 1, \
-                batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
-                USE_LDPC = False, pilot_pattern = "empty", guards=False, showfig=True) #"kronecker"
+                batch_size =1, fft_size = 128, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
+                USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=True) #pilot_pattern= "kronecker" "empty"
     #channeltype="perfect", "awgn", "ofdm", "time"
     x_time, x_rg = myofdm.transmit(b=None)##array[64,1,1,14,76] 14*76=1064
     #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76]
