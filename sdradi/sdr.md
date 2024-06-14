@@ -227,7 +227,7 @@ $ ssh root@192.168.2.1
 $ python sdradi/pysdr.py
 ```
 
-## SSH Access
+## SSH Access to POE Device with Phaser and SDR
 Using POE to power the Mobile Node, i.e., connect the POE cable to the Raspberry Pi Ethernet port with POE hat. The SDR radio is connected to the Raspberry Pi via USB; the Raspberry Pi itself will be served as the analog phaser. The POE will provide all the power to these devices. We can connect to the Mobile Node (i.e., Raspberry Pi) via host device (Mac, Linux or Windows) in the same network:
 
 ```bash 
@@ -269,6 +269,7 @@ Run the test code for SDR:
 python sdradi/myad9361.py #perform transmit and plot the spectrum
 ```
 
+## SDR Class - `myad9361class.py`
 Newly added `myad9361class.py` that put all sdr related code into one class. Run the following code to test the SDR class and perform signal detection
 ```bash
 python sdradi/myad9361class.py
@@ -277,6 +278,9 @@ This code contains two test cases: 1) `test_SDRclass`, which performs continuous
 
 The `test_ofdm_SDR` mainly tests the `SDR_RXTX_offset` function. The result figure is shown as:
 ![correctionresults](../imgs/correctionresults.png "Receiver Correction results")
+
+## Radar Class
+`sdradi/myradar2.py` contains `class RadarDevice` and `class RadarData` 
 
 ## Modulator
 The OFDM modulator computes the frequency-domain representation of an OFDM waveform with cyclic prefix removal. For a single pair of antennas,
@@ -299,6 +303,7 @@ Since the input sequence begins at time $\(L_\text{min}\)$, the FFT window has a
 Test mayavi:
 ```bash
 pip install PySide6
+pip install pyqtgraph
 python sdrpysim/testmayavi.py
 ```
 
@@ -311,3 +316,5 @@ Run Radar App based on local dataset:
 ```bash
 python .\sdrpysim\pyqt6app.py
 ```
+
+Newly created radar UI: `sdradi/radar_ui.py`

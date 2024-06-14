@@ -19,7 +19,7 @@ elif Runtime=="Side6":
 
 #from PyQt5.QtCore import Qt
 #from PyQt5.QtWidgets import *
-import pyqtgraph as pg
+import pyqtgraph as pg #pip install pyqtgraph
 from pyqtgraph.Qt import QtCore, QtGui
 
 c = 3e8
