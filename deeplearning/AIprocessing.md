@@ -52,11 +52,30 @@ Our new AI processing framework aims to overcome these limitations. It offers th
 ## DeepMIMO
 [DeepMIMO](https://deepmimo.net/) is a generic dataset that enables a wide range of machine/deep learning applications for MIMO systems. It takes as input a set of parameters (such as antenna array configurations and time-domain/OFDM parameters) and generates MIMO channel realizations, corresponding locations, angles of arrival/departure, etc., based on these parameters and on a ray-tracing scenario selected from those available in DeepMIMO.
 
-DeepMIMO provides multiple scenarios that one can select from. We use the O1 scenario with the carrier frequency set to 60 GHz (O1_60). We need to download the "O1_60" data files from this [page](https://deepmimo.net/scenarios/o1-scenario/). The downloaded zip file should be extracted into a folder, and the parameter DeepMIMO_params['dataset_folder'] should be set to point to this folder. To use DeepMIMO with Sionna, the DeepMIMO dataset first needs to be generated. In our `deepMIMO5.py` file, we need to setup the `dataset_folder='data' #Windows part: r'D:\Dataset\CommunicationDataset\O1_60'` in the main file, and it will use the following function to get the DeepMIMO dataset:
+DeepMIMO provides multiple scenarios that one can select from. We use the O1 scenario with the carrier frequency set to 60 GHz (O1_60). We need to download the "O1_60" data files from this [page](https://deepmimo.net/scenarios/o1-scenario/). The downloaded zip file should be extracted into a folder, and the parameter DeepMIMO_params['dataset_folder'] should be set to point to this folder. To use DeepMIMO, the DeepMIMO dataset first needs to be generated. The generated DeepMIMO dataset contains channels for different locations of the users and basestations. The layout of the O1 scenario is shown in the figure below.
+![DeepMIMO O1](../imgs/deepmimo_o1.png)
+
+In our `deepMIMO5.py` file, we need to setup the `dataset_folder='data'` in the main file, or setup `dataset_folder=r'D:\Dataset\CommunicationDataset\O1_60'` in Windows side. It will use the following function to get the DeepMIMO dataset:
 ```bash
 DeepMIMO_dataset = get_deepMIMOdata(scenario=scenario, dataset_folder=dataset_folder, showfig=showfig)
 ```
-The generated DeepMIMO dataset contains channels for different locations of the users and basestations. In our example, the users located on the rows `user_row_first` to `user_row_first`. Each of these rows consists of 181 user locations, resulting in `181*100=18100` basestation-user channels. The antenna arrays in the DeepMIMO dataset are defined through the x-y-z axes. In the following example, a single-user MISO downlink is considered. The basestation is equipped with a uniform linear array of 16 elements spread along the x-axis. The users are each equipped with a single antenna.
+
+We can load default parameters of `DeepMIMO` and setup our own parameters
+```bash
+# Load the default parameters
+parameters = DeepMIMO.default_params()
+parameters['num_paths'] = 10
+parameters['active_BS'] = np.array([1]) # Basestation indices to be included in the dataset, total 12 bs in O1
+#parameters['active_BS'] = np.array([1, 5, 8]) #enable multiple basestations
+parameters['user_row_first'] = 1 #400 # First user row to be included in the dataset
+parameters['user_row_last'] = 100 #450 # Last user row to be included in the dataset
+```
+The generated DeepMIMO dataset contains channels for different locations of the users and basestations. In our example, the users located on the rows `user_row_first` to `user_row_first`. Each of these rows consists of 181 user locations, resulting in `181*100=18100` basestation-user channels.
+
+After setup all parameters, `DeepMIMO_dataset = DeepMIMO.generate_data(parameters)` will generate the `DeepMIMO_dataset`.
+
+The antenna arrays in the DeepMIMO dataset are defined through the x-y-z axes. In the following example, a single-user MISO downlink is considered. The basestation is equipped with a uniform linear array of 16 elements spread along the x-axis. The users are each equipped with a single antenna. We can check the parameters of the `DeepMIMO_dataset`:
+
 ```bash
 # Number of basestations
 print(len(DeepMIMO_dataset)) #1
@@ -102,13 +121,40 @@ The following two figures show the UE and BS path loss and positions:
 
 ![UEGrid Path Loss](../imgs/deepmimo_uegridpathloss.png)
 
-We use pytorch dataset class to wrap the deepmimo dataset, each iteration get `h` and `tau`. Define `batch_size`, and create a pytorch `DataLoader`
+In NVIDIA Sionna, `DeepMIMOSionnaAdapter(DeepMIMO_dataset, bs_idx, ue_idx)` (implemented in [sionna_adapter](https://github.com/DeepMIMO/DeepMIMO-python/blob/master/src/DeepMIMOv3/sionna_adapter.py)) is used to wrap the `DeepMIMO_dataset` and generate dataset. In our project, we did not use `DeepMIMOSionnaAdapter`, instead we create a pytorch dataset class `class DeepMIMODataset(Dataset)` to wrap the deepmimo dataset, each iteration get `h` and `tau`. 
 ```bash
 self.channeldataset = DeepMIMODataset(DeepMIMO_dataset=DeepMIMO_dataset, ue_idx=ue_idx)
 h, tau = next(iter(self.channeldataset)) #h: (1, 1, 1, 16, 10, 1), tau:(1, 1, 10)
 #complex gains `h` and delays `tau` for each path
 #print(h.shape) #[num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]
 #print(tau.shape) #[num_rx, num_tx, num_paths]
+```
+There are some additional settings in `DeepMIMOSionnaAdapter`
+```bash
+num_time_steps = 1 # Time step = 1 for static scenarios
+# Determine the number of samples based on the given indices
+self.num_samples_bs = self.bs_idx.shape[0]
+self.num_samples_ue = self.ue_idx.shape[0]
+self.num_samples = self.num_samples_bs * self.num_samples_ue
+
+# Determine the number of tx and rx elements in each channel sample based on the given indices
+self.num_rx = self.ue_idx.shape[1]
+self.num_tx = self.bs_idx.shape[1]
+# The required path power shape for Sionna
+self.ch_shape = (self.num_rx, 
+                  self.num_rx_ant, 
+                  self.num_tx, 
+                  self.num_tx_ant, 
+                  self.num_paths, 
+                  self.num_time_steps)
+
+# The required path delay shape for Sionna
+self.t_shape = (self.num_rx, self.num_tx, self.num_paths)
+```
+bs_idx can be set to a 2D numpy matrix of shape `# of samples * # of basestations per sample`, ue_idx can be set to a 2D numpy matrix of shape `# of samples * # of users per sample`. 
+
+Similiar to the `CIRDataset class` in NVIDIA Sionna that used Tensorflow dataset, we create a pytorch `DataLoader` and define `batch_size`, so that each iteration we get a batch of `h` and `tau`:
+```bash
 self.data_loader = DataLoader(dataset=self.channeldataset, batch_size=batch_size, shuffle=True, pin_memory=True)
 h_b, tau_b = next(iter(self.data_loader)) #h_b: [64, 1, 1, 1, 16, 10, 1], tau_b=[64, 1, 1, 10]
 #print(h_b.shape) #[batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]
@@ -116,6 +162,7 @@ h_b, tau_b = next(iter(self.data_loader)) #h_b: [64, 1, 1, 1, 16, 10, 1], tau_b=
 tau_b=tau_b.numpy()#torch tensor to numpy
 h_b=h_b.numpy()
 ```
+
 The plot of the channel impulse response is shown here (max 10 paths)
 ![Channel Impulse Response](../imgs/deepmimo_chimpulse.png)
 

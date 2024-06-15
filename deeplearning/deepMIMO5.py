@@ -478,7 +478,8 @@ def get_deepMIMOdata(scenario='O1_60', dataset_folder=r'D:\Dataset\Communication
     parameters['num_paths'] = 10
 
     # To activate only the first basestation, set
-    parameters['active_BS'] = np.array([1])
+    parameters['active_BS'] = np.array([1]) # Basestation indices to be included in the dataset
+    #parameters['active_BS'] = np.array([1, 5, 8]) #enable multiple basestations
     # To activate the basestations 6, set
     #parameters['active_BS'] = np.array([6])
 
@@ -490,9 +491,7 @@ def get_deepMIMOdata(scenario='O1_60', dataset_folder=r'D:\Dataset\Communication
     # To activate the user rows 1-5, set
     parameters['user_row_first'] = 1 #400 # First user row to be included in the dataset
     parameters['user_row_last'] = 100 #450 # Last user row to be included in the dataset
-
-    # Consider 3 active basestations
-    #parameters['active_BS'] = np.array([1, 5, 8])
+    
     # Configuration of the antenna arrays
     parameters['bs_antenna']['shape'] = np.array([16, 1, 1]) # BS antenna shape through [x, y, z] axes
     parameters['ue_antenna']['shape'] = np.array([1, 1, 1]) # UE antenna shape through [x, y, z] axes, single antenna
