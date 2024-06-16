@@ -316,7 +316,7 @@ def main():
     
     # Configure properties
     #fs= 6000000 #6MHz
-    sample_rate = 0.6e6 #0.6M
+    fs = 0.6e6 #0.6M
     center_freq = 2.1e9 #2.1G
     signal_freq = 100e3 #100K
     num_slices = 200
@@ -390,10 +390,10 @@ def main():
 
 import argparse
 parser = argparse.ArgumentParser(description='MyRadar')
-parser.add_argument('--ad9361urladdress', default="ip:phaser.local:50901", type=str,
+parser.add_argument('--ad9361urladdress', default="ip:192.168.1.67:50901", type=str,
                     help='urladdress of the device') #ip:pluto.local, ip:phaser.local:50901
-parser.add_argument('--phaserurladdress', default="ip:phaser.local", type=str,
-                    help='urladdress of the device')
+parser.add_argument('--phaserurladdress', default="ip:192.168.1.67", type=str,
+                    help='urladdress of the device, ip:phaser.local')
 parser.add_argument('--rxch', default=2, type=int, 
                     help='number of rx channels')
 parser.add_argument('--txch', default=2, type=int, 

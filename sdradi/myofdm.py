@@ -897,26 +897,26 @@ class MyDemapper:
                                               hard_out,
                                               with_prior)
     
-    def demap(self, inputs):
+    # def demap(self, inputs):
         
-        # Add noise to squared distances
-        #squared_dist += no
-        squared_dist += no #(64, 512, 4)
+    #     # Add noise to squared distances
+    #     #squared_dist += no
+    #     squared_dist += no #(64, 512, 4)
         
-        # Compute log probabilities
-        #log_probs = -0.5 * tf.math.log(squared_dist)
-        log_probs = -0.5 * np.log(squared_dist) #(64, 512, 4)
+    #     # Compute log probabilities
+    #     #log_probs = -0.5 * tf.math.log(squared_dist)
+    #     log_probs = -0.5 * np.log(squared_dist) #(64, 512, 4)
         
-        # Compute log-likelihood ratios
-        #llrs = log_probs - tf.reduce_logsumexp(log_probs, axis=-1, keepdims=True)
-        llrs = log_probs - np.logsumexp(log_probs, axis=-1, keepdims=True) #(64, 512, 4)
+    #     # Compute log-likelihood ratios
+    #     #llrs = log_probs - tf.reduce_logsumexp(log_probs, axis=-1, keepdims=True)
+    #     llrs = log_probs - np.logsumexp(log_probs, axis=-1, keepdims=True) #(64, 512, 4)
         
-        # Demap to bits
-        #bits = tf.argmax(llrs, axis=-1)
-        bits = np.argmax(llrs, axis=-1) #(64, 512)
+    #     # Demap to bits
+    #     #bits = tf.argmax(llrs, axis=-1)
+    #     bits = np.argmax(llrs, axis=-1) #(64, 512)
         
-        # Return bits
-        return bits
+    #     # Return bits
+    #     return bits
 
     def __call__(self, inputs):
         #return self._logits2llrs(inputs)

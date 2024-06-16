@@ -233,8 +233,8 @@ Using POE to power the Mobile Node, i.e., connect the POE cable to the Raspberry
 ```bash 
 sudo apt install nmap
 ipconfig #check the current ip range
-nmap -sn 192.168.86.0/24 #scan IP in the current network, nmap -sn 192.168.1.0/24 if the current network IP is 192.168.1.73
-ssh analog@192.168.1.69 #password: analog
+nmap -sn 192.168.1.0/24 #nmap -sn 192.168.86.0/24 #scan IP in the current network, nmap -sn 192.168.1.0/24 if the current network IP is 192.168.1.73
+ssh analog@192.168.1.67 #analog@192.168.1.69 #password: analog
 #second option
 ssh analog@phaser
 analog@phaser:~ $ ifconfig
@@ -271,8 +271,34 @@ analog@phaser:~ $ iio_readdev -u ip:phaser.local:50901 -B -b 65768 cf-ad9361-lpc
     Throughput: 21 MiB/s
 ```
 
-# Processing Code
+Check the analog devices from the host PC side:
+```bash
+lkk@lkk-intel12:~/Developer/AIsensing$ iio_info -u ip:192.168.1.69
+  hw_carrier: Raspberry Pi 4 Model B Rev 1.5
+iio_info -u ip:phaser.local #same result
+iio_info -u ip:phaser #same result
+lkk@lkk-intel12:~/Developer/AIsensing$ iio_info -u ip:phaser.local:50901 #show the sdr device
+lkk@lkk-intel12:~/Developer/AIsensing$ iio_readdev -u ip:phaser.local:50901 -B -b 65768 cf-ad9361-lpc
+Throughput: 16 MiB/s
+lkk@lkk-intel12:~/Developer/AIsensing$ iio_readdev -u ip:192.168.1.67:50901 -B -b 65768 cf-ad9361-lpc
+Throughput: 15 MiB/s
+```
 
+
+# Processing Code
+Install Pytorch and Tensorflow
+```bash
+nvcc -V #11.8
+pip install --upgrade pip
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+#test torch in Python
+  import torch
+  torch.cuda.is_available()
+pip install tensorflow[and-cuda] #it will install nvidia_cuda_nvcc_cu12, nvidia_cudnn_cu12, nvidia_cublas_cu12
+python3 -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))" #GPU cannot be detected
+pip install tensorflow[and-cuda]==2.14.0 #https://www.tensorflow.org/install/source#tested_build_configurations latest 16.1 only support cuda12
+#install nvidia_cudnn_cu11-8.7.0.84, nvidia_cuda_nvcc_cu11-11.8.89, tensorrt-8.5.3.1-cp310
+```
 ## SDR Device
 Run the test code for SDR:
 ```bash
@@ -286,8 +312,16 @@ python sdradi/myad9361class.py
 ```
 This code contains two test cases: 1) `test_SDRclass`, which performs continuous data transmission and receive; and 2) `test_ofdm_SDR`, which performs correction for the received sample and detect the starting point. 
 
-The `test_ofdm_SDR` mainly tests the `SDR_RXTX_offset` function. The result figure is shown as:
+Integrate the `myofdm.py` with `myad9361class.py` to transmit the simple OFDM signal. The `test_ofdm_SDR` mainly tests the `SDR_RXTX_offset` function. The result figure for Pulto SDR is shown as:
+
 ![correctionresults](../imgs/correctionresults.png "Receiver Correction results")
+
+The result figure for the POE Radar is (less coupling between the transmitter and receiver, i.e., lower SINR):
+
+![ofdmsignal](../imgs/sdrofdmsignal.png)
+
+Using OFDM MIMO (`class OFDMAMIMO`) and run `test_ofdmmimo_SDR`, the result is
+![ofdmmimosignal](../imgs/sdrofdmmimosignal.png)
 
 ## Radar Class
 `sdradi/myradar2.py` contains `class RadarDevice` and `class RadarData` 
