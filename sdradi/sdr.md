@@ -24,7 +24,7 @@ Due to the limited 56 MHz bandwidth, which is insufficient for radar sensing, we
 
 # SDR Devices
 
-## USB connect to ADALM-PLUTO
+## USB Access to ADI SDR devices
 
 ADALM-PLUTO is based on Analog Devices AD9363--Highly Integrated RF Agile Transceiver and Xilinx® Zynq Z-7010 FPGA
   * ADALM-PLUTO Overview: https://wiki.analog.com/university/tools/pluto
@@ -227,8 +227,8 @@ $ ssh root@192.168.2.1
 $ python sdradi/pysdr.py
 ```
 
-## SSH Access to POE Device with Phaser and SDR
-Using POE to power the Mobile Node, i.e., connect the POE cable to the Raspberry Pi Ethernet port with POE hat. The SDR radio is connected to the Raspberry Pi via USB; the Raspberry Pi itself will be served as the analog phaser. The POE will provide all the power to these devices. We can connect to the Mobile Node (i.e., Raspberry Pi) via host device (Mac, Linux or Windows) in the same network:
+## SSH Access to **POE** Device with Phaser and SDR
+Using POE to power the Mobile Node, i.e., connect the POE cable to the Raspberry Pi Ethernet port with POE hat. The SDR radio is connected to the Raspberry Pi via USB; the Raspberry Pi itself will be served as the analog phaser. The POE will provide all the power to these devices. We can connect to the Mobile Node (i.e., Raspberry Pi) via host device (Mac, Linux or Windows) in the same network and you can ssh into the device via `ssh analog@phaser`. You can also check the IP address of the device:
 
 ```bash 
 sudo apt install nmap
@@ -241,9 +241,18 @@ analog@phaser:~ $ ifconfig
     eth0: 192.168.1.67
     eth1: 192.168.2.10
     wlan0: 192.168.1.69
+analog@phaser:~ $ ip addr show
+sudo apt-get install usbip #To list all local USB-emulated network devices using usbip
+analog@phaser:~ $ sudo usbip list -local
 ```
 
-Check the analog devices:
+To view all TCP or UDP ports that are being listened on, along with the associated services and socket status (you can see the port `50901` is for iiod): 
+```bash
+sudo netstat -tunlp
+  tcp6       0      0 :::50901                :::*                    LISTEN      546/iiod
+```
+
+Check the analog devices inside the raspberry Pi:
 ```bash
 analog@phaser:~ $ iio_attr -a -C fw_version #it will show multiple devices
 analog@phaser:~ $ iio_info -u ip:phaser.local #show the Raspberry Pi phaser information
@@ -255,6 +264,7 @@ analog@phaser:~ $ iio_info -u ip:phaser.local:50901 #show the SDR information (a
     uri: ip:phaser.local
 	ip,ip-addr: 192.168.2.10
     IIO context has 4 devices:
+analog@phaser:~ $ iio_info -u ip:192.168.1.67:50901 #same to above
 analog@phaser:~ $ iio_readdev -u ip:pluto.local -B -b 65768 cf-ad9361-lpc
     Throughput: 24 MiB/s
 analog@phaser:~ $ iio_readdev -u ip:phaser.local:50901 -B -b 65768 cf-ad9361-lpc
@@ -263,13 +273,13 @@ analog@phaser:~ $ iio_readdev -u ip:phaser.local:50901 -B -b 65768 cf-ad9361-lpc
 
 # Processing Code
 
+## SDR Device
 Run the test code for SDR:
 ```bash
 (mycondapy310) PS D:\Developer\radarsensing> python .\sdradi\pysdr.py #transmitting a QPSK signal in the 915 MHz band, receiving it, and plotting the PSD
 python sdradi/myad9361.py #perform transmit and plot the spectrum
 ```
 
-## SDR Class - `myad9361class.py`
 Newly added `myad9361class.py` that put all sdr related code into one class. Run the following code to test the SDR class and perform signal detection
 ```bash
 python sdradi/myad9361class.py
