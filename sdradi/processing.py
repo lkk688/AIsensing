@@ -237,20 +237,34 @@ def rangedoppler(data, n_c=150, n_s=600, showdb=True):
     return Data_fft2, table
 
 from scipy.interpolate import interp1d
+#interp1d is used for 1-D interpolation (linear or cubic) of data points.
+
 #ref: https://github.com/brunerm99/ADI_Radar_DSP
 def cfar(X_k, num_guard_cells, num_ref_cells, bias=1, cfar_method='average',
     fa_rate=0.2):
+    #X_k: An array of input data (presumably radar signal values).
+    #num_guard_cells: The number of guard cells around the center cell.
+    #num_ref_cells: The number of reference cells around the center cell.
+    #bias: An optional bias value (default is 1).
+    #cfar_method: The CFAR (Constant False Alarm Rate) method to use (default is ‘average’).
+    #fa_rate: The desired false alarm rate (default is 0.2).
+
     N = X_k.size
+    #cfar_values initialized as a masked array with the same shape as X_k.
+    #Return an empty masked array of the given shape and dtype, where all the data are masked.
     cfar_values = np.ma.masked_all(X_k.shape)
+
+    #iterates over the center cells (excluding guard and reference cells) in the input array.
     for center_index in range(num_guard_cells + num_ref_cells, N - (num_guard_cells + num_ref_cells)):
         min_index = center_index - (num_guard_cells + num_ref_cells)
         min_guard = center_index - num_guard_cells 
         max_index = center_index + (num_guard_cells + num_ref_cells) + 1
         max_guard = center_index + num_guard_cells + 1
 
-        lower_nearby = X_k[min_index:min_guard]
-        upper_nearby = X_k[max_guard:max_index]
+        lower_nearby = X_k[min_index:min_guard] #ref cells
+        upper_nearby = X_k[max_guard:max_index] #ref cells
 
+        #The mean values of the nearby/ref cells are computed.
         lower_mean = np.mean(lower_nearby)
         upper_mean = np.mean(upper_nearby)
 
@@ -270,11 +284,15 @@ def cfar(X_k, num_guard_cells, num_ref_cells, bias=1, cfar_method='average',
         else:
             raise Exception('No CFAR method received')
 
+        #The computed output value is assigned to the corresponding position in cfar_values.
         cfar_values[center_index] = output
 
+    #Any masked (invalid) values in cfar_values are replaced with the minimum value in the array.
     cfar_values[np.where(cfar_values == np.ma.masked)] = np.min(cfar_values)
 
+    #A masked array targets_only is created from a copy of X_k.
     targets_only = np.ma.masked_array(np.copy(X_k))
+    #If the absolute value of a signal in X_k exceeds the corresponding value in cfar_values, it is masked in targets_only.
     targets_only[np.where(abs(X_k) > abs(cfar_values))] = np.ma.masked
 
     if (cfar_method == 'false_alarm'):

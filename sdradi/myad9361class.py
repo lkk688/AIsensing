@@ -9,7 +9,6 @@ from scipy import signal
 from timeit import default_timer as timer
 import sys
 from processing import createcomplexsinusoid, calculate_spectrum, normalize_complexsignal, detect_signaloffset, plot_noisesignalPSD
-from myofdm import OFDMSymbol, OFDMAMIMO
 
 def printSDRproperties(sdr):
     print("Bandwidth of TX path:", sdr.tx_rf_bandwidth) #Bandwidth of front-end analog filter of TX path
@@ -219,7 +218,7 @@ class SDR:
         self.sdr.rx_buffer_size = n_SAMPLES
 
         self.sdr.rx_lo = self.SDR_RX_FREQ #SDR_TX_FREQ  # Receive frequency (set to the same as TX)
-        # Set gain control mode to manual for the TX channel
+        # Set gain control mode to manual for the RX channel
         self.sdr.gain_control_mode_chan0 = controlmode #"slow_attack" #'manual'
         if self.Rx_CHANNEL ==2:
             self.sdr.gain_control_mode_chan1 = controlmode
@@ -633,36 +632,6 @@ def test_SDRclass(urladdress, signal_type='dds'):
     #print(np.mean(rxtime))
     print(np.mean(processtime))
 
-def test_ofdm_SDR(urladdress, SampleRate, fc=921.1e6, leadingzeros=500, add_td_samples = 16):
-    myofdm = OFDMSymbol()
-    SAMPLES = myofdm.createOFDMsignal() #(80,) complex128
-    #SampleRate = rg.fft_size*rg.subcarrier_spacing # sample 
-
-    bandwidth = SampleRate *1.1
-    mysdr = SDR(SDR_IP=urladdress, SDR_FC=fc, SDR_SAMPLERATE=SampleRate, SDR_BANDWIDTH=bandwidth)
-
-    # SINR, SDR_TX_GAIN, SDR_RX_GAIN, Attempts, Pearson R
-    x_sdr = mysdr.SDR_RXTX_offset(SAMPLES, leadingzeros=leadingzeros, add_td_samples=add_td_samples)
-    #out, SINR, SDR_TX_GAIN, SDR_RX_GAIN, fails+1, corr, sdr_time
-    rx_samples = x_sdr[0]
-
-def test_ofdmmimo_SDR(urladdress, fc=921.1e6, leadingzeros=500, add_td_samples = 16):
-    myofdm = OFDMAMIMO(num_rx = 1, num_tx = 1, \
-                batch_size =1, fft_size = 128, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
-                USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=False) #pilot_pattern= "kronecker" "empty"
-    #channeltype="perfect", "awgn", "ofdm", "time"
-    SAMPLES, x_rg = myofdm.transmit(b=None) #samples: (1, 1, 1, 1876)
-    #output: complex Time-domain OFDM signal [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols*(fft_size+cyclic_prefix_length)]
-    #SampleRate = rg.fft_size*rg.subcarrier_spacing # sample 
-    SampleRate = myofdm.RESOURCE_GRID.fft_size * myofdm.RESOURCE_GRID.subcarrier_spacing #1920000
-
-    bandwidth = SampleRate *1.1
-    mysdr = SDR(SDR_IP=urladdress, SDR_FC=fc, SDR_SAMPLERATE=SampleRate, SDR_BANDWIDTH=bandwidth)
-
-    # SINR, SDR_TX_GAIN, SDR_RX_GAIN, Attempts, Pearson R
-    x_sdr = mysdr.SDR_RXTX_offset(SAMPLES, leadingzeros=leadingzeros, add_td_samples=add_td_samples)
-    #out, SINR, SDR_TX_GAIN, SDR_RX_GAIN, fails+1, corr, sdr_time
-    rx_samples = x_sdr[0]
 
 def main():
     args = parser.parse_args()
@@ -674,10 +643,10 @@ def main():
     #testlibiioaccess(urladdress)
     #sdr_test(urladdress, signal_type=signal_type, Rx_CHANNEL=Rx_CHANNEL, plot_flag = plot_flag)
 
-    #test_SDRclass(urladdress)
+    test_SDRclass(urladdress)
     fs=1000000
     #test_ofdm_SDR(urladdress=urladdress, SampleRate=fs)
-    test_ofdmmimo_SDR(urladdress=urladdress)
+    #test_ofdmmimo_SDR(urladdress=urladdress)
 
     
 

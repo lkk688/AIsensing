@@ -22,16 +22,51 @@ elif Runtime=="Side6":
 import pyqtgraph as pg #pip install pyqtgraph
 from pyqtgraph.Qt import QtCore, QtGui
 
-c = 3e8
+from myradar2 import RadarDevice, RadarData #createcomplexsinusoid
+#from processing import cfar, get_spectrum, select_chirp
+
+#c = 3e8
+
+# plot_freq = 100e3    # x-axis freq range to plot
+# sample_rate = 0.6e6 #2e6
+# fft_size = 1024 * 8
+# N = 2048#int(my_sdr.rx_buffer_size)
+# num_slices = 50     # this sets how much time will be displayed on the waterfall plot
+# N_frame = fft_size
+# freq = np.linspace(-sample_rate / 2, sample_rate / 2, int(N_frame))
+
+
 default_chirp_bw = 500e6
 signal_freq = 100e3
-plot_freq = 100e3    # x-axis freq range to plot
-sample_rate = 0.6e6 #2e6
-fft_size = 1024 * 8
-N = 2048#int(my_sdr.rx_buffer_size)
+sample_rate = 0.6e6 #0.6M
+fs = int(sample_rate) #0.6MHz
+rxbuffersize = 1024 * 8 #1024 * 16 * 15 #fft_size
+center_freq = 2.1e9
+output_freq = 10e9 #10GHz
+#output_freq = 12.145e9
+# int(output_freq 10e9 + signal_freq 100e3 + center_freq 2.1e9)
+
+baseip='ip:phaser'
+UseRadarDevice= True
+if UseRadarDevice == True:
+    sdrurl = baseip+":50901" #"ip:pluto.local" #ip:phaser.local:50901
+    phaserurl = baseip #"ip:phaser.local"
+    radar=RadarDevice(sdrurl=sdrurl, phaserurl=phaserurl, sample_rate=fs, center_freq=center_freq, \
+                 rxbuffersize = rxbuffersize, sdr_bandwidth=sample_rate*5, rx_gain=20, Rx_CHANNEL = 2, Tx_CHANNEL = 2,\
+                signal_freq = signal_freq, chirp_bandwidth= default_chirp_bw, output_freq = output_freq, tddmode=False)
+else:
+    datapath='./data/radardata5s-1101fast3move.npy'
+    radar=RadarData(datapath=datapath, samplerate=sample_rate, rxbuffersize=rxbuffersize)
+
+c, BW, num_steps, ramp_time_s, slope, N_c, N_s, \
+    freq, dist, range_resolution, signal_freq, range_x, \
+        fft_size, rxbuffersize = radar.returnparameters()
+N = rxbuffersize #2048#int(my_sdr.rx_buffer_size)
 num_slices = 50     # this sets how much time will be displayed on the waterfall plot
 N_frame = fft_size
-freq = np.linspace(-sample_rate / 2, sample_rate / 2, int(N_frame))
+plot_freq = 100e3    # x-axis freq range to plot
+range_res = c / (2 * BW)
+
 
 class Window(QMainWindow):
     def __init__(self):
@@ -258,6 +293,7 @@ class Window(QMainWindow):
         bw = self.bw_slider.value() * 1e6
         range_res = c / (2 * bw)
 
+
     def get_cfar_values(self):
         """ Updates the cfar values
 		Returns:
@@ -284,14 +320,7 @@ class Window(QMainWindow):
 			None
 		"""
         self.steer_label.setText("%0.0f DEG" % (self.steer_slider.value()))
-        phase_delta = (
-            2
-            * 3.14159
-            * 10.25e9
-            * 0.014
-            * np.sin(np.radians(self.steer_slider.value()))
-            / (3e8)
-        )
+        radar.steer_angle(self.steer_slider.value())
         # phase_delta = (2 * 3.14159 * output_freq * my_phaser.element_spacing
         #     * np.sin(np.radians(self.steer_slider.value()))
         #     / (3e8)
@@ -303,8 +332,10 @@ class Window(QMainWindow):
 		Returns:
 			None
 		"""
-        global dist, slope, signal_freq, plot_freq
-        bw = self.bw_slider.value() * 1e6
+        global dist, slope, freq, BW, range_res#signal_freq, plot_freq
+        BW = self.bw_slider.value() * 1e6
+        slope, freq, dist = radar.set_range_res(new_bw=BW)
+        range_res = c / (2 * BW)
       #   slope = bw / ramp_time_s
       #   dist = (freq - signal_freq) * c / (2 * slope)
       #   my_phaser.freq_dev_range = int(bw / 4)  # frequency deviation range in Hz
@@ -316,6 +347,7 @@ class Window(QMainWindow):
 			None
 		"""
         #close device
+        radar.stop_device()
         self.close()
 
     def change_thresh(self, state):
@@ -347,7 +379,7 @@ class Window(QMainWindow):
 
 
 
-# create pyqt5 app
+# create pyqt app
 App = QApplication(sys.argv)
 
 # create the instance of our Window
@@ -355,11 +387,43 @@ win = Window()
 index = 0
 
 def update():
-   """ Updates the FFT in the window
+    """ Updates the FFT in the window
 	Returns:
 		None
 	"""
-   print('Do updates')
+    global index, plot_threshold, freq, dist
+    global plot_dist, ramp_time_s, sample_rate
+    label_style = {"color": "#FFF", "font-size": "14pt"}
+    print('Do updates')
+    radar.tdd_burst()
+    #data, datalen, index = radar.receive(index=index)
+    s_dbfs = radar.get_spectrum()
+
+    bias = win.cfar_bias.value()
+    num_guard_cells = win.cfar_guard.value()
+    num_ref_cells = win.cfar_ref.value()
+    s_dbfs_cfar, s_dbfs_threshold = radar.cfar(s_dbfs, num_guard_cells, num_ref_cells, bias, cfar_method='average')
+
+    
+    win.fft_threshold.setData(freq, s_dbfs_threshold)
+    if plot_threshold:
+        win.fft_threshold.setVisible(True)
+    else:
+        win.fft_threshold.setVisible(False)
+    
+    win.img_array = np.roll(win.img_array, 1, axis=0)
+    if cfar_toggle:
+        win.fft_curve.setData(freq, s_dbfs_cfar)
+        win.img_array[0] = s_dbfs_cfar
+    else:
+        win.fft_curve.setData(freq, s_dbfs)
+        win.img_array[0] = s_dbfs
+    win.imageitem.setLevels([win.low_slider.value(), win.high_slider.value()])
+    win.imageitem.setImage(win.img_array, autoLevels=False)
+
+    if index == 1:
+        win.fft_plot.enableAutoRange("xy", False)
+    index = index + 1
 
 
 timer = QtCore.QTimer()

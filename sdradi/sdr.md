@@ -228,7 +228,7 @@ $ python sdradi/pysdr.py
 ```
 
 ## SSH Access to **POE** Device with Phaser and SDR
-Using POE to power the Mobile Node, i.e., connect the POE cable to the Raspberry Pi Ethernet port with POE hat. The SDR radio is connected to the Raspberry Pi via USB; the Raspberry Pi itself will be served as the analog phaser. The POE will provide all the power to these devices. We can connect to the Mobile Node (i.e., Raspberry Pi) via host device (Mac, Linux or Windows) in the same network and you can ssh into the device via `ssh analog@phaser`. You can also check the IP address of the device:
+Using POE to power the Mobile Node, i.e., connect the POE cable to the Raspberry Pi Ethernet port with POE hat. The SDR radio is connected to the Raspberry Pi via USB; the Raspberry Pi itself will be served as the analog phaser. The POE will provide all the power to these devices. We can connect to the Mobile Node (i.e., Raspberry Pi) via host device (Mac, Linux or Windows) in the same network and you can ssh into the device via `ssh analog@phaser` (password: `analog`). You can also check the IP address of the device:
 
 ```bash 
 sudo apt install nmap
@@ -277,6 +277,7 @@ lkk@lkk-intel12:~/Developer/AIsensing$ iio_info -u ip:192.168.1.69
   hw_carrier: Raspberry Pi 4 Model B Rev 1.5
 iio_info -u ip:phaser.local #same result
 iio_info -u ip:phaser #same result
+lkk@lkk-intel12:~/Developer/AIsensing$ iio_info -u ip:phaser #same to above
 lkk@lkk-intel12:~/Developer/AIsensing$ iio_info -u ip:phaser.local:50901 #show the sdr device
 lkk@lkk-intel12:~/Developer/AIsensing$ iio_readdev -u ip:phaser.local:50901 -B -b 65768 cf-ad9361-lpc
 Throughput: 16 MiB/s
@@ -292,6 +293,45 @@ $ iio_attr -C --uri ip:phaser.local:50901 fw_version
 fw_version: v0.35
 ```
 
+After upgrading the firmware, check the version again:
+```bash
+(base) lkk@lkk-intel12:~$ iio_attr -C --uri ip:phaser.local:50901 fw_version
+fw_version: v0.38
+(base) lkk@lkk-intel12:~$ iio_attr -C --uri ip:phaser:50901 fw_version
+fw_version: v0.38
+(base) lkk@lkk-intel12:~$ iio_attr -C --uri ip:192.168.1.69:50901 fw_version
+fw_version: v0.38
+```
+
+Enable 2R2T model in SDR:
+```bash
+#ssh to PI:
+(base) lkk@lkk-intel12:~$ ssh analog@phaser #password: analog
+analog@phaser:~ $ ssh-keygen -R 192.168.2.1
+analog@phaser:~ $ ssh root@192.168.2.1 #password: analog
+$ fw_printenv mode
+mode=1r1t
+$ fw_setenv attr_name compatible
+$ fw_setenv attr_val ad9361
+$ fw_setenv compatible ad9361
+$ fw_setenv mode 2r2t
+$ reboot
+```
+
+Re-enter into the SDR device and check the current device status:
+```bash
+analog@phaser:~ $ ssh-keygen -R 192.168.2.1
+analog@phaser:~ $ ssh root@192.168.2.1 #password: analog
+$ fw_printenv attr_name
+attr_name=compatible
+$ fw_printenv attr_val
+attr_val=ad9361
+$ fw_printenv compatible
+compatible=ad9361
+$ fw_printenv mode
+mode=2r2t
+$ exit
+```
 
 # Processing Code
 Install Pytorch and Tensorflow

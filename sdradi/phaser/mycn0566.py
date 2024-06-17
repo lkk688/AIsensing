@@ -7,7 +7,7 @@ import numpy as np
 from adi.adar1000 import adar1000_array
 from adi.adf4159 import adf4159
 
-
+#ref: https://github.com/analogdevicesinc/pyadi-iio/blob/main/adi/cn0566.py
 class CN0566(adf4159, adar1000_array):
     """CN0566 class inherits from adar1000_array and adf4159 and adds
     operations for beamforming like default configuration,
