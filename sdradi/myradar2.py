@@ -1,4 +1,5 @@
 import time
+import os
 from time import sleep
 import adi
 import matplotlib.pyplot as plt
@@ -304,16 +305,16 @@ class RadarDevice:
         print("Data rate at ", datarate, "Mbps.") #7-8Mbps in 10240 points, 10Mbps in 102400points, single channel in 19-20Mbps
         self.currentindex = self.currentindex +1
         return data, datalen, self.currentindex
-    
-def main():
-    args = parser.parse_args()
-    phaserurladdress = args.phaserurladdress #urladdress #"ip:pluto.local"
-    ad9361urladdress = args.ad9361urladdress
-    Rx_CHANNEL = args.rxch
-    Tx_CHANNEL = args.txch
-    signal_type = args.signal
-    plot_flag = args.plot
-    
+
+def create_folder_and_save_array(folder_path, array, filename='data.npy'):
+    # Check if the folder exists, create it if not
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
+
+    # Save the NumPy array to a file (e.g., 'data.npy') in the folder
+    np.save(os.path.join(folder_path, filename), array)
+
+def radardata_collect(phaserurladdress, ad9361urladdress, Rx_CHANNEL, Tx_CHANNEL, signal_type, plot_flag, filename='radardata5s-0616a.npy'):
     # Configure properties
     #fs= 6000000 #6MHz
     fs = 0.6e6 #0.6M
@@ -380,9 +381,23 @@ def main():
         # Stop transmitting
     sdr.tx_destroy_buffer() #Clears TX buffer
     sdr.rx_destroy_buffer() #Clears RX buffer
-    with open('./data/radardata5s-1101fast4move.npy', 'wb') as f:
-        np.save(f, alldata0)
+    create_folder_and_save_array(folder_path='./data/', array=alldata0, filename=filename)
+    # with open('./data/radardata5s-1101fast4move.npy', 'wb') as f:
+    #     np.save(f, alldata0)
     print(len(alldata0)) #1196032
+
+def main():
+    args = parser.parse_args()
+    phaserurladdress = args.phaserurladdress #urladdress #"ip:pluto.local"
+    ad9361urladdress = args.ad9361urladdress
+    Rx_CHANNEL = args.rxch
+    Tx_CHANNEL = args.txch
+    signal_type = args.signal
+    plot_flag = args.plot
+
+    radardata_collect(phaserurladdress, ad9361urladdress, Rx_CHANNEL, Tx_CHANNEL, signal_type, plot_flag, filename='radardata5s-0616a.npy')
+    
+    
 # piuri="ip:phaser.local:50901"
 # localuri="ip:analog.local"
 # antsdruri="ip:192.168.1.10"#connected via Ethernet with static IP

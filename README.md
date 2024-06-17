@@ -180,6 +180,7 @@ conda activate mycondapy311
 pip install pyqt6
 #test pyqt6: sdrpysim/testpyqt6.py
 pip install pyqtgraph
+pip install pyopengl
 #Successfully installed numpy-1.26.1 pyqtgraph-0.13.3
 #import pyqtgraph as pg
 #test pyqtgraph: sdrpysim\pyqt6qtgraphtest.py

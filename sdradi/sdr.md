@@ -282,6 +282,14 @@ lkk@lkk-intel12:~/Developer/AIsensing$ iio_readdev -u ip:phaser.local:50901 -B -
 Throughput: 16 MiB/s
 lkk@lkk-intel12:~/Developer/AIsensing$ iio_readdev -u ip:192.168.1.67:50901 -B -b 65768 cf-ad9361-lpc
 Throughput: 15 MiB/s
+$ iio_attr -a -C fw_version 
+Multiple contexts found. Please select one using --uri:
+        0: 192.168.1.67 (cpu_thermal,rpi_volt,one-bit-adc-dac,adf4159,adar1000_1,adar1000_0,ad7291) [ip:phaser.local]
+        1: 2600:1700:6470:1ac0::776 (cpu_thermal,rpi_volt,one-bit-adc-dac,adf4159,adar1000_1,adar1000_0,ad7291) [ip:phaser.local]
+        2: 192.168.1.67 (Analog Devices PlutoSDR Rev.C (Z7010-AD9361)), serial=10447376de0b000f13002300f0ba97638d [ip:phaser.local:50901]
+        3: 2600:1700:6470:1ac0::776 (Analog Devices PlutoSDR Rev.C (Z7010-AD9361)), serial=10447376de0b000f13002300f0ba97638d [ip:phaser.local:50901]
+$ iio_attr -C --uri ip:phaser.local:50901 fw_version 
+fw_version: v0.35
 ```
 
 
@@ -320,30 +328,24 @@ The result figure for the POE Radar is (less coupling between the transmitter an
 
 ![ofdmsignal](../imgs/sdrofdmsignal.png)
 
-Using OFDM MIMO (`class OFDMAMIMO`) and run `test_ofdmmimo_SDR`, the result is
+Using **OFDM MIMO** (`class OFDMAMIMO`) and run `test_ofdmmimo_SDR`, the result is
 ![ofdmmimosignal](../imgs/sdrofdmmimosignal.png)
 
 ## Radar Class
-`sdradi/myradar2.py` contains `class RadarDevice` and `class RadarData` 
+Check the Section `Radar UI` to install the required packages.
 
-## Modulator
-The OFDM modulator computes the frequency-domain representation of an OFDM waveform with cyclic prefix removal. For a single pair of antennas,
-    the received signal sequence is given as:
-```math
-y_b = \sum_{\ell = L_\text{min}}^{L_\text{max}} \bar{h}_\ell x_{b-\ell} + w_b, \quad b \in [L_\text{min}, N_B + L_\text{max} - 1]
-```
-
-where:
-- $\bar{h}_\ell$ represents the discrete-time channel taps,
-- $x_b$ is the transmitted signal, and
-- $w_\ell$ denotes Gaussian noise.
-
-The demodulator processes the input sequence starting from the first symbol. It divides the sequence into pieces of size $`\text{cyclic\_prefix\_length} + \text{fft\_size}`$ and discards any trailing symbols. For each piece, it removes the cyclic prefix and computes the $`\text{fft\_size}`$-point discrete Fourier transform.
-
-Since the input sequence begins at time $\(L_\text{min}\)$, the FFT window has a timing offset of $\(L_\text{min}\)$ symbols. This leads to a subcarrier-dependent phase shift of $\(e^{\frac{j2\pi k L_\text{min}}{N}}\)$, where $\(k\)$ is the subcarrier index, $\(N\)$ is the FFT size, and $\(L_\text{min} \leq 0\)$ is the largest negative time lag of the discrete-time channel impulse response. To remove this phase shift, each subcarrier is explicitly multiplied by $\(e^{\frac{-j2\pi k L_\text{min}}{N}}\)$. This step is crucial for channel estimation with sparse pilot patterns that interpolate the channel frequency response across subcarriers.
+`sdradi/myradar2.py` contains `class RadarDevice`, `class RadarData`, and all the hardware setup code for Radar device. Run `myradar2.py` to collect radar data and save to numpy.
 
 
-# UI Part
+`sdradi/pyqt6appwdevice.py` contains the UI for Radar (shown in the following figure) and access the `class RadarDevice` and `class RadarData` from `sdradi/myradar2.py`. Use the flag `UseRadarDevice` to choose Radar SDR device or collected data from `myradar2.py`. 
+
+![Radar UI](../imgs/radarui.png)
+
+
+
+# Radar UI 
+
+## Windows part
 Test mayavi:
 ```bash
 pip install PySide6
@@ -362,3 +364,14 @@ python .\sdrpysim\pyqt6app.py
 ```
 
 Newly created radar UI: `sdradi/radar_ui.py`
+
+## Linux part
+Setup Python environment for Radar UI:
+```bash
+pip install pyqt6
+#test pyqt6: sdrpysim/testpyqt6.py
+pip install pyqtgraph
+pip install pyopengl
+$ sudo apt install libxcb-cursor0 #solve the problem: "qt.qpa.plugin: Could not load the Qt platform plugin "xcb"
+$ conda install -c conda-forge libstdcxx-ng #solve the problem of libGL error: MESA-LOADER: failed to open iris
+```

@@ -15,8 +15,10 @@ import sys
 import time
 import matplotlib.pyplot as plt
 import numpy as np
+import phaser.mycn0566 as mycn0566
+CN0566=mycn0566.CN0566
 
-Runtime="QT6"
+Runtime="QT5" #"QT5"
 if Runtime=="Side6": #"QT5" Side6 and QT5 works in Mac
    from PyQt5.QtWidgets import QApplication, QWidget, QLabel
    #from PyQt5.QtGui import QIcon
@@ -105,7 +107,8 @@ def deviceInstantiate(rpi_ip = "ip:phaser.local", sdr_ip = "ip:192.168.2.1", rx_
     #rpi_ip = "ip:phaser.local"  # IP address of the Raspberry Pi
     #sdr_ip = "ip:192.168.2.1"  # "192.168.2.1, or pluto.local"  # IP address of the Transceiver Block
     my_sdr = adi.ad9361(uri=sdr_ip)
-    my_phaser = adi.CN0566(uri=rpi_ip, sdr=my_sdr)
+    #my_phaser = adi.CN0566(uri=rpi_ip, sdr=my_sdr)
+    my_phaser = CN0566(uri=rpi_ip, sdr=my_sdr)
 
     # Initialize both ADAR1000s, set gains to max, and all phases to 0
     my_phaser.configure(device_mode="rx")
@@ -137,18 +140,18 @@ def deviceInstantiate(rpi_ip = "ip:phaser.local", sdr_ip = "ip:192.168.2.1", rx_
     #img_array = np.ones((num_slices, fft_size))*(-100)
 
     # Configure SDR Rx
-    my_sdr.sample_rate = int(sample_rate)
+    my_sdr.sample_rate = int(sample_rate) #0.6Mhz
     sample_rate = int(my_sdr.sample_rate)
-    my_sdr.rx_lo = int(center_freq)  # set this to output_freq - (the freq of the HB100)
+    my_sdr.rx_lo = int(center_freq)  # set this to output_freq - (the freq of the HB100) 2.1GHz
     my_sdr.rx_enabled_channels = [0, 1]  # enable Rx1 (voltage0) and Rx2 (voltage1)
-    my_sdr.rx_buffer_size = int(fft_size)
+    my_sdr.rx_buffer_size = int(fft_size) #8192
     my_sdr.gain_control_mode_chan0 = "manual"  # manual or slow_attack
     my_sdr.gain_control_mode_chan1 = "manual"  # manual or slow_attack
-    my_sdr.rx_hardwaregain_chan0 = int(rx_gain)  # must be between -3 and 70
+    my_sdr.rx_hardwaregain_chan0 = int(rx_gain)  # must be between -3 and 70, 20
     my_sdr.rx_hardwaregain_chan1 = int(rx_gain)  # must be between -3 and 70
     
     # Configure SDR Tx
-    my_sdr.tx_lo = int(center_freq)
+    my_sdr.tx_lo = int(center_freq) #2.1G
     my_sdr.tx_enabled_channels = [0, 1]
     my_sdr.tx_cyclic_buffer = True  # must set cyclic buffer to true for the tdd burst mode.  Otherwise Tx will turn on and off randomly
     my_sdr.tx_hardwaregain_chan0 = -88  # must be between 0 and -88
@@ -161,7 +164,7 @@ def deviceInstantiate(rpi_ip = "ip:phaser.local", sdr_ip = "ip:192.168.2.1", rx_
     num_steps = int(ramp_time)    # in general it works best if there is 1 step per us
     #ramp_time = 0.5e3  # us
     #output_freq = 12.145e9
-    vco_freq = int(output_freq + signal_freq + center_freq)
+    vco_freq = int(output_freq + signal_freq + center_freq) #12.1GHz
     my_phaser.frequency = int(vco_freq / 4)  # Output frequency divided by 4
     my_phaser.freq_dev_range = int(
         BW / 4
@@ -194,10 +197,10 @@ def deviceInstantiate(rpi_ip = "ip:phaser.local", sdr_ip = "ip:192.168.2.1", rx_
     my_phaser.enable = 0  # 0 = PLL enable.  Write this last to update all the registers
 
     # Print config
-    wavelength = c / output_freq
-    freq = np.linspace(-sample_rate / 2, sample_rate / 2, int(fft_size))
-    slope = BW / ramp_time_s
-    dist = (freq - signal_freq) * c / (2 * slope)
+    wavelength = c / output_freq #0.03
+    freq = np.linspace(-sample_rate / 2, sample_rate / 2, int(fft_size)) #(8192,)
+    slope = BW / ramp_time_s #1e12
+    dist = (freq - signal_freq) * c / (2 * slope) #(8192,)
     plot_dist = False
     print(
         """
@@ -209,20 +212,20 @@ def deviceInstantiate(rpi_ip = "ip:phaser.local", sdr_ip = "ip:192.168.2.1", rx_
     Output frequency: {output_freq}MHz
     IF: {signal_freq}kHz
     """.format(
-            sample_rate=sample_rate / 1e6,
+            sample_rate=sample_rate / 1e6, #0.6MHz
             #Nlog2=int(np.log2(fft_size)),
-            Nlog2=int(np.log2(my_sdr.rx_buffer_size)),
-            BW=BW / 1e6,
-            ramp_time=ramp_time / 1e3,
-            output_freq=output_freq / 1e6,
-            signal_freq=signal_freq / 1e3,
+            Nlog2=int(np.log2(my_sdr.rx_buffer_size)), #Num samples: 2^13
+            BW=BW / 1e6, #500Mhz
+            ramp_time=ramp_time / 1e3, #0.5ms
+            output_freq=output_freq / 1e6, #10Ghz
+            signal_freq=signal_freq / 1e3, #100KHz
         )
     )
 
     # Create a sinewave waveform for transmitter
-    fs = int(my_sdr.sample_rate)
-    N = int(my_sdr.rx_buffer_size)
-    iq = createcomplexsinusoid(fs = fs, signal_freq = signal_freq, N = N)
+    fs = int(my_sdr.sample_rate) #0.6MHz
+    N = int(my_sdr.rx_buffer_size) #8192
+    iq = createcomplexsinusoid(fs = fs, signal_freq = signal_freq, N = N) #(8192,)
     # fc = int(signal_freq / (fs / N)) * (fs / N)
     # ts = 1 / float(fs)
     # t = np.arange(0, N * ts, ts)
@@ -238,23 +241,23 @@ def deviceInstantiate(rpi_ip = "ip:phaser.local", sdr_ip = "ip:192.168.2.1", rx_
     my_sdr.tx([iq, iq])
     #my_sdr.tx([iq * 0.5, iq])  # only send data to the 2nd channel (that's all we need)
 
-    return my_phaser, my_sdr, sdr_pins, tdd, ramp_time_s, N, sample_rate
+    return my_phaser, my_sdr, ramp_time_s, N, sample_rate
 
 c = 3e8
-default_chirp_bw = 500e6
+default_chirp_bw = 500e6 #500Mhz
 rx_gain = 20
 sample_rate = 0.6e6 #2e6
 fft_size = 1024 * 8
-signal_freq = 100e3
+signal_freq = 100e3 #100k
 center_freq = 2.1e9
-output_freq = 10e9
+output_freq = 10e9 #10GHz
 #output_freq = 12.145e9
 # int(output_freq 10e9 + signal_freq 100e3 + center_freq 2.1e9)
 BW = 500e6
 ramp_time = 0.5e3 # ramp time in us
 tddmode = False
-rpi_ip = "ip:phaser.local"  # IP address of the Raspberry Pi
-sdr_ip = "ip:192.168.2.1"  # "192.168.2.1, or pluto.local"  # IP address of the Transceiver Block
+rpi_ip = 'ip:192.168.1.67' #"ip:phaser.local"  # IP address of the Raspberry Pi
+sdr_ip = rpi_ip+":50901" #"ip:192.168.2.1"  # "192.168.2.1, or pluto.local"  # IP address of the Transceiver Block
 my_phaser, my_sdr, ramp_time_s, N, sample_rate= \
         deviceInstantiate(rpi_ip, sdr_ip, rx_gain, sample_rate, fft_size, signal_freq, \
                             center_freq, output_freq, BW, ramp_time, c)
@@ -284,9 +287,9 @@ class Window(QMainWindow):
         self.setWindowTitle("MyRadar Test")
         self.setGeometry(0, 0, 400, 400)  # (x,y, width, height)
         #self.setFixedWidth(600)
-        self.setWindowState(QtCore.Qt.WindowMaximized)
+        #self.setWindowState(QtCore.Qt.WindowMaximized)
         self.num_rows = 12
-        self.setWindowFlag(QtCore.Qt.WindowCloseButtonHint, False) #remove the window's close button
+        #self.setWindowFlag(QtCore.Qt.WindowCloseButtonHint, False) #remove the window's close button
         self.UiComponents()
         self.show()
 
@@ -303,7 +306,8 @@ class Window(QMainWindow):
         font.setPointSize(24)
         control_label.setFont(font)
         font.setPointSize(12)
-        control_label.setAlignment(Qt.AlignHCenter)  # | Qt.AlignVCenter)
+        #control_label.setAlignment(Qt.AlignHCenter)  # | Qt.AlignVCenter)
+        control_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(control_label, 0, 0, 1, 2)
 
         # Check boxes
@@ -321,7 +325,7 @@ class Window(QMainWindow):
         layout.addWidget(self.cfar_check, 2, 1)
 
         # Chirp bandwidth slider
-        self.bw_slider = QSlider(Qt.Horizontal)
+        self.bw_slider = QSlider(Qt.Orientation.Horizontal, self) #QSlider(Qt.Orientation.Horizontal, self)# QSlider(Qt.Horizontal)
         self.bw_slider.setMinimum(100)
         self.bw_slider.setMaximum(500)
         self.bw_slider.setValue(int(default_chirp_bw / 1e6))
@@ -341,7 +345,7 @@ class Window(QMainWindow):
         layout.addWidget(self.quit_button, 30, 0, 4, 4)
         
         #CFAR Sliders
-        self.cfar_bias = QSlider(Qt.Horizontal)
+        self.cfar_bias = QSlider(Qt.Orientation.Horizontal, self) #QSlider(Qt.Horizontal)
         self.cfar_bias.setMinimum(0)
         self.cfar_bias.setMaximum(100)
         self.cfar_bias.setValue(40) #25
@@ -357,7 +361,7 @@ class Window(QMainWindow):
         self.cfar_bias_label.setMaximumWidth(200)
         layout.addWidget(self.cfar_bias_label, 8, 1)
         
-        self.cfar_guard = QSlider(Qt.Horizontal)
+        self.cfar_guard = QSlider(Qt.Orientation.Horizontal, self) #QSlider(Qt.Horizontal)
         self.cfar_guard.setMinimum(1)
         self.cfar_guard.setMaximum(40)
         self.cfar_guard.setValue(27) #15
@@ -373,7 +377,7 @@ class Window(QMainWindow):
         self.cfar_guard_label.setMaximumWidth(200)
         layout.addWidget(self.cfar_guard_label, 10, 1)
         
-        self.cfar_ref = QSlider(Qt.Horizontal)
+        self.cfar_ref = QSlider(Qt.Orientation.Horizontal, self) #QSlider(Qt.Horizontal)
         self.cfar_ref.setMinimum(1)
         self.cfar_ref.setMaximum(100)
         self.cfar_ref.setValue(16)
@@ -391,7 +395,7 @@ class Window(QMainWindow):
 
 
         # waterfall level slider
-        self.low_slider = QSlider(Qt.Horizontal)
+        self.low_slider = QSlider(Qt.Orientation.Horizontal, self) #QSlider(Qt.Horizontal)
         self.low_slider.setMinimum(-100)
         self.low_slider.setMaximum(0)
         self.low_slider.setValue(-100)
@@ -401,7 +405,7 @@ class Window(QMainWindow):
         self.low_slider.valueChanged.connect(self.get_water_levels)
         layout.addWidget(self.low_slider, 16, 0)
 
-        self.high_slider = QSlider(Qt.Horizontal)
+        self.high_slider = QSlider(Qt.Orientation.Horizontal, self) #QSlider(Qt.Horizontal)
         self.high_slider.setMinimum(-100)
         self.high_slider.setMaximum(0)
         self.high_slider.setValue(0)
@@ -430,7 +434,7 @@ class Window(QMainWindow):
         self.high_label.setMaximumWidth(200)
         layout.addWidget(self.high_label, 18, 1)
 
-        self.steer_slider = QSlider(Qt.Horizontal)
+        self.steer_slider = QSlider(Qt.Orientation.Horizontal, self) #QSlider(Qt.Horizontal)
         self.steer_slider.setMinimum(-80)
         self.steer_slider.setMaximum(80)
         self.steer_slider.setValue(0)

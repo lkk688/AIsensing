@@ -2,12 +2,12 @@
 # import matplotlib
 # matplotlib.use('QtAgg')
 import matplotlib.pyplot as plt
-import PyQt6
+import PyQt6 #pip install pyqt6
 from PyQt6 import QtWidgets
 # importing pyqtgraph as pg
-import pyqtgraph as pg
+import pyqtgraph as pg #pip install pyqtgraph
 from pyqtgraph.Qt import QtCore, QtGui
-import pyqtgraph.opengl as gl
+import pyqtgraph.opengl as gl #pip install pyopengl
 #from PyQt6.QtGui import *
 #from PyQt6.QtCore import *
 
@@ -18,6 +18,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtCore import QSize, Qt
+
+
 
 # importing system
 import sys
@@ -82,10 +84,11 @@ def create_color_heatmap(powData, PLOT_SIZE=128):
 sample_rate = 0.6e6 #0.6M
 fs = int(sample_rate) #0.6MHz
 rxbuffersize = 1024 * 16 * 15 #fft_size
+baseip='ip:192.168.1.67' #'ip:phaser.local'
 UseRadarDevice= True
 if UseRadarDevice == True:
-    sdrurl = "ip:phaser.local:50901" #"ip:pluto.local" #ip:phaser.local:50901
-    phaserurl = "ip:phaser.local"
+    sdrurl = baseip+":50901" #"ip:pluto.local" #ip:phaser.local:50901
+    phaserurl = baseip #"ip:phaser.local"
     radar=RadarDevice(sdrurl=sdrurl, phaserurl=phaserurl, samplerate=sample_rate, rxbuffersize=rxbuffersize)
 else:
     datapath='./data/radardata5s-1101fast3move.npy'
