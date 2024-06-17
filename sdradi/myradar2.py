@@ -250,57 +250,183 @@ class RadarData:
         self.currentindex= self.currentindex+1
         return currentdata, len(currentdata), self.currentindex
 
+
+class PhaserDevice:
+    def __init__(self, phaserurl, sdr, vco_freq, BW=500e6, ramp_time=0.5e3, device_mode="rx", Blackman= True, tddmode=False):
+        #my_phaser = adi.CN0566(uri=rpi_ip, sdr=my_sdr)
+        my_phaser = CN0566(uri=phaserurl, sdr=sdr)
+        print("Phaser url: ", my_phaser.uri)
+        print("Phaser already connected")
+
+        # Initialize both ADAR1000s, set gains to max, and all phases to 0
+        my_phaser.configure(device_mode=device_mode)
+        my_phaser.load_gain_cal()
+        my_phaser.load_phase_cal()
+        for i in range(0, 8):
+            my_phaser.set_chan_phase(i, 0)
+
+        if Blackman == True:
+            gain_list = [8, 34, 84, 127, 127, 84, 34, 8]  # Blackman taper
+            for i in range(0, len(gain_list)):
+                my_phaser.set_chan_gain(i, gain_list[i], apply_cal=True)
+        else:
+            # Set all antenna elements to half scale - a typical HB100 will have plenty of signal power.
+            gain = 64 # 64 is about half scale
+            for i in range(8):
+                my_phaser.set_chan_gain(i, gain, apply_cal=False)
+    
+        self.my_phaser = my_phaser
+        self.setupPiGPIO() #new added
+        self.setupADF4159(vco_freq=vco_freq, ramp_time=ramp_time, BW=BW, tddmode=tddmode)
+    
+    def setupADF4159(self, vco_freq=12.145e9, ramp_time=0.5e3, BW= 500e6, tddmode=False):
+        # Configure the ADF4159 Rampling PLL
+        my_phaser = self.my_phaser
+        #BW = 500e6
+        #num_steps = 500
+        num_steps = int(ramp_time)    # in general it works best if there is 1 step per us
+        #ramp_time = 0.5e3  # us
+        #output_freq = 12.145e9
+        #vco_freq = int(output_freq + signal_freq + center_freq) #12.1GHz
+        my_phaser.frequency = int(vco_freq / 4)  # Output frequency divided by 4
+        my_phaser.freq_dev_range = int(
+            BW / 4
+        )  # frequency deviation range in Hz.  This is the total freq deviation of the complete freq ramp
+        my_phaser.freq_dev_step = int(
+            (BW/4) / num_steps
+        )  # frequency deviation step in Hz.  This is fDEV, in Hz.  Can be positive or negative
+        my_phaser.freq_dev_time = int(
+            ramp_time
+        )  # total time (in us) of the complete frequency ramp
+        print("requested freq dev time = ", ramp_time)
+        ramp_time = my_phaser.freq_dev_time
+        ramp_time_s = ramp_time / 1e6
+        print("actual freq dev time = ", ramp_time)
+        my_phaser.delay_word = 4095  # 12 bit delay word.  4095*PFD = 40.95 us.  For sawtooth ramps, this is also the length of the Ramp_complete signal
+        my_phaser.delay_clk = "PFD"  # can be 'PFD' or 'PFD*CLK1'
+        my_phaser.delay_start_en = 0  # delay start
+        my_phaser.ramp_delay_en = 0  # delay between ramps.
+        my_phaser.trig_delay_en = 0  # triangle delay
+        if tddmode:
+            my_phaser.ramp_mode = "single_sawtooth_burst"
+            ##"continuous_triangular"  # ramp_mode can be:  "disabled", "continuous_sawtooth", "continuous_triangular", "single_sawtooth_burst", "single_ramp_burst"
+            my_phaser.tx_trig_en = 1  # start a ramp with TXdata
+        else:
+            my_phaser.ramp_mode = "continuous_triangular"
+            my_phaser.tx_trig_en = 0  # start a ramp with TXdata
+        my_phaser.sing_ful_tri = (
+            0  # full triangle enable/disable -- this is used with the single_ramp_burst mode
+        )
+        my_phaser.enable = 0  # 0 = PLL enable.  Write this last to update all the registers
+
+
+    def setupPiGPIO(self):
+        # Setup Raspberry Pi GPIO states
+        try:
+            self.my_phaser._gpios.gpio_tx_sw = 0  # 0 = TX_OUT_2, 1 = TX_OUT_1
+            self.my_phaser._gpios.gpio_vctrl_1 = 1 # 1=Use onboard PLL/LO source  (0=disable PLL and VCO, and set switch to use external LO input)
+            self.my_phaser._gpios.gpio_vctrl_2 = 1 # 1=Send LO to transmit circuitry  (0=disable Tx path, and send LO to LO_OUT)
+        except:
+            self.my_phaser.gpios.gpio_tx_sw = 0  # 0 = TX_OUT_2, 1 = TX_OUT_1
+            self.my_phaser.gpios.gpio_vctrl_1 = 1 # 1=Use onboard PLL/LO source  (0=disable PLL and VCO, and set switch to use external LO input)
+            self.my_phaser.gpios.gpio_vctrl_2 = 1 # 1=Send LO to transmit circuitry  (0=disable Tx path, and send LO to LO_OUT)
+
+        
+
 class RadarDevice:
-    def __init__(self, sdrurl, phaserurl, samplerate =0.6e6, rxbuffersize = 1024*16, rx_gain=20):
-        self.Rx_CHANNEL = 2
-        self.Tx_CHANNEL = 2
-        self.samplerate = samplerate
-        self.center_freq = 2.1e9 #2.1G
-        self.signal_freq = 100e3 #100K
+    def __init__(self, sdrurl, phaserurl, sample_rate=0.6e6, center_freq=2.1e9, \
+                 rxbuffersize = 1024*8, rx_gain=20, Rx_CHANNEL = 2, Tx_CHANNEL = 2,\
+                signal_freq = 100e3, bandwidth = 4000000, output_freq = 10e9, tddmode=False):
+        self.Rx_CHANNEL = Rx_CHANNEL
+        self.Tx_CHANNEL = Tx_CHANNEL
+        self.center_freq = center_freq #2.1e9 #fc=2.1G
         self.rxbuffersize=rxbuffersize #fft_size
-
-        fc=2.4*1e9 #2Ghz 2000000000
-        fs = 6000000 #6MHz
-        bandwidth = 4000000 #4MHz
+        self.tddmode = tddmode
         self.mysdr = SDR(SDR_IP=sdrurl, SDR_FC=self.center_freq, \
-                         SDR_TX_GAIN=-80, SDR_RX_GAIN=0, \
-                        SDR_SAMPLERATE=1e6, SDR_BANDWIDTH=1e6, \
-                            Rx_CHANNEL=2, Tx_CHANNEL=1)
+                        SDR_SAMPLERATE=sample_rate, SDR_BANDWIDTH=1e6, \
+                            Rx_CHANNEL=Rx_CHANNEL, Tx_CHANNEL=Tx_CHANNEL)
         self.mysdr.SDR_TX_stop()
-        self.mysdr.SDR_TX_setup()
+        # must set cyclic buffer to true for the tdd burst mode.  Otherwise Tx will turn on and off randomly
+        self.mysdr.SDR_TX_setup(cyclic_buffer=True, tx1_gain=-88, tx2_gain=0)
         self.mysdr.SDR_RX_setup(n_SAMPLES=rxbuffersize, controlmode='manual', rx1_gain=rx_gain, rx2_gain=rx_gain) ## set the RX buffer size to 3 times the number of samples
-        self.mysdr.SDR_gain_set(tx_gain=0, rx_gain=30)
+        #self.mysdr.SDR_gain_set(tx_gain=0, rx_gain=30)
 
+        self.signal_freq = signal_freq #100e3 #100K
+        self.bandwidth = bandwidth #4000000 #4MHz
+        #output_freq = 10e9 #10GHz
+        ramp_time = 0.5e3 # ramp time in us
+        #num_steps = 500
+        self.num_steps = int(ramp_time)    # in general it works best if there is 1 step per us
+        vco_freq = int(output_freq + signal_freq + center_freq) #12.1GHz
+        myphaser = PhaserDevice(phaserurl=phaserurl, sdr=self.mysdr.sdr, vco_freq=vco_freq, BW=bandwidth, ramp_time=ramp_time, tddmode=tddmode)
+        
+        #Read parameters from device
+        self.ramp_time = myphaser.my_phaser.freq_dev_time
+        self.ramp_time_s = self.ramp_time / 1e6
+        self.sample_rate = int(self.mysdr.sdr.sample_rate) #0.6MHz
+        self.fft_size = int(self.mysdr.sdr.rx_buffer_size) #8192
+        
+        # Print config
+        c = 3e8
+        wavelength = c / output_freq #0.03
+        freq = np.linspace(-self.sample_rate / 2, self.sample_rate / 2, int(self.fft_size)) #(8192,)
+        slope = bandwidth / self.ramp_time_s #1e12
+        dist = (freq - signal_freq) * c / (2 * slope) #(8192,)
+        plot_dist = False
+        print(
+            """
+        CONFIG:
+        Sample rate: {sample_rate}MHz
+        Num samples: 2^{Nlog2}
+        Bandwidth: {BW}MHz
+        Ramp time: {ramp_time}ms
+        Output frequency: {output_freq}MHz
+        IF: {signal_freq}kHz
+        """.format(
+                sample_rate=sample_rate / 1e6, #0.6MHz
+                #Nlog2=int(np.log2(fft_size)),
+                Nlog2=int(np.log2(self.fft_size)), #Num samples: 2^13
+                BW=bandwidth / 1e6, #500Mhz
+                ramp_time=self.ramp_time / 1e3, #0.5ms
+                output_freq=output_freq / 1e6, #10Ghz
+                signal_freq=signal_freq / 1e3, #100KHz
+            )
+        )
 
-        self.sdr, self.phaser, self.BW, self.num_steps, self.ramp_time_s=setupalldevices(sdrurl, phaserurl, self.Rx_CHANNEL, self.Tx_CHANNEL, self.samplerate, \
-                                    self.center_freq, self.signal_freq, self.rxbuffersize)
+        # self.sdr, self.phaser, self.BW, self.num_steps, self.ramp_time_s=setupalldevices(sdrurl, phaserurl, self.Rx_CHANNEL, self.Tx_CHANNEL, self.samplerate, \
+        #                             self.center_freq, self.signal_freq, self.rxbuffersize)
 
         self.transmitsetup()
         self.transmit()
     
     def returnparameters(self):
         c = 3e8
-        fs= int(self.samplerate)
+        fs= int(self.sample_rate)
         freq = np.linspace(-fs / 2, fs / 2, self.rxbuffersize)
-        self.slope = self.BW / self.ramp_time_s
+        self.slope = self.bandwidth / self.ramp_time_s
         print("Slope: %0.2fMHz/s" % (self.slope / 1e6))
         self.N_s = int(self.ramp_time_s * fs) #Number ADC sampling points in each chirp, 600
         self.N_c = int(self.rxbuffersize/self.N_s)-1 #number of chirps in fft_size
         dist = (freq - self.signal_freq) * c / (4 * self.slope)
         range_resolution = c / (2 * self.BW) #0.3
         range_x = (self.signal_freq) * c / (4 * self.slope) #15
-        return c, self.BW, self.num_steps, self.ramp_time_s, self.slope, self.N_c, self.N_s, freq, dist, range_resolution, self.signal_freq, range_x
+        return c, self.bandwidth, self.num_steps, self.ramp_time_s, self.slope, self.N_c, self.N_s, freq, dist, range_resolution, self.signal_freq, range_x
 
-    def transmitsetup(self):
-        fs = int(self.sdr.sample_rate) #0.6MHz
+    def transmitsetup(self, signaltype='sinusoid'):
+        fs = int(self.sample_rate) #0.6MHz
         print("sample_rate:", fs)
-        N = int(self.sdr.rx_buffer_size)
-        self.iq = createcomplexsinusoid(fs, self.signal_freq, N)
-        iq_300k = createcomplexsinusoid(fs, self.signal_freq*3, N)
-        self.sdr._ctx.set_timeout(0)
+        N = int(self.fft_size)#sdr.rx_buffer_size)
+        if signaltype=='sinusoid':
+            self.iq = createcomplexsinusoid(fs, self.signal_freq, N)
+            iq_300k = createcomplexsinusoid(fs, self.signal_freq*3, N)
+        #self.sdr._ctx.set_timeout(0)
+        self.mysdr.sdr._ctx.set_timeout(30000)
+        if self.tddmode:
+            self.mysdr.sdr._rx_init_channels()
     
     def transmit(self):
-        self.sdr.tx([self.iq * 0.5, self.iq])  # only send data to the 2nd channel (that's all we need)
+        #self.sdr.tx([self.iq * 0.5, self.iq])  # only send data to the 2nd channel (that's all we need)
+        self.mysdr.SDR_TX_send(SAMPLES=self.iq * 0.5, SAMPLES2=self.iq, leadingzeros=0, cyclic=True)
     
     def receive(self, index):
         self.currentindex = index

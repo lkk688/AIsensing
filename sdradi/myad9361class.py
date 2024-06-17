@@ -87,15 +87,14 @@ def ddstone(sdr, dualtune=True, dds_freq_hz = 10000, dds_scale = 0.9):
 
 #modified based on https://github.com/lkk688/AIsensing/blob/main/deeplearning/SDR.py
 class SDR:
-    def __init__(self, SDR_IP, SDR_FC=2000000000, SDR_TX_GAIN=-80, \
-                 SDR_RX_GAIN=0, SDR_SAMPLERATE=1e6, SDR_BANDWIDTH=1e6, \
+    def __init__(self, SDR_IP, SDR_FC=2000000000, SDR_SAMPLERATE=1e6, SDR_BANDWIDTH=1e6, \
                     Rx_CHANNEL=2, Tx_CHANNEL=1):
     
         self.SDR_IP = SDR_IP # IP address of the TX SDR device
         self.SDR_TX_FREQ = int(SDR_FC) # TX center frequency in Hz,  #2Ghz 2000000000
         self.SDR_RX_FREQ = int(SDR_FC) # RX center frequency in Hz
-        self.SDR_TX_GAIN = int(SDR_TX_GAIN) # TX gain in dB
-        self.SDR_RX_GAIN = int(SDR_RX_GAIN) # RX gain in dB
+        #self.SDR_TX_GAIN = int(SDR_TX_GAIN) # TX gain in dB
+        #self.SDR_RX_GAIN = int(SDR_RX_GAIN) # RX gain in dB
         self.SDR_SAMPLERATE = int(SDR_SAMPLERATE) # TX sample rate (samples/second)
         self.SDR_TX_BANDWIDTH = int(SDR_BANDWIDTH) # TX bandwidth (Hz)
         self.SDR_RX_BANDWIDTH = int(SDR_BANDWIDTH) # RX bandwidth (Hz)
@@ -134,7 +133,7 @@ class SDR:
         return sdr
         
 
-    def SDR_TX_setup(self, cyclic_buffer=True):
+    def SDR_TX_setup(self, cyclic_buffer=True, tx1_gain = None, tx2_gain = None):
         '''
         Initialize and start the SDR transmitter.
 
@@ -168,7 +167,10 @@ class SDR:
         #self.sdr.rx_rf_bandwidth = self.SDR_TX_BANDWIDTH
 
         # Set the hardware gain for both TX and RX
-        self.sdr.tx_hardwaregain_chan0 = self.SDR_TX_GAIN  # TX gain
+        if tx1_gain is not None:
+            self.sdr.tx_hardwaregain_chan0 = tx1_gain  # TX gain
+        elif self.Tx_CHANNEL==2 and tx2_gain is not None:
+            self.sdr.tx_hardwaregain_chan1 = tx2_gain
         #self.sdr.rx_hardwaregain_chan0 = self.SDR_RX_GAIN  # RX gain -30
 
         # Clear transmit buffer again to ensure a clean start
@@ -179,7 +181,12 @@ class SDR:
         Set the TX and RX gain
         '''
         self.sdr.tx_hardwaregain_chan0 = tx_gain
+        if self.Tx_CHANNEL==2:
+            self.sdr.tx_hardwaregain_chan1 = tx_gain
         self.sdr.rx_hardwaregain_chan0 = rx_gain
+        if self.Rx_CHANNEL==2:
+            self.sdr.rx_hardwaregain_chan1 = rx_gain
+
 
     def SDR_TX_stop(self):
         '''
@@ -294,7 +301,7 @@ class SDR:
         return alldata0, processtime
 
 
-    def SDR_TX_send(self, SAMPLES, max_scale=1, leadingzeros=0, cyclic=False):
+    def SDR_TX_send(self, SAMPLES, SAMPLES2=None, max_scale=1, normalize=False, leadingzeros=0, cyclic=False):
         '''
         Transmit the given signal samples through the SDR transmitter.
 
@@ -324,6 +331,8 @@ class SDR:
         elif isinstance(SAMPLES, list):
             self.num_samples = len(SAMPLES) #"Input data is a Python list."
             SAMPLES = np.array(SAMPLES)
+            if SAMPLES2 is not None:
+                SAMPLES2=np.arrya(SAMPLES2)
         else:
             print("Input data is neither a NumPy array nor a Python list.")
 
@@ -335,15 +344,25 @@ class SDR:
 
         # # Scale the signal to the dynamic range expected by the SDR hardware
         # samples *= 2**14  # scale the samples to 16-bit PlutoSDR, for example, expects sample values in the range -2^14 to +2^14
-        samples = normalize_complexsignal(SAMPLES, max_scale=max_scale, scale4sdr=True)
+        if normalize:
+            SAMPLES = normalize_complexsignal(SAMPLES, max_scale=max_scale, scale4sdr=True)
+            if SAMPLES2 is not None:
+                SAMPLES2 = normalize_complexsignal(SAMPLES2, max_scale=max_scale, scale4sdr=True)
         if leadingzeros >0:
             leading_zeroes = np.zeros(leadingzeros, dtype=np.complex64)  # Leading 500 zeroes for noise floor measurement
-            samples = np.concatenate([leading_zeroes, samples], axis=0)  # Add the quiet for noise measurements
+            SAMPLES = np.concatenate([leading_zeroes, SAMPLES], axis=0)  # Add the quiet for noise measurements
+            if SAMPLES2 is not None:
+                SAMPLES2 = np.concatenate([leading_zeroes, SAMPLES2], axis=0)
         # Set cyclic buffer mode if required
         self.sdr.tx_cyclic_buffer = cyclic
 
         # Transmit the prepared samples
-        self.sdr.tx(samples)
+        if self.Tx_CHANNEL ==1:
+            self.sdr.tx(SAMPLES)
+        elif self.Tx_CHANNEL ==2 and SAMPLES2 is not None:
+            self.sdr.tx([SAMPLES, SAMPLES2])
+        else:
+            self.sdr.tx([SAMPLES, SAMPLES])
 
     def SDR_TX_signalgen(self, signal_type='sinusoid', f_signal=int(1000000), N=1024, leadingzeros=0, cyclic=True):
         self.sdr.tx_destroy_buffer()  # Clear any existing buffer
@@ -371,9 +390,9 @@ class SDR:
 
         #x_sdr = mysdr(SAMPLES = x_time, SDR_TX_GAIN=-10, SDR_RX_GAIN = 10, add_td_samples = 16, debug=True) # transmit
         self.SDR_TX_stop()
-        self.SDR_TX_setup()
-        self.SDR_RX_setup(n_SAMPLES=(num_samples+leadingzeros)*3) ## set the RX buffer size to 3 times the number of samples
-        self.SDR_gain_set(tx_gain=0, rx_gain=30)
+        self.SDR_TX_setup(cyclic_buffer=True, tx1_gain=-10, tx2_gain=-10)
+        self.SDR_RX_setup(n_SAMPLES=(num_samples+leadingzeros)*3, controlmode='manual', rx1_gain=10, rx2_gain=10) ## set the RX buffer size to 3 times the number of samples
+        #self.SDR_gain_set(tx_gain=0, rx_gain=30)
         time.sleep(0.3)  # Wait for settings to take effect
 
         now = time.time() # for measuing the duration of the process
