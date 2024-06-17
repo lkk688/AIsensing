@@ -87,7 +87,9 @@ def ddstone(sdr, dualtune=True, dds_freq_hz = 10000, dds_scale = 0.9):
 
 #modified based on https://github.com/lkk688/AIsensing/blob/main/deeplearning/SDR.py
 class SDR:
-    def __init__(self, SDR_IP, SDR_FC=2000000000, SDR_TX_GAIN=-80, SDR_RX_GAIN=0, SDR_SAMPLERATE=1e6, SDR_BANDWIDTH=1e6):
+    def __init__(self, SDR_IP, SDR_FC=2000000000, SDR_TX_GAIN=-80, \
+                 SDR_RX_GAIN=0, SDR_SAMPLERATE=1e6, SDR_BANDWIDTH=1e6, \
+                    Rx_CHANNEL=2, Tx_CHANNEL=1):
     
         self.SDR_IP = SDR_IP # IP address of the TX SDR device
         self.SDR_TX_FREQ = int(SDR_FC) # TX center frequency in Hz,  #2Ghz 2000000000
@@ -98,7 +100,7 @@ class SDR:
         self.SDR_TX_BANDWIDTH = int(SDR_BANDWIDTH) # TX bandwidth (Hz)
         self.SDR_RX_BANDWIDTH = int(SDR_BANDWIDTH) # RX bandwidth (Hz)
         self.num_samples=0
-        self.sdr = self.setupSDR(fs=SDR_SAMPLERATE)
+        self.sdr = self.setupSDR(fs=SDR_SAMPLERATE, useAD9361=True, Rx_CHANNEL=Rx_CHANNEL, Tx_CHANNEL=Tx_CHANNEL)
 
     #new added
     def setupSDR(self, fs= 6000000, useAD9361=True, Rx_CHANNEL=2, Tx_CHANNEL=1): #default fs=6Mhz
@@ -120,7 +122,7 @@ class SDR:
 
         # Configuration data channels
         if Rx_CHANNEL==2:
-            sdr.rx_enabled_channels = [0,1] #enable two rx channel
+            sdr.rx_enabled_channels = [0,1] #enable two rx channel, # enable Rx1 (voltage0) and Rx2 (voltage1)
         elif Rx_CHANNEL==1:
             sdr.rx_enabled_channels = [0] #enables Rx0
         if Tx_CHANNEL==2:
@@ -186,7 +188,7 @@ class SDR:
         self.sdr.tx_destroy_buffer() 
         self.sdr.rx_destroy_buffer()
 
-    def SDR_RX_setup(self, n_SAMPLES=None, controlmode='manual'):
+    def SDR_RX_setup(self, n_SAMPLES=None, controlmode='manual', rx1_gain = None, rx2_gain = None):
         '''
         Receive signal samples from the SDR receiver.
 
@@ -212,9 +214,15 @@ class SDR:
         self.sdr.rx_lo = self.SDR_RX_FREQ #SDR_TX_FREQ  # Receive frequency (set to the same as TX)
         # Set gain control mode to manual for the TX channel
         self.sdr.gain_control_mode_chan0 = controlmode #"slow_attack" #'manual'
+        if self.Rx_CHANNEL ==2:
+            self.sdr.gain_control_mode_chan1 = controlmode
         # Set the hardware gain for both TX and RX
         self.sdr.rx_rf_bandwidth = self.SDR_RX_BANDWIDTH # rx filter cutoff 
 
+        if rx1_gain is not None:
+            self.sdr.rx_hardwaregain_chan0 = int(rx1_gain)
+        if rx2_gain is not None and self.Rx_CHANNEL ==2:
+            self.sdr.rx_hardwaregain_chan1 = int(rx2_gain)
         # Clear the receiver buffer to prepare for new data
         self.sdr.rx_destroy_buffer()# clear any data from rx buffer
 

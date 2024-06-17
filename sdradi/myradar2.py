@@ -8,7 +8,8 @@ from scipy import signal
 from timeit import default_timer as timer
 import phaser.mycn0566 as mycn0566
 CN0566=mycn0566.CN0566
-    
+
+from myad9361class import SDR
 
 # Read back properties from hardware https://analogdevicesinc.github.io/pyadi-iio/devices/adi.ad936x.html
 def printSDRproperties(sdr):
@@ -250,13 +251,26 @@ class RadarData:
         return currentdata, len(currentdata), self.currentindex
 
 class RadarDevice:
-    def __init__(self, sdrurl, phaserurl, samplerate =0.6e6, rxbuffersize = 1024*16):
+    def __init__(self, sdrurl, phaserurl, samplerate =0.6e6, rxbuffersize = 1024*16, rx_gain=20):
         self.Rx_CHANNEL = 2
         self.Tx_CHANNEL = 2
         self.samplerate = samplerate
         self.center_freq = 2.1e9 #2.1G
         self.signal_freq = 100e3 #100K
-        self.rxbuffersize=rxbuffersize
+        self.rxbuffersize=rxbuffersize #fft_size
+
+        fc=2.4*1e9 #2Ghz 2000000000
+        fs = 6000000 #6MHz
+        bandwidth = 4000000 #4MHz
+        self.mysdr = SDR(SDR_IP=sdrurl, SDR_FC=self.center_freq, \
+                         SDR_TX_GAIN=-80, SDR_RX_GAIN=0, \
+                        SDR_SAMPLERATE=1e6, SDR_BANDWIDTH=1e6, \
+                            Rx_CHANNEL=2, Tx_CHANNEL=1)
+        self.mysdr.SDR_TX_stop()
+        self.mysdr.SDR_TX_setup()
+        self.mysdr.SDR_RX_setup(n_SAMPLES=rxbuffersize, controlmode='manual', rx1_gain=rx_gain, rx2_gain=rx_gain) ## set the RX buffer size to 3 times the number of samples
+        self.mysdr.SDR_gain_set(tx_gain=0, rx_gain=30)
+
 
         self.sdr, self.phaser, self.BW, self.num_steps, self.ramp_time_s=setupalldevices(sdrurl, phaserurl, self.Rx_CHANNEL, self.Tx_CHANNEL, self.samplerate, \
                                     self.center_freq, self.signal_freq, self.rxbuffersize)
