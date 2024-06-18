@@ -333,6 +333,22 @@ mode=2r2t
 $ exit
 ```
 
+## TDD Engine
+The latest version of `pyadi-iio' from pip is `0.016` and does not contain the tddn. Need to install the pyadi-iio from source.
+```bash
+python
+  import adi
+  print(adi.__version__)
+  #0.0.16 tddn not available there
+git clone https://github.com/analogdevicesinc/pyadi-iio.git
+(mycondapy310) PS D:\Developer\pyadi-iio> pip install .
+  Successfully installed pyadi-iio-0.0.17
+python
+>>> import adi
+>>> print(adi.__version__)
+0.0.17
+```
+
 # Processing Code
 Install Pytorch and Tensorflow
 ```bash

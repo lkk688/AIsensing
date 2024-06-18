@@ -2,12 +2,15 @@ import time
 import os
 from time import sleep
 import adi
+print(adi.__version__)
+#0.0.16 tddn not available there
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy import signal
 from timeit import default_timer as timer
 import phaser.mycn0566 as mycn0566
 CN0566=mycn0566.CN0566
+from aditddn import tddn
 
 from myad9361class import SDR
 from processing import cfar, get_spectrum, select_chirp, estimate_velocity
@@ -478,7 +481,7 @@ class RadarDevice:
         c = 3e8
         BW = self.bandwidth
         wavelength = c / self.output_freq #0.03
-        R_res = self.c / (2 * BW)
+        R_res = c / (2 * BW)
         v_res = wavelength / (2 * num_bursts * PRI)
 
         # Doppler spectrum limits
@@ -501,12 +504,14 @@ class RadarDevice:
     def setupTDD(self, num_chirps = 1):
         """ Synchronize chirps to the start of each Pluto receive buffer
         """
+        
         # Configure TDD controller
         ramp_time = int(self.ramp_time)
         sdr_pins = adi.one_bit_adc_dac(self.sdrurl)
         sdr_pins.gpio_tdd_ext_sync = True # If set to True, this enables external capture triggering using the L24N GPIO on the Pluto.  When set to false, an internal trigger pulse will be generated every second
         
-        tdd = adi.tddn(self.sdrurl)
+        #tdd = adi.tddn(self.sdrurl)
+        tdd = tddn(self.sdrurl)
         sdr_pins.gpio_phaser_enable = True
         tdd.enable = False         # disable TDD to configure the registers
         tdd.sync_external = True
@@ -525,6 +530,7 @@ class RadarDevice:
         tdd.channel[1].off_ms = 0.1
         tdd.channel[2].enable = False
         tdd.enable = True
+        return tdd, sdr_pins
 
     def getTDDparameters(self):
         # From start of each ramp, how many "good" points do we want?
