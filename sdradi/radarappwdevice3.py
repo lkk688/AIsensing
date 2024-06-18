@@ -1,4 +1,4 @@
-from myradar2 import RadarDevice, RadarData  # createcomplexsinusoid
+from myradar3 import RadarDevice, RadarData  # createcomplexsinusoid
 import pyqtgraph as pg  # pip install pyqtgraph
 from pyqtgraph.Qt import QtCore, QtGui
 import sys
@@ -75,6 +75,7 @@ num_chirps = 1 #128 for TDD mode
 baseip = 'ip:phaser'
 UseRadarDevice = True
 tddmode =False # Use TDD mode or not
+signaltype='sinusoid' #OFDM'
 if UseRadarDevice == True:
     sdrurl = baseip+":50901"  # "ip:pluto.local" #ip:phaser.local:50901
     phaserurl = baseip  # "ip:phaser.local"
@@ -82,6 +83,9 @@ if UseRadarDevice == True:
                         rxbuffersize=rxbuffersize, sdr_bandwidth=sample_rate*5, rx_gain=20, Rx_CHANNEL=2, Tx_CHANNEL=2,
                         signal_freq=signal_freq, chirp_bandwidth=default_chirp_bw, \
                             output_freq=output_freq, ramp_time = ramp_time, num_chirps=num_chirps, tddmode=tddmode)
+    #radar.transceiversetup(signaltype='sinusoid') #signaltype=='OFDM'
+    radar.transceiversetup(signaltype=signaltype)
+    radar.transmit()
 else:
     datapath = './data/radardata.npy'
     radar = RadarData(datapath=datapath, samplerate=sample_rate,

@@ -63,18 +63,18 @@ class CN0566(adf4159, adar1000_array):
         """ Set up devices, properties, helper methods, etc. """
         if verbose is True:
             print("attempting to open ADF4159, uri: ", str(uri))
-        sleep(0.5)
+        sleep(1)
         adf4159.__init__(self, uri)
         if verbose is True:
             print("attempting to open ADAR1000 array, uri: ", str(uri))
-        sleep(0.5)
+        sleep(1)
         adar1000_array.__init__(
             self, uri, _chip_ids, _device_map, _element_map, _device_element_map
         )
 
         if verbose is True:
             print("attempting to open gpios , uri: ", str(uri))
-        sleep(1.5)
+        sleep(2)
         self._gpios = adi.one_bit_adc_dac(uri)
 
         if verbose is True:

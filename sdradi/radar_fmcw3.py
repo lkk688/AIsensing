@@ -16,6 +16,8 @@ import adi
 print(adi.__version__)
 import phaser.mycn0566 as mycn0566
 CN0566=mycn0566.CN0566
+from aditddn import tddn
+from time import sleep
 
 '''Key Parameters'''
 sample_rate = 5e6 
@@ -39,6 +41,7 @@ baseip = 'ip:phaser'
 rpi_ip = baseip #"ip:phaser.local"  # IP address of the Raspberry Pi
 sdr_ip = baseip+":50901" #"ip:192.168.2.1"  # "192.168.2.1, or pluto.local"  # IP address of the Transceiver Block
 my_sdr = adi.ad9361(uri=sdr_ip)
+sleep(2)
 my_phaser = CN0566(uri=rpi_ip, sdr=my_sdr) #adi.CN0566(uri=rpi_ip, sdr=my_sdr)
 
 # Initialize both ADAR1000s, set gains to max, and all phases to 0
@@ -100,7 +103,8 @@ my_phaser.enable = 0  # 0 = PLL enable.  Write this last to update all the regis
 # Configure TDD controller
 sdr_pins = adi.one_bit_adc_dac(sdr_ip)
 sdr_pins.gpio_tdd_ext_sync = True # If set to True, this enables external capture triggering using the L24N GPIO on the Pluto.  When set to false, an internal trigger pulse will be generated every second
-tdd = adi.tddn(sdr_ip)
+#tdd = adi.tddn(sdr_ip)
+tdd = tddn(sdr_ip)
 sdr_pins.gpio_phaser_enable = True
 tdd.enable = False         # disable TDD to configure the registers
 tdd.sync_external = True

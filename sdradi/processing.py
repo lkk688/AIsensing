@@ -6,6 +6,20 @@ import matplotlib
 import matplotlib.pyplot as plt
 plt.rcParams['font.size'] = 8.0
 
+def create_singlechannel_complexOFDMMIMO():
+    from myofdm import OFDMSymbol, OFDMAMIMO
+    myofdm = OFDMAMIMO(num_rx = 1, num_tx = 1, \
+                batch_size =1, fft_size = 128, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
+                USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=False) #pilot_pattern= "kronecker" "empty"
+    #channeltype="perfect", "awgn", "ofdm", "time"
+    SAMPLES, x_rg = myofdm.transmit(b=None) #samples: (1, 1, 1, 1876)
+    #output: complex Time-domain OFDM signal [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols*(fft_size+cyclic_prefix_length)]
+    #SampleRate = rg.fft_size*rg.subcarrier_spacing # sample 
+    SampleRate = myofdm.RESOURCE_GRID.fft_size * myofdm.RESOURCE_GRID.subcarrier_spacing #1920000
+
+    bandwidth = SampleRate *1.1
+    return SAMPLES.flatten(), SampleRate, bandwidth
+
 def createcomplexsinusoid(fs, fc = 3000000, N = 1024):
     # Create a complex sinusoid
     #fc = 3000000

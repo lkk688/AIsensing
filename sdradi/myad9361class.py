@@ -97,7 +97,7 @@ class SDR:
         self.SDR_SAMPLERATE = int(SDR_SAMPLERATE) # TX sample rate (samples/second)
         self.SDR_TX_BANDWIDTH = int(SDR_BANDWIDTH) # TX bandwidth (Hz)
         self.SDR_RX_BANDWIDTH = int(SDR_BANDWIDTH) # RX bandwidth (Hz)
-        self.num_samples=0
+        self.num_samples=int(SDR_SAMPLERATE/10) #default save 0.1s data
         self.sdr = self.setupSDR(fs=SDR_SAMPLERATE, useAD9361=True, Rx_CHANNEL=Rx_CHANNEL, Tx_CHANNEL=Tx_CHANNEL)
 
     #new added
@@ -132,7 +132,7 @@ class SDR:
         return sdr
         
 
-    def SDR_TX_setup(self, cyclic_buffer=True, tx1_gain = None, tx2_gain = None):
+    def SDR_TX_setup(self, cyclic_buffer=True, tx_bandwidth=None, tx1_gain = None, tx2_gain = None):
         '''
         Initialize and start the SDR transmitter.
 
@@ -162,7 +162,11 @@ class SDR:
         #self.sdr.sample_rate = self.SDR_TX_SAMPLERATE
 
         # Set the RF bandwidth for both TX and RX
-        self.sdr.tx_rf_bandwidth = self.SDR_TX_BANDWIDTH
+        if tx_bandwidth is not None:
+            self.sdr.tx_rf_bandwidth = tx_bandwidth
+        else:
+            self.sdr.tx_rf_bandwidth = self.SDR_TX_BANDWIDTH
+            self.SDR_TX_BANDWIDTH = tx_bandwidth
         #self.sdr.rx_rf_bandwidth = self.SDR_TX_BANDWIDTH
 
         # Set the hardware gain for both TX and RX
@@ -194,7 +198,7 @@ class SDR:
         self.sdr.tx_destroy_buffer() 
         self.sdr.rx_destroy_buffer()
 
-    def SDR_RX_setup(self, n_SAMPLES=None, controlmode='manual', rx1_gain = None, rx2_gain = None):
+    def SDR_RX_setup(self, n_SAMPLES=None, controlmode='manual', sample_rate=None, rx_bandwidth=None, rx1_gain = None, rx2_gain = None):
         '''
         Receive signal samples from the SDR receiver.
 
@@ -222,8 +226,18 @@ class SDR:
         self.sdr.gain_control_mode_chan0 = controlmode #"slow_attack" #'manual'
         if self.Rx_CHANNEL ==2:
             self.sdr.gain_control_mode_chan1 = controlmode
+        
         # Set the hardware gain for both TX and RX
-        self.sdr.rx_rf_bandwidth = self.SDR_RX_BANDWIDTH # rx filter cutoff 
+        if rx_bandwidth is not None:
+            self.sdr.rx_rf_bandwidth = rx_bandwidth
+            self.SDR_RX_BANDWIDTH = rx_bandwidth
+        else:
+            self.sdr.rx_rf_bandwidth = self.SDR_RX_BANDWIDTH # rx filter cutoff 
+
+        if sample_rate is not None:
+        # update the sample rate for both TX and RX
+            self.sdr.sample_rate = sample_rate
+            self.SDR_SAMPLERATE = sample_rate
 
         if rx1_gain is not None:
             self.sdr.rx_hardwaregain_chan0 = int(rx1_gain)
