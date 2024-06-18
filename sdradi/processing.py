@@ -2,6 +2,7 @@ import numpy as np
 from scipy import ndimage
 from timeit import default_timer as timer
 from scipy import signal
+import matplotlib
 import matplotlib.pyplot as plt
 plt.rcParams['font.size'] = 8.0
 
@@ -172,19 +173,84 @@ def select_chirp(sum_data, num_chirps, good_ramp_samples, start_offset_samples, 
         burst_data[start_offset_samples:(start_offset_samples+good_ramp_samples)] = rx_bursts[burst]*win_funct
     return burst_data, win_funct
 
-def get_spectrum(data, fft_size, win_funct=None):
+def get_spectrum(data, fft_size=None, win_funct=None):
     if win_funct is None:
+        #creates a Blackman window of the same length as the input data array data
+        #reduce spectral leakage when performing Fourier transforms. 
+        # It smoothly tapers the edges of the data to minimize artifacts in the frequency domain.
         win_funct = np.blackman(len(data))
+        #the input data data is multiplied element-wise with the Blackman window
+        #emphasizing the central portion while attenuating the edges
         y = data * win_funct
     else:
         y = data
-    data_fft = np.fft.fft(y, n=fft_size)
+    #The Fast Fourier Transform (FFT) is applied to the windowed data y. 
+    # The result contains the complex-valued spectrum of the signal. 
+    if fft_size is None:
+        data_fft = np.fft.fft(y)
+    else:
+        data_fft = np.fft.fft(y, n=fft_size)
+    # Taking the absolute value ensures we have the magnitude spectrum.
     sp = np.absolute(data_fft)
+    #The FFT result is shifted so that the zero frequency component (DC component) is at the center of the spectrum. 
+    # This is useful for visualization and further processing.
     sp = np.fft.fftshift(sp)
+    #normalization accounts for the window’s effect
     s_mag = np.abs(sp) / np.sum(win_funct)
+    #To avoid division by zero, any values in s_mag below a threshold (here, 10 ** (-15)) are replaced with this minimum value.
     s_mag = np.maximum(s_mag, 10 ** (-15))
+    #The magnitude spectrum is converted to decibels (dBFS, or decibels relative to full scale). 
+    # Divided by (2^11) to match the range of SDR radio (same to transmit).
     s_dbfs = 20 * np.log10(s_mag / (2 ** 11))
     return s_dbfs
+
+def estimate_velocity(s_dbfs, N_frame, signal_freq, sample_rate):
+    #calculates the index corresponding to a specific frequency (signal_freq) in the spectrum
+    index_100 = int(N_frame/2+N_frame*signal_freq/sample_rate)
+    #The velocity range is determined based on the position of the desired frequency component.
+    vel_range = N_frame-index_100-1
+    #An array s_vel of zeros is created to store velocity information.
+    s_vel = np.zeros(N_frame)
+
+    #The for loop computes the velocity values for each index within the specified range. 
+    #The velocity is estimated using the difference in dBFS between adjacent frequency bins.
+    for i in range(vel_range):
+        index_high = index_100 + i
+        index_low = index_100 - i
+        #The velocity is estimated using the difference in dBFS between adjacent frequency bins.
+        s_vel[i] = 0.03/4 * (s_dbfs[index_high]-s_dbfs[index_low])*1000
+    #multiplied by a scaling factor (0.03/4) and converted to meters per second by multiplying by 1000
+    s_vel = np.ones(N_frame)*abs(s_vel)
+    return s_vel
+
+def plot_rangedoppler_spectrum(radar_data, dist, max_doppler_vel):
+    range_doppler_fig, ax = plt.subplots(figsize=(14, 7))
+    extent = [-max_doppler_vel, max_doppler_vel, dist.min(), dist.max()]
+    print(extent)
+    cmaps = ['inferno', 'plasma']
+    cmn = cmaps[0]
+    try:
+        range_doppler = ax.imshow(radar_data, aspect='auto',
+            extent=extent, origin='lower', cmap=matplotlib.colormaps.get_cmap(cmn),
+            )
+    except:
+        print("Using an older version of MatPlotLIB")
+        from matplotlib.cm import get_cmap
+        range_doppler = ax.imshow(radar_data, aspect='auto', vmin=0, vmax=8,
+            extent=extent, origin='lower', cmap=get_cmap(cmn),
+            )
+    ax.set_title('Range Doppler Spectrum', fontsize=24)
+    ax.set_xlabel('Velocity [m/s]', fontsize=22)
+    ax.set_ylabel('Range [m]', fontsize=22)
+    
+    max_range = 20
+    ax.set_xlim([-10, 10])
+    ax.set_ylim([0, max_range])
+    ax.set_yticks(np.arange(2, max_range, 2))
+    plt.xticks(fontsize=20)
+    plt.yticks(fontsize=20)
+    
+    
 
 def showspectrum(data, fs):
     # fc = int(100e3 / (fs / N_frame)) * (fs / N_frame) #300KHz

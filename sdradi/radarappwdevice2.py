@@ -59,7 +59,7 @@ elif Runtime == "Side6":
 # N_frame = fft_size
 # freq = np.linspace(-sample_rate / 2, sample_rate / 2, int(N_frame))
 
-
+'''Key Parameters'''
 default_chirp_bw = 500e6
 signal_freq = 100e3
 sample_rate = 0.6e6  # 0.6M
@@ -67,6 +67,8 @@ fs = int(sample_rate)  # 0.6MHz
 rxbuffersize = 1024 * 8  # 1024 * 16 * 15 #fft_size
 center_freq = 2.1e9
 output_freq = 10e9  # 10GHz
+ramp_time = 500  # us 0.5e3
+num_chirps = 1 #128 for TDD mode
 # output_freq = 12.145e9
 # int(output_freq 10e9 + signal_freq 100e3 + center_freq 2.1e9)
 
@@ -77,7 +79,8 @@ if UseRadarDevice == True:
     phaserurl = baseip  # "ip:phaser.local"
     radar = RadarDevice(sdrurl=sdrurl, phaserurl=phaserurl, sample_rate=fs, center_freq=center_freq,
                         rxbuffersize=rxbuffersize, sdr_bandwidth=sample_rate*5, rx_gain=20, Rx_CHANNEL=2, Tx_CHANNEL=2,
-                        signal_freq=signal_freq, chirp_bandwidth=default_chirp_bw, output_freq=output_freq, tddmode=False)
+                        signal_freq=signal_freq, chirp_bandwidth=default_chirp_bw, \
+                            output_freq=output_freq, ramp_time = ramp_time, num_chirps=num_chirps, tddmode=False)
 else:
     datapath = './data/radardata5s-1101fast3move.npy'
     radar = RadarData(datapath=datapath, samplerate=sample_rate,
@@ -86,6 +89,7 @@ else:
 c, BW, num_steps, ramp_time_s, slope, N_c, N_s, \
     freq, dist, range_resolution, signal_freq, range_x, \
     fft_size, rxbuffersize = radar.returnparameters()
+'''App Related Parameters'''
 N = rxbuffersize  # 2048#int(my_sdr.rx_buffer_size)
 num_slices = 50     # this sets how much time will be displayed on the waterfall plot
 N_frame = fft_size
@@ -96,14 +100,21 @@ plot_threshold = False
 cfar_toggle = False
 num_slices = 50     # this sets how much time will be displayed on the waterfall plot
 plot_freq = 100e3    # x-axis freq range to plot
+#setup the imageitem view for Waterfall plot
 img_array = np.ones((num_slices, fft_size))*(-100)
-
+plot_dist = False #plot distance instead of frequency
+save_data = False   # saves data for later processing
+f = "phaserRadarData.npy"
 
 class Window(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("MyRadar Test")
-        self.setGeometry(0, 0, 400, 400)  # (x,y, width, height)
+        self.setWindowTitle("RadarSensing")
+
+        # setting  the geometry of window 
+        #self.setGeometry(0, 0, 400, 400)  # (x,y, width, height)
+        self.setGeometry(50, 50, 600, 700) #x-coordinate, y-coordinate, width of window, height of window
+
         # self.setFixedWidth(600)
         # self.setWindowState(QtCore.Qt.WindowMaximized)
         self.num_rows = 12
@@ -484,19 +495,33 @@ def update():
     radar.tdd_burst()
     # data, datalen, index = radar.receive(index=index)
     s_dbfs = radar.get_spectrum()
+    #get velocity
+    s_vel = radar.get_velocity(s_dbfs)
 
+    #CFAR
     bias = win.cfar_bias.value()
     num_guard_cells = win.cfar_guard.value()
     num_ref_cells = win.cfar_ref.value()
     s_dbfs_cfar, s_dbfs_threshold = radar.cfar(
         s_dbfs, num_guard_cells, num_ref_cells, bias, cfar_method='average')
 
+    #fft_threshold
     win.fft_threshold.setData(freq, s_dbfs_threshold)
     if plot_threshold:
         win.fft_threshold.setVisible(True)
     else:
         win.fft_threshold.setVisible(False)
 
+    #fft_plot, fft_curve is fft_plot draw
+    if plot_dist: #plot distance
+        win.fft_curve.setData(dist, s_dbfs)
+        win.fft_plot.setLabel("bottom", text="Distance", units="m", **label_style)
+    else:
+        win.fft_curve.setData(freq, s_vel)
+        win.fft_plot.setLabel("bottom", text="Frequency", units="Hz", **label_style)
+
+
+    #waterfall figure (img_array)
     win.img_array = np.roll(win.img_array, 1, axis=0)
     if cfar_toggle:
         win.fft_curve.setData(freq, s_dbfs_cfar)

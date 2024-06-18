@@ -384,6 +384,7 @@ Check the Section `Radar UI` to install the required packages.
 
 
 # Radar UI 
+![Radar UI](../imgs/radarui2.png)
 
 ## Windows part
 Test mayavi:

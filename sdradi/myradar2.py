@@ -10,7 +10,7 @@ import phaser.mycn0566 as mycn0566
 CN0566=mycn0566.CN0566
 
 from myad9361class import SDR
-from processing import cfar, get_spectrum, select_chirp
+from processing import cfar, get_spectrum, select_chirp, estimate_velocity
 
 # Read back properties from hardware https://analogdevicesinc.github.io/pyadi-iio/devices/adi.ad936x.html
 def printSDRproperties(sdr):
@@ -253,14 +253,16 @@ class RadarData:
 
 
 class PhaserDevice:
-    def __init__(self, phaserurl, sdr, vco_freq, BW=500e6, ramp_time=0.5e3, device_mode="rx", Blackman= True, tddmode=False):
+    def __init__(self, phaserurl, sdr, vco_freq, output_freq=10.25e9, BW=500e6, ramp_time=0.5e3, device_mode="rx", Blackman= True, tddmode=False):
         #my_phaser = adi.CN0566(uri=rpi_ip, sdr=my_sdr)
         my_phaser = CN0566(uri=phaserurl, sdr=sdr)
         print("Phaser url: ", my_phaser.uri)
         print("Phaser already connected")
+        self.output_freq = output_freq
 
         # Initialize both ADAR1000s, set gains to max, and all phases to 0
         my_phaser.configure(device_mode=device_mode)
+        my_phaser.element_spacing = 0.014
         my_phaser.load_gain_cal()
         my_phaser.load_phase_cal()
         for i in range(0, 8):
@@ -325,18 +327,18 @@ class PhaserDevice:
         self.my_phaser.enable = 0
     
     def steer_angle(self, angle):
-        phase_delta = (
-            2
-            * 3.14159
-            * 10.25e9
-            * 0.014
+        # phase_delta = (
+        #     2
+        #     * 3.14159
+        #     * 10.25e9
+        #     * 0.014
+        #     * np.sin(np.radians(angle))
+        #     / (3e8)
+        # )
+        phase_delta = (2 * 3.14159 * self.output_freq * self.my_phaser.element_spacing
             * np.sin(np.radians(angle))
             / (3e8)
         )
-        # phase_delta = (2 * 3.14159 * output_freq * my_phaser.element_spacing
-        #     * np.sin(np.radians(self.steer_slider.value()))
-        #     / (3e8)
-        # )
         self.my_phaser.set_beam_phase_diff(np.degrees(phase_delta))
 
 
@@ -356,7 +358,8 @@ class PhaserDevice:
 class RadarDevice:
     def __init__(self, sdrurl, phaserurl, sample_rate=0.6e6, center_freq=2.1e9, \
                  rxbuffersize = 1024*8, sdr_bandwidth=1e6, rx_gain=20, Rx_CHANNEL = 2, Tx_CHANNEL = 2,\
-                signal_freq = 100e3, chirp_bandwidth = 4000000, output_freq = 10e9, tddmode=False):
+                signal_freq = 100e3, chirp_bandwidth = 4000000, output_freq = 10e9, ramp_time = 0.5e3, \
+                    num_chirps = 1, tddmode=False):
         self.sdrurl = sdrurl
         self.Rx_CHANNEL = Rx_CHANNEL
         self.Tx_CHANNEL = Tx_CHANNEL
@@ -375,12 +378,13 @@ class RadarDevice:
         self.signal_freq = signal_freq #100e3 #100K
         self.bandwidth = chirp_bandwidth #4000000 #4MHz
         self.output_freq = output_freq #10e9 #10GHz
-        ramp_time = 0.5e3 # ramp time in us
+        #ramp_time = 0.5e3 # ramp time in us
         #num_steps = 500
         self.num_steps = int(ramp_time)    # in general it works best if there is 1 step per us
         vco_freq = int(output_freq + signal_freq + center_freq) #12.1GHz
         myphaser = PhaserDevice(phaserurl=phaserurl, sdr=self.mysdr.sdr, \
-                                vco_freq=vco_freq, BW=chirp_bandwidth, \
+                                vco_freq=vco_freq, output_freq=output_freq,\
+                                    BW=chirp_bandwidth, \
                                     ramp_time=ramp_time, tddmode=tddmode)
         self.myphaser = myphaser
 
@@ -397,14 +401,17 @@ class RadarDevice:
         self.transmit()
 
         if tddmode:
-            self.num_chirps = 1
-            self.tdd, self.sdr_pins = self.setupTDD(num_chirps=self.num_chirps)
+            self.num_chirps = num_chirps
+            self.tdd, self.sdr_pins = self.setupTDD(num_chirps=num_chirps)
             self.good_ramp_samples, self.start_offset_time, self.start_offset_samples, \
                 self.num_samples_frame, fft_size, buffer_size =self.getTDDparameters()
             print("new buffer_size:", buffer_size)
             self.mysdr.sdr.rx_buffer_size = buffer_size #update rx buffer size
             self.rxbuffersize = buffer_size
             self.fft_size = fft_size
+
+            self.PRF, self.TDD_N_frame, self.num_bursts, R_res, v_res, max_doppler_vel \
+                = self.tdd_rampparameters()
         
         self.showconfig()
 
@@ -459,6 +466,26 @@ class RadarDevice:
             self.slope, self.N_c, self.N_s, freq, dist, range_resolution, \
                 self.signal_freq, range_x, self.fft_size, self.rxbuffersize
 
+    def tdd_rampparameters(self):
+        PRI = self.tdd.frame_length_ms / 1e3
+        PRF = 1 / PRI
+        num_bursts = self.tdd.burst_count
+
+        # Split into frames
+        N_frame = int(PRI * float(self.sample_rate))
+
+        # Resolutions
+        c = 3e8
+        BW = self.bandwidth
+        wavelength = c / self.output_freq #0.03
+        R_res = self.c / (2 * BW)
+        v_res = wavelength / (2 * num_bursts * PRI)
+
+        # Doppler spectrum limits
+        max_doppler_freq = PRF / 2
+        max_doppler_vel = max_doppler_freq * wavelength / 2
+        return PRF, N_frame, num_bursts, R_res, v_res, max_doppler_vel
+
     def transmitsetup(self, signaltype='sinusoid'):
         fs = int(self.sample_rate) #0.6MHz
         print("sample_rate:", fs)
@@ -494,7 +521,7 @@ class RadarDevice:
         tdd.channel[0].off_ms = 0.1
         tdd.channel[1].enable = True
         tdd.channel[1].polarity = False
-        tdd.channel[1].on_ms = 0.01
+        tdd.channel[1].on_ms = 0.01 #0?
         tdd.channel[1].off_ms = 0.1
         tdd.channel[2].enable = False
         tdd.enable = True
@@ -560,11 +587,11 @@ class RadarDevice:
         if self.tddmode:
             # disable TDD and revert to non-TDD (standard) mode
             self.tdd.enable = False
-            self.tdd.sdr_pins.gpio_phaser_enable = False
-            self.tdd.tdd.channel[1].polarity = not(self.tdd.sdr_pins.gpio_phaser_enable)
-            self.tdd.tdd.channel[2].polarity = self.tdd.sdr_pins.gpio_phaser_enable
-            self.tdd.tdd.enable = True
-            self.tdd.tdd.enable = False
+            self.sdr_pins.gpio_phaser_enable = False
+            self.tdd.channel[1].polarity = not(self.sdr_pins.gpio_phaser_enable)
+            self.tdd.channel[2].polarity = self.sdr_pins.gpio_phaser_enable
+            self.tdd.enable = True
+            self.tdd.enable = False
     
     def tdd_burst(self):
         if self.tddmode:
@@ -572,7 +599,7 @@ class RadarDevice:
             self.myphaser.my_phaser._gpios.gpio_burst = 1
             self.myphaser.my_phaser._gpios.gpio_burst = 0
 
-    def receive(self, ):
+    def receive(self):
         start = timer()
         data = self.mysdr.SDR_RX_receive(combinerule='plus', normalize=False)
         #x = self.sdr.rx() #1024 size array of complex
@@ -597,6 +624,32 @@ class RadarDevice:
             s_dbfs = get_spectrum(data, fft_size=self.fft_size)
         return s_dbfs
     
+    def get_velocity(self, s_dbfs):
+        s_vel = estimate_velocity(s_dbfs=s_dbfs, N_frame=self.fft_size,\
+                        signal_freq=self.signal_freq, sample_rate=self.sample_rate)
+        return s_vel
+
+    def get_rangedoppler(self, data):
+        # Process data
+        N_frame = self.TDD_N_frame, 
+        num_bursts = self.num_bursts
+        good_ramp_samples = self.good_ramp_samples
+        start_offset_samples = self.start_offset_samples
+        # Make a 2D array of the chirps for each burst
+        rx_bursts = np.zeros((num_bursts, good_ramp_samples), dtype=complex)
+        for burst in range(num_bursts):
+            start_index = start_offset_samples + (burst) * N_frame
+            stop_index = start_index + good_ramp_samples
+            rx_bursts[burst] = data[start_index:stop_index]
+        
+        rx_bursts_fft = np.fft.fftshift(abs(np.fft.fft2(rx_bursts)))
+        range_doppler_data = np.log10(rx_bursts_fft).T
+        radar_data = range_doppler_data
+        #radar_data = np.clip(radar_data, 0, 6)  # clip the data to control the max spectrogram scale
+        print("sample_rate = ", self.sample_rate/1e6, "MHz, ramp_time = ", self.ramp_time, "us, num_chirps = ", self.num_chirps)
+        return rx_bursts, radar_data
+
+
     def cfar(self, s_dbfs, num_guard_cells, num_ref_cells, bias, cfar_method = 'average', use_cfar=True):
         threshold, targets = cfar(s_dbfs, num_guard_cells, num_ref_cells, bias, cfar_method)
         s_dbfs_cfar = targets.filled(-200)  # fill the values below the threshold with -200 dBFS
