@@ -14,6 +14,8 @@ plt.close('all')
 '''
 import adi
 print(adi.__version__)
+import phaser.mycn0566 as mycn0566
+CN0566=mycn0566.CN0566
 
 '''Key Parameters'''
 sample_rate = 5e6 
@@ -33,10 +35,11 @@ f = "phaserRadarData.npy"
 """ Program the basic hardware settings
 """
 # Instantiate all the Devices
-rpi_ip = "ip:phaser.local"  # IP address of the Raspberry Pi
-sdr_ip = "ip:192.168.2.1"  # "192.168.2.1, or pluto.local"  # IP address of the Transceiver Block
+baseip = 'ip:phaser'
+rpi_ip = baseip #"ip:phaser.local"  # IP address of the Raspberry Pi
+sdr_ip = baseip+":50901" #"ip:192.168.2.1"  # "192.168.2.1, or pluto.local"  # IP address of the Transceiver Block
 my_sdr = adi.ad9361(uri=sdr_ip)
-my_phaser = adi.CN0566(uri=rpi_ip, sdr=my_sdr)
+my_phaser = CN0566(uri=rpi_ip, sdr=my_sdr) #adi.CN0566(uri=rpi_ip, sdr=my_sdr)
 
 # Initialize both ADAR1000s, set gains to max, and all phases to 0
 my_phaser.configure(device_mode="rx")

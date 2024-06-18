@@ -332,6 +332,7 @@ $ fw_printenv mode
 mode=2r2t
 $ exit
 ```
+There is another `device_reboot` option in [link](https://wiki.analog.com/university/tools/pluto/devs/reboot)
 
 ## TDD Engine
 The latest version of `pyadi-iio' from pip is `0.016` and does not contain the tddn. Need to install the pyadi-iio from source.
