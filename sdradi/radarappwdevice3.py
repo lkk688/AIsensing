@@ -75,7 +75,7 @@ num_chirps = 1 #128 for TDD mode
 baseip = 'ip:phaser'
 UseRadarDevice = True
 tddmode =False # Use TDD mode or not
-signaltype='sinusoid' #'OFDM'
+signaltype='OFDM'#'sinusoid' #'OFDM'
 if UseRadarDevice == True:
     sdrurl = baseip+":50901"  # "ip:pluto.local" #ip:phaser.local:50901
     phaserurl = baseip  # "ip:phaser.local"
@@ -108,7 +108,7 @@ num_slices = 50     # this sets how much time will be displayed on the waterfall
 plot_freq = 100e3    # x-axis freq range to plot
 #setup the imageitem view for Waterfall plot
 img_array = np.ones((num_slices, fft_size))*(-100)
-plot_dist = True #plot distance instead of frequency, distance show km?
+plot_dist = False #plot distance instead of frequency, distance show km?
 plot_velocity = False #did not show much difference
 save_data = False   # saves data for later processing
 f = "phaserRadarData.npy"
@@ -502,8 +502,7 @@ def update():
     radar.tdd_burst()
     # data, datalen, index = radar.receive(index=index)
     s_dbfs = radar.get_spectrum()
-    #get velocity
-    s_vel = radar.get_velocity(s_dbfs)
+
 
     #CFAR
     bias = win.cfar_bias.value()
@@ -524,6 +523,8 @@ def update():
         win.fft_curve.setData(dist, s_dbfs)
         win.fft_plot.setLabel("bottom", text="Distance", units="m", **label_style)
     elif plot_velocity:
+        #get velocity
+        s_vel = radar.get_velocity(s_dbfs)
         win.fft_curve.setData(freq, s_vel)
         win.fft_plot.setLabel("bottom", text="Frequency", units="Hz", **label_style)
     else:
