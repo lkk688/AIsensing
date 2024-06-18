@@ -10,7 +10,7 @@ from scipy import signal
 from timeit import default_timer as timer
 import phaser.mycn0566 as mycn0566
 CN0566=mycn0566.CN0566
-from aditddn import tddn
+from sdradi.myadi.aditddn import tddn
 
 from myad9361class import SDR
 from processing import cfar, get_spectrum, select_chirp, estimate_velocity

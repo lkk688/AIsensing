@@ -16,8 +16,9 @@ import adi
 print(adi.__version__)
 import phaser.mycn0566 as mycn0566
 CN0566=mycn0566.CN0566
-from aditddn import tddn
+from myadi.aditddn import tddn
 from time import sleep
+from myadi.ad936x import ad9361, ad9364
 
 '''Key Parameters'''
 sample_rate = 5e6 
@@ -40,7 +41,8 @@ f = "phaserRadarData.npy"
 baseip = 'ip:phaser'
 rpi_ip = baseip #"ip:phaser.local"  # IP address of the Raspberry Pi
 sdr_ip = baseip+":50901" #"ip:192.168.2.1"  # "192.168.2.1, or pluto.local"  # IP address of the Transceiver Block
-my_sdr = adi.ad9361(uri=sdr_ip)
+#my_sdr = adi.ad9361(uri=sdr_ip)
+my_sdr = ad9361(uri=sdr_ip)
 sleep(2)
 my_phaser = CN0566(uri=rpi_ip, sdr=my_sdr) #adi.CN0566(uri=rpi_ip, sdr=my_sdr)
 
