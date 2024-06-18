@@ -30,7 +30,7 @@ def test_ofdmmimo_SDR(urladdress, fc=921.1e6, leadingzeros=500, add_td_samples =
     mysdr = SDR(SDR_IP=urladdress, SDR_FC=fc, SDR_SAMPLERATE=SampleRate, SDR_BANDWIDTH=bandwidth)
 
     # SINR, SDR_TX_GAIN, SDR_RX_GAIN, Attempts, Pearson R
-    x_sdr = mysdr.SDR_RXTX_offset(SAMPLES, leadingzeros=leadingzeros, add_td_samples=add_td_samples)
+    x_sdr = mysdr.SDR_RXTX_offset(SAMPLES.flatten(), leadingzeros=leadingzeros, add_td_samples=add_td_samples)
     #out, SINR, SDR_TX_GAIN, SDR_RX_GAIN, fails+1, corr, sdr_time
     rx_samples = x_sdr[0]
 
@@ -63,7 +63,7 @@ def main():
     #test_SDRclass(urladdress)
     fs=1000000
     #test_ofdm_SDR(urladdress=urladdress, SampleRate=fs)
-    test_ofdmmimo_SDR(urladdress=urladdress)
+    test_ofdmmimo_SDR(urladdress=urladdress, leadingzeros=1000)
 
 if __name__ == '__main__':
     main()

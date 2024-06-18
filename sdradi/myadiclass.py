@@ -100,7 +100,7 @@ class SDR:
         self.SDR_SAMPLERATE = int(SDR_SAMPLERATE) # TX sample rate (samples/second)
         self.SDR_TX_BANDWIDTH = int(SDR_BANDWIDTH) # TX bandwidth (Hz)
         self.SDR_RX_BANDWIDTH = int(SDR_BANDWIDTH) # RX bandwidth (Hz)
-        self.num_samples=int(SDR_SAMPLERATE/10) #default save 0.1s data
+        self.num_samples=1024*8 #int(SDR_SAMPLERATE/10) #default save 0.1s data
         self.sdr = self.setupSDR(fs=SDR_SAMPLERATE, useAD9361=True, Rx_CHANNEL=Rx_CHANNEL, Tx_CHANNEL=Tx_CHANNEL)
 
     #new added
