@@ -228,6 +228,9 @@ $ python sdradi/pysdr.py
 ```
 
 ## SSH Access to **POE** Device with Phaser and SDR
+The Radar is shown in this figure:
+![Radar Device](../imgs/radardevice.png)
+
 Using POE to power the Mobile Node, i.e., connect the POE cable to the Raspberry Pi Ethernet port with POE hat. The SDR radio is connected to the Raspberry Pi via USB; the Raspberry Pi itself will be served as the analog phaser. The POE will provide all the power to these devices. We can connect to the Mobile Node (i.e., Raspberry Pi) via host device (Mac, Linux or Windows) in the same network and you can ssh into the device via `ssh analog@phaser` (password: `analog`). You can also check the IP address of the device:
 
 ```bash 
