@@ -68,7 +68,7 @@ def main():
 
     #test_SDRclass(urladdress)
     fs=1000000
-    #test_ofdm_SDR(urladdress=urladdress, SampleRate=fs)
+    test_ofdm_SDR(urladdress=urladdress, SampleRate=fs)
     test_ofdmmimo_SDR(urladdress=urladdress, leadingzeros=500)
 
 if __name__ == '__main__':
