@@ -170,9 +170,9 @@ class SDR:
         # Set the RF bandwidth for both TX and RX
         if tx_bandwidth is not None:
             self.sdr.tx_rf_bandwidth = tx_bandwidth
+            self.SDR_TX_BANDWIDTH = tx_bandwidth
         else:
             self.sdr.tx_rf_bandwidth = self.SDR_TX_BANDWIDTH
-            self.SDR_TX_BANDWIDTH = tx_bandwidth
         #self.sdr.rx_rf_bandwidth = self.SDR_TX_BANDWIDTH
 
         # Set the hardware gain for both TX and RX
@@ -320,7 +320,7 @@ class SDR:
         return alldata0, processtime
 
 
-    def SDR_TX_send(self, SAMPLES, SAMPLES2=None, max_scale=1, normalize=False, leadingzeros=0, cyclic=False):
+    def SDR_TX_send(self, SAMPLES, SAMPLES2=None, max_scale=1, normalize=False, leadingzeros=0, cyclic=False, scale4sdr=True):
         '''
         Transmit the given signal samples through the SDR transmitter.
 
@@ -364,9 +364,15 @@ class SDR:
         # # Scale the signal to the dynamic range expected by the SDR hardware
         # samples *= 2**14  # scale the samples to 16-bit PlutoSDR, for example, expects sample values in the range -2^14 to +2^14
         if normalize:
-            SAMPLES = normalize_complexsignal(SAMPLES, max_scale=max_scale, scale4sdr=True)
+            SAMPLES = normalize_complexsignal(SAMPLES, max_scale=max_scale)
             if SAMPLES2 is not None:
-                SAMPLES2 = normalize_complexsignal(SAMPLES2, max_scale=max_scale, scale4sdr=True)
+                SAMPLES2 = normalize_complexsignal(SAMPLES2, max_scale=max_scale)
+        if scale4sdr:
+            # Scale the signal to the dynamic range expected by the SDR hardware
+            SAMPLES *= 2**14  # scale the samples to 16-bit PlutoSDR, for example, expects sample values in the range -2^14 to +2^14
+            if SAMPLES2 is not None:
+                SAMPLES2 *= 2**14
+
         if leadingzeros >0:
             leading_zeroes = np.zeros(leadingzeros, dtype=np.complex64)  # Leading 500 zeroes for noise floor measurement
             SAMPLES = np.concatenate([leading_zeroes, SAMPLES], axis=0)  # Add the quiet for noise measurements
@@ -402,15 +408,15 @@ class SDR:
         elif signal_type == 'dds':
             ddstone(self.sdr, dualtune=False, dds_freq_hz = f_signal, dds_scale = 0.9)
     
-    def SDR_RXTX_offset(self, SAMPLES, leadingzeros=500, add_td_samples=16, make_plot=True):
+    def SDR_RXTX_offset(self, SAMPLES, leadingzeros=500, add_td_samples=16, tx_gain=-10, rx_gain=10, make_plot=True):
         #add_td_samples: number of additional symbols to cater fordelay spread
         out_shape = list(SAMPLES.shape) # store the input tensor shape, [80]
         num_samples = SAMPLES.shape[-1] # number of samples in the input 80
 
         #x_sdr = mysdr(SAMPLES = x_time, SDR_TX_GAIN=-10, SDR_RX_GAIN = 10, add_td_samples = 16, debug=True) # transmit
         self.SDR_TX_stop()
-        self.SDR_TX_setup(cyclic_buffer=True, tx1_gain=-10, tx2_gain=-10)
-        self.SDR_RX_setup(n_SAMPLES=(num_samples+leadingzeros)*3, controlmode='manual', rx1_gain=10, rx2_gain=10) ## set the RX buffer size to 3 times the number of samples
+        self.SDR_TX_setup(cyclic_buffer=True, tx1_gain=tx_gain, tx2_gain=tx_gain)
+        self.SDR_RX_setup(n_SAMPLES=(num_samples+leadingzeros)*3, controlmode='manual', rx1_gain=rx_gain, rx2_gain=rx_gain) ## set the RX buffer size to 3 times the number of samples
         #self.SDR_gain_set(tx_gain=0, rx_gain=30)
         time.sleep(0.3)  # Wait for settings to take effect
 
@@ -420,8 +426,8 @@ class SDR:
         corr_threshold = 0.3
         fails = 0 # how many times the process failed to reach pearson r > self.corr_threshold
         success = 0 #  how many times the process reached pearson r > self.corr_threshold
-        timeout = 10
-        while success == 0:       
+        timeout = 5
+        while success == 0 and fails < timeout:       
             # RX samples 
             rx_samples = self.SDR_RX_receive(combinerule='drop', normalize=False)
             rx_samples_normalized, rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR = detect_signaloffset(rx_samples, tx_SAMPLES=SAMPLES, num_samples=num_samples, leadingzeros=leadingzeros, add_td_samples=add_td_samples)
@@ -435,14 +441,14 @@ class SDR:
             if (corr >= corr_threshold):
                 success = 1
             else: 
-                fails=+1
+                fails=fails+1
         
         SDR_TX_GAIN = self.sdr.tx_hardwaregain_chan0
         SDR_RX_GAIN = self.sdr.rx_hardwaregain_chan0
         self.SDR_TX_stop()
         try:
             out_shape[-1] += add_td_samples
-            out = np.reshape(rx_TTI, out_shape)
+            out = np.reshape(rx_TTI, out_shape) #(1892,)
         except Exception as e:
             print("Something failed:", e)
             sys.exit(1)
@@ -686,8 +692,8 @@ def main():
     #testlibiioaccess(urladdress)
     #sdr_test(urladdress, signal_type=signal_type, Rx_CHANNEL=Rx_CHANNEL, plot_flag = plot_flag)
 
-    #test_SDRclass(urladdress)
-    test_SDRTDD(urladdress)
+    test_SDRclass(urladdress)
+    #test_SDRTDD(urladdress)
     fs=1000000
     #test_ofdm_SDR(urladdress=urladdress, SampleRate=fs)
     #test_ofdmmimo_SDR(urladdress=urladdress)

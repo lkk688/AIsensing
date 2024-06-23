@@ -380,7 +380,15 @@ python sdradi/myad9361class.py
 ```
 This code contains two test cases: 1) `test_SDRclass`, which performs continuous data transmission and receive; and 2) `test_ofdm_SDR`, which performs correction for the received sample and detect the starting point. 
 
-Integrate the `myofdm.py` with `myad9361class.py` to transmit the simple OFDM signal. The `test_ofdm_SDR` mainly tests the `SDR_RXTX_offset` function. The result figure for Pulto SDR is shown as:
+Integrate the `myofdm.py` with `myad9361class.py` to transmit the simple OFDM signal. The `test_ofdm_SDR` mainly tests the `SDR_RXTX_offset` function. The output format is `[IQ, SINR, SDR_TX_GAIN, SDR_RX_GAIN, fails + 1, corr, sdr_time]` where
+  * IQ is the IQ data in format expected by Sionna demodulator
+  * SINR is the measured SINR based on noise power measurement during the unmodulated symbols, and the mean power of the received and synchronised signal.
+  * SDR_RX_GAIN similar to above, the actual RX setting
+  * fails+1 is the number of repeated processes if correlation check fails. If this happens, TX power is increased each time.
+  * corr os the Pearson correlation of the tx and rx signals
+  * sdr_time is the measured time from start of the SDR process to finishing it. When debug is enabled, it takes about 1.4sec and without it takes 25ms in authors computer.
+
+The result figure for Pulto SDR is shown as:
 
 ![correctionresults](../imgs/correctionresults.png "Receiver Correction results")
 

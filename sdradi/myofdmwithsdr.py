@@ -35,7 +35,7 @@ def test_ofdmmimo_SDR(urladdress, fc=921.1e6, leadingzeros=500, add_td_samples =
     mysdr = SDR(SDR_IP=urladdress, SDR_FC=fc, SDR_SAMPLERATE=SampleRate, SDR_BANDWIDTH=bandwidth)
 
     # SINR, SDR_TX_GAIN, SDR_RX_GAIN, Attempts, Pearson R
-    x_sdr = mysdr.SDR_RXTX_offset(SAMPLES.flatten(), leadingzeros=leadingzeros, add_td_samples=add_td_samples)
+    x_sdr = mysdr.SDR_RXTX_offset(SAMPLES.flatten(), leadingzeros=leadingzeros, add_td_samples=add_td_samples, tx_gain=-10, rx_gain=10)
     #out, SINR, SDR_TX_GAIN, SDR_RX_GAIN, fails+1, corr, sdr_time
     rx_samples = x_sdr[0]
 
@@ -44,9 +44,10 @@ def test_ofdmmimo_SDR(urladdress, fc=921.1e6, leadingzeros=500, add_td_samples =
 # localuri="ip:analog.local"
 # antsdruri="ip:192.168.1.10"#connected via Ethernet with static IP
 # plutodruri="ip:192.168.2.1" "ip:192.168.2.16"#connected via USB
+#PoE device: ip:192.168.1.67:50901
 import argparse
 parser = argparse.ArgumentParser(description='MyAD9361')
-parser.add_argument('--urladdress', default="ip:192.168.1.67:50901", type=str,
+parser.add_argument('--urladdress', default="ip:192.168.2.1", type=str,
                     help='urladdress of the device, e.g., ip:pluto.local') 
 parser.add_argument('--rxch', default=1, type=int, 
                     help='number of rx channels')
@@ -68,7 +69,7 @@ def main():
     #test_SDRclass(urladdress)
     fs=1000000
     #test_ofdm_SDR(urladdress=urladdress, SampleRate=fs)
-    test_ofdmmimo_SDR(urladdress=urladdress, leadingzeros=1000)
+    test_ofdmmimo_SDR(urladdress=urladdress, leadingzeros=500)
 
 if __name__ == '__main__':
     main()

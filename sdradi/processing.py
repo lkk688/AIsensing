@@ -45,7 +45,7 @@ def calculate_spectrum(data0, fs, find_peak=True):
         print("Peak frequency found at ", peak_freq, "MHz.")
     return f, Pxx_den, peak_freq
 
-def normalize_complexsignal(SAMPLES, max_scale=1, scale4sdr=True):
+def normalize_complexsignal(SAMPLES, max_scale=1):
     # Determine the number of samples based on whether SAMPLES is a NumPy array or a PyTorch tensor
     if isinstance(SAMPLES, np.ndarray):
         num_samples = SAMPLES.size
@@ -71,10 +71,6 @@ def normalize_complexsignal(SAMPLES, max_scale=1, scale4sdr=True):
 
     # Scale the samples to their maximum amplitude and adjust according to max_scale
     samples = tx_samples_scaled * max_scale
-
-    if scale4sdr:
-        # Scale the signal to the dynamic range expected by the SDR hardware
-        samples *= 2**14  # scale the samples to 16-bit PlutoSDR, for example, expects sample values in the range -2^14 to +2^14
 
     print("Standard deviation:", tx_std)
     print("Mean:", tx_mean)
