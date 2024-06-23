@@ -3,6 +3,11 @@
 from myofdm import OFDMSymbol, OFDMAMIMO
 from myad9361class import SDR
 
+# https://github.com/rikluost/sionna-with-PlutoSDR/tree/main/test
+# https://github.com/rikluost/sionna-PlutoSDR
+
+# https://github.com/Repo4Sub/NSDI2024
+
 def test_ofdm_SDR(urladdress, SampleRate, fc=921.1e6, leadingzeros=500, add_td_samples = 16):
     myofdm = OFDMSymbol()
     SAMPLES = myofdm.createOFDMsignal() #(80,) complex128

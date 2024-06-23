@@ -43,6 +43,9 @@ elif Runtime == "Side6":
         QToolBar, QStatusBar, QSlider, QGridLayout, QLineEdit, QPushButton
     )
 
+# https://wiki.analog.com/university/tools/pluto/devs/embedded_code
+
+# https://github.com/jonkraft/PhaserRadarLabs/tree/main
 
 # from PyQt5.QtCore import Qt
 # from PyQt5.QtWidgets import *

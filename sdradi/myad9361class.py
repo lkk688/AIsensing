@@ -86,8 +86,9 @@ def ddstone(sdr, dualtune=True, dds_freq_hz = 10000, dds_scale = 0.9):
 
 #modified based on https://github.com/lkk688/AIsensing/blob/main/deeplearning/SDR.py
 class SDR:
-    def __init__(self, SDR_IP, SDR_FC=2000000000, SDR_SAMPLERATE=1e6, SDR_BANDWIDTH=1e6, \
+    def __init__(self, SDR_IP, device='ad9361', SDR_FC=2000000000, SDR_SAMPLERATE=1e6, SDR_BANDWIDTH=1e6, \
                     Rx_CHANNEL=2, Tx_CHANNEL=1):
+        #device='ad9361', 'ad9364', 'Pluto'
     
         self.SDR_IP = SDR_IP # IP address of the TX SDR device
         self.SDR_TX_FREQ = int(SDR_FC) # TX center frequency in Hz,  #2Ghz 2000000000
@@ -98,15 +99,20 @@ class SDR:
         self.SDR_TX_BANDWIDTH = int(SDR_BANDWIDTH) # TX bandwidth (Hz)
         self.SDR_RX_BANDWIDTH = int(SDR_BANDWIDTH) # RX bandwidth (Hz)
         self.num_samples=int(SDR_SAMPLERATE/10) #default save 0.1s data
-        self.sdr = self.setupSDR(fs=SDR_SAMPLERATE, useAD9361=True, Rx_CHANNEL=Rx_CHANNEL, Tx_CHANNEL=Tx_CHANNEL)
+        self.sdr = self.setupSDR(fs=SDR_SAMPLERATE, device=device, Rx_CHANNEL=Rx_CHANNEL, Tx_CHANNEL=Tx_CHANNEL)
 
     #new added
-    def setupSDR(self, fs= 6000000, useAD9361=True, Rx_CHANNEL=2, Tx_CHANNEL=1): #default fs=6Mhz
+    def setupSDR(self, fs= 6000000, device='ad9361', Rx_CHANNEL=2, Tx_CHANNEL=1): #default fs=6Mhz
         # Initialize the SDR device using the Analog Devices driver
-        if useAD9361:
+        if device=='ad9361':
             sdr = adi.ad9361(uri=self.SDR_IP)
-        else:
+        elif device=='ad9364':
             sdr = adi.ad9364(self.SDR_IP)
+        elif device.lower()=='pluto':
+            sdr = adi.Pluto(uri=self.SDR_IP)
+        else:
+            print('device not supported')
+            sdr = None
         
         # Configure the sample rate for both TX and RX
         sdr.sample_rate = fs
@@ -646,6 +652,29 @@ def test_SDRclass(urladdress, signal_type='dds'):
     #print(np.mean(rxtime))
     print(np.mean(processtime))
 
+from myadi.tddn import tddn
+def test_SDRTDD(urladdress="ip:pluto.local", signal_type='dds'):
+    fc=2.4*1e9 #2Ghz 2000000000
+    fs = 6000000 #6MHz
+    bandwidth = 4000000 #4MHz
+    mysdr = SDR(SDR_IP=urladdress, device='Pluto', SDR_FC=fc, SDR_SAMPLERATE=fs, SDR_BANDWIDTH=bandwidth, Rx_CHANNEL=1, Tx_CHANNEL=1)
+    mysdr.SDR_TX_stop()
+    #mysdr.SDR_TX_setup()
+    #mysdr.SDR_RX_setup(n_SAMPLES=10000)
+
+    # Configure TDD properties
+    tdd = tddn(urladdress)#"ip:pluto.local")
+    tdd.frame_length_ms = 4         # each GPIO toggle is spaced 4ms apart
+    tdd.startup_delay_ms = 0        # do not set a startup delay 
+    tdd.burst_count = 3             # there is a burst of 3 toggles, then off for a long time
+    tdd.out_channel0_on_ms = 0.5    # each GPIO pulse will be 100us (0.6ms - 0.5ms).  And the first trigger will happen 0.5ms into the buffer
+    tdd.out_channel0_off_ms = 0.6
+    tdd.out_channel0_enable = True  # Enable CH0 output
+    tdd.sync_external = True
+    tdd.enable = True
+    
+    time.sleep(0.3)  # Wait for settings to take effect
+
 
 def main():
     args = parser.parse_args()
@@ -657,7 +686,8 @@ def main():
     #testlibiioaccess(urladdress)
     #sdr_test(urladdress, signal_type=signal_type, Rx_CHANNEL=Rx_CHANNEL, plot_flag = plot_flag)
 
-    test_SDRclass(urladdress)
+    #test_SDRclass(urladdress)
+    test_SDRTDD(urladdress)
     fs=1000000
     #test_ofdm_SDR(urladdress=urladdress, SampleRate=fs)
     #test_ofdmmimo_SDR(urladdress=urladdress)
@@ -739,9 +769,10 @@ def updatefigure(axs, t, data0, data1, specf,specp):
 # localuri="ip:analog.local"
 # antsdruri="ip:192.168.1.10"#connected via Ethernet with static IP
 # plutodruri="ip:192.168.2.1" "ip:192.168.2.16"#connected via USB
+#PoE: "ip:192.168.1.67:50901"
 import argparse
 parser = argparse.ArgumentParser(description='MyAD9361')
-parser.add_argument('--urladdress', default="ip:192.168.1.67:50901", type=str,
+parser.add_argument('--urladdress', default="ip:192.168.2.1", type=str,
                     help='urladdress of the device, e.g., ip:pluto.local') 
 parser.add_argument('--rxch', default=1, type=int, 
                     help='number of rx channels')
