@@ -3630,7 +3630,7 @@ class Transmitter():
             h_b=h_b.numpy()
         return h_b, tau_b
 
-    def __call__(self, b=None, ebno_db = 15.0, channeltype='ofdm', perfect_csi=True):
+    def __call__(self, b=None, ebno_db = 15.0, channeltype='ofdm', perfect_csi=False):
         # Transmitter
         if b is None:
             binary_source = BinarySource()
