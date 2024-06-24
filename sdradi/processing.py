@@ -5,6 +5,7 @@ from scipy import signal
 import matplotlib
 import matplotlib.pyplot as plt
 plt.rcParams['font.size'] = 8.0
+import os
 
 def create_singlechannel_complexOFDMMIMO():
     from myofdm import OFDMSymbol, OFDMAMIMO
@@ -45,7 +46,7 @@ def calculate_spectrum(data0, fs, find_peak=True):
         print("Peak frequency found at ", peak_freq, "MHz.")
     return f, Pxx_den, peak_freq
 
-def normalize_complexsignal(SAMPLES, max_scale=1):
+def normalize_complexsignal(SAMPLES, remove_dc=True, max_scale=1):
     # Determine the number of samples based on whether SAMPLES is a NumPy array or a PyTorch tensor
     if isinstance(SAMPLES, np.ndarray):
         num_samples = SAMPLES.size
@@ -58,43 +59,48 @@ def normalize_complexsignal(SAMPLES, max_scale=1):
     else:
         print("Input data is neither a NumPy array nor a Python list.")
 
-    # Assuming SAMPLES is a NumPy array
     flat_samples = SAMPLES.flatten()  # Flatten the input samples
-    tx_std = np.std(flat_samples)  # Standard deviation of the input samples
-    tx_mean = np.mean(flat_samples)  # Mean of the input samples
-    tx_samples = flat_samples - tx_mean  # Remove DC offset
+    if remove_dc:
+        # Assuming SAMPLES is a NumPy array, remove DC offset
+        samples_std = np.std(flat_samples)  # Standard deviation of the input samples
+        samples_mean = np.mean(flat_samples)  # Mean of the input samples
+        samples = flat_samples - samples_mean  # Remove DC offset
+    else:
+        samples = flat_samples
 
     # Scale for SDR input
-    tx_samples_abs = np.abs(tx_samples)  # Absolute values of the samples
-    tx_samples_max = np.max(tx_samples_abs)  # Take the maximum value of the samples
-    tx_samples_scaled = tx_samples / tx_samples_max  # Scale the tx_samples to max 1
+    samples_abs = np.abs(samples)  # Absolute values of the samples
+    samples_max = np.max(samples_abs)  # Take the maximum value of the samples
+    samples = samples / samples_max  # Scale the tx_samples to max 1
 
     # Scale the samples to their maximum amplitude and adjust according to max_scale
-    samples = tx_samples_scaled * max_scale
+    samples = samples * max_scale
 
-    print("Standard deviation:", tx_std)
-    print("Mean:", tx_mean)
-    print("Scaled samples (max 1):", tx_samples_scaled)
+    #print("Standard deviation:", samples_std)
+    #print("Mean:", samples_mean)
+    #print("Scaled samples (max 1):", tx_samples_scaled)
     return samples
 
-def detect_signaloffset(rx_samples, tx_SAMPLES, num_samples, leadingzeros=500, add_td_samples=0, tx_std=None):
+def detect_signaloffset(rx_samples, tx_SAMPLES, num_samples, leadingzeros=500, add_td_samples=0, normalize=True):
     #add_td_samples: number of additional symbols to cater fordelay spread
     flat_samples = tx_SAMPLES.flatten()  # Flatten the input samples
     tx_std = np.std(flat_samples)  # Standard deviation of the input samples
 
-    # Assuming rx_samples is a NumPy array and other variables are defined
-    rx_samples = rx_samples.astype(np.complex64)  # Convert received IQ samples to NumPy complex64
+    if normalize:
+        # Assuming rx_samples is a NumPy array and other variables are defined
+        rx_samples = rx_samples.astype(np.complex64)  # Convert received IQ samples to NumPy complex64
+        # Remove any offset
+        rx_mean = np.mean(rx_samples)
+        rx_samples -= rx_mean
 
-    # Remove any offset
-    rx_mean = np.mean(rx_samples)
-    rx_samples -= rx_mean
-
-    # Set the same standard deviation as in the input samples
-    rx_std = np.std(rx_samples)
-    if tx_std is not None:
-        std_multiplier = np.float16(tx_std / rx_std) * 0.9  # Calculate new multiplier for same stdev in TX and RX
-        rx_samples *= std_multiplier  # Set the stdev
-    rx_samples_normalized = rx_samples
+        # Set the same standard deviation as in the input samples
+        rx_std = np.std(rx_samples)
+        if tx_std is not None:
+            std_multiplier = np.float16(tx_std / rx_std) * 0.9  # Calculate new multiplier for same stdev in TX and RX
+            rx_samples *= std_multiplier  # Set the stdev
+        rx_samples_normalized = rx_samples
+    else:
+        rx_samples_normalized = rx_samples
 
     # Calculate the correlation between TX and RX signal
     #find the start symbol of the first full TTI with 500 samples of noise measurements in front
@@ -131,6 +137,85 @@ def detect_signaloffset(rx_samples, tx_SAMPLES, num_samples, leadingzeros=500, a
     print(resulttext)
     return rx_samples_normalized, rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR
 
+def plot_offsetdetection(tx_samples, all_rx_samples, onetti_rx_samples, rx_noise, TTI_offset, TTI_correlation, save=False, savefolder = 'output', save_path_prefix = "offset"):
+    if not os.path.exists(savefolder):
+        os.makedirs(savefolder)
+
+    picsize = (6, 3)
+
+    tx_samples_abs = np.abs(tx_samples)
+    tx_samples_max_sample = np.max(tx_samples_abs)
+    
+    # Plot Correlator for syncing the start of the second received TTI
+    fig, ax = plt.subplots(figsize=picsize)
+    ax.plot(np.abs(all_rx_samples), label='abs(RX sample)')
+    ax.axvline(x=TTI_offset, c='r', lw=3, label='TTI start')
+    ax.legend()
+    ax.set_title('Correlator for syncing the start of a fully received OFDM block')
+    if save:
+        plt.savefig(os.path.join(savefolder, f'{save_path_prefix}_offset.png'))
+    plt.show()
+    plt.grid()
+    plt.close()
+
+    # Plot Transmitted signal, one TTI
+    fig, ax = plt.subplots(figsize=picsize)
+    ax.plot(tx_samples_abs, label='abs(TX samples)')
+    ax.set_ylim(0, tx_samples_max_sample)
+    ax.legend()
+    ax.set_title('Transmitted signal, one OFDM block')
+    if save:
+        plt.savefig(os.path.join(savefolder, f'{save_path_prefix}_txsamples.png'))
+    plt.show()
+    plt.grid()
+    plt.close()
+
+    # Plot Received signal, one TTI, synchronized
+    fig, ax = plt.subplots(figsize=picsize)
+    ax.plot(np.abs(onetti_rx_samples), label='abs(RX samples)')
+    ax.set_ylim(0, tx_samples_max_sample)
+    ax.legend()
+    ax.set_title('Received signal, synchronized')
+    if save:
+        plt.savefig(os.path.join(savefolder, f'{save_path_prefix}_onetti_rxsamples.png'))
+    plt.show()
+    plt.grid()
+    plt.close()
+
+    # Plot Transmitted signal PSD
+    fig, ax = plt.subplots(figsize=picsize)
+    ax.psd(tx_samples, label='TX Signal')
+    ax.legend()
+    ax.set_title('Transmitted signal PSD')
+    if save:
+        plt.savefig(os.path.join(savefolder, f'{save_path_prefix}_txPSD.png'))
+    plt.show()
+    plt.close()
+
+    # Plot Received noise PSD and signal PSD
+    fig, ax = plt.subplots(figsize=picsize)
+    ax.psd(onetti_rx_samples, label='RX signal')
+    ax.psd(rx_noise, label='Noise')
+    ax.legend()
+    ax.set_title('Received noise PSD and signal PSD')
+    if save:
+        plt.savefig(os.path.join(savefolder, f'{save_path_prefix}_rxandnoisepsd.png'))
+    plt.show()
+    plt.close()
+
+    fig, ax = plt.subplots(figsize=picsize)
+    ax.set_title('Correlator')
+    plt.plot(np.arange(-20,20), TTI_correlation[TTI_offset+len(tx_samples)//2-21:TTI_offset+len(tx_samples)//2+19 ], label='correlation')
+    plt.grid()
+    plt.xlabel("Samples around peak correlation")
+    plt.ylabel("Complex conjugate correlation")
+    plt.axvline(x=0, color = 'r', linewidth=3, label='max cor offset')
+    plt.legend()
+    if save:
+        plt.savefig(os.path.join(savefolder, f'{save_path_prefix}_correlationpeak.png'))
+    plt.show()
+
+
 def plot_noisesignalPSD(rx_samples, rx_samples_normalized, tx_SAMPLES, rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR):
     #titletext = f'SINR ={SINR:1.1f}, attempt={fails+1}, TTI start index = {TTI_offset}, correlation = {corr:1.2f}, TX_p/RX_p = {tx_TTI_p/rx_TTI_p:1.2f}'
     tx_flat_samples = tx_SAMPLES.flatten()  # Flatten the input samples
@@ -140,13 +225,15 @@ def plot_noisesignalPSD(rx_samples, rx_samples_normalized, tx_SAMPLES, rx_TTI, r
     fig.suptitle(titletext)
     axs[0,0].plot(10*np.log10(abs(rx_samples)/max(abs(rx_samples))), label='RX_dB')
     axs[0,0].legend()
-    axs[0,0].set_title('TTI received 3 times, starting at random time')
+    axs[0,0].set_title('TTI received 3 times rx_samples, starting at random time')
+    #Draw TTI start line on top of rx_samples_normalized
     axs[0,1].plot((abs(rx_samples_normalized)), label='abs(RXsample)')
     axs[0,1].axvline(x=TTI_offset, c='r', lw=3, label='TTI start')
     axs[0,1].plot(abs(abs(TTI_corr)/np.max(abs(TTI_corr))), label='Pearson R')
     axs[0,1].legend()
     axs[0,1].set_title('Correlator for syncing the start of the second received TTI')
     
+    #Tx samples and Rx samples
     axs[1,0].plot(np.abs(tx_flat_samples), label='abs(TX samples)')
     #axs[1,0].set_ylim(0,tx_samples_max_sample)
     axs[1,0].legend()
@@ -156,6 +243,7 @@ def plot_noisesignalPSD(rx_samples, rx_samples_normalized, tx_SAMPLES, rx_TTI, r
     axs[1,1].legend()
     axs[1,1].set_title('Received signal, one TTI, syncronized')
     
+    #tx and rx PSD via ax.psd
     axs[2,0].psd(tx_flat_samples, label='TX Signal')
     axs[2,0].legend()
     axs[2,0].set_title('Transmitted signal PSD')

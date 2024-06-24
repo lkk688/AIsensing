@@ -8,7 +8,7 @@ import numpy as np
 from scipy import signal
 from timeit import default_timer as timer
 import sys
-from processing import createcomplexsinusoid, calculate_spectrum, normalize_complexsignal, detect_signaloffset, plot_noisesignalPSD
+from processing import createcomplexsinusoid, calculate_spectrum, normalize_complexsignal, detect_signaloffset, plot_noisesignalPSD, plot_offsetdetection
 
 def printSDRproperties(sdr):
     print("Bandwidth of TX path:", sdr.tx_rf_bandwidth) #Bandwidth of front-end analog filter of TX path
@@ -252,7 +252,7 @@ class SDR:
         # Clear the receiver buffer to prepare for new data
         self.sdr.rx_destroy_buffer()# clear any data from rx buffer
 
-    def SDR_RX_receive(self, combinerule='drop', normalize=True):
+    def SDR_RX_receive(self, combinerule='drop', normalize=True, remove_dc=True):
         # Receive the samples from the SDR hardware
         x = self.sdr.rx()
 
@@ -268,7 +268,8 @@ class SDR:
 
         # Normalize the signal amplitude if required
         if normalize:
-            a = a / np.max(np.abs(a))
+            #a = a / np.max(np.abs(a))
+            a = normalize_complexsignal(a, remove_dc=remove_dc, max_scale=1)
 
         # Convert the received samples to a PyTorch tensor
         #return torch.tensor(a, dtype=torch.complex64)
@@ -430,10 +431,15 @@ class SDR:
         while success == 0 and fails < timeout:       
             # RX samples 
             rx_samples = self.SDR_RX_receive(combinerule='drop', normalize=False)
+
+            #the use of tx_SAMPLES is for adjust_stdev and perform correlation
             rx_samples_normalized, rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR = detect_signaloffset(rx_samples, tx_SAMPLES=SAMPLES, num_samples=num_samples, leadingzeros=leadingzeros, add_td_samples=add_td_samples)
+
             if make_plot:
                 plot_noisesignalPSD(rx_samples, rx_samples_normalized, tx_SAMPLES=SAMPLES, \
                                     rx_TTI=rx_TTI, rx_noise=rx_noise, TTI_offset=TTI_offset, TTI_corr=TTI_corr, corr=corr, SINR=SINR)
+                plot_offsetdetection(tx_samples=SAMPLES, all_rx_samples=rx_samples_normalized, onetti_rx_samples=rx_TTI, rx_noise=rx_noise, TTI_offset=TTI_offset, TTI_correlation=TTI_corr, save=False, savefolder = 'output', save_path_prefix = "offset")
+
             if fails > timeout:
                 print("Too many errors, timeout")
                 sys.exit(1)
