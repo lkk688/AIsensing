@@ -81,10 +81,63 @@ def normalize_complexsignal(SAMPLES, remove_dc=True, max_scale=1):
     #print("Scaled samples (max 1):", tx_samples_scaled)
     return samples
 
-def detect_signaloffset(rx_samples, tx_SAMPLES, num_samples, leadingzeros=500, add_td_samples=0, normalize=True):
+# Calculate the correlation between TX and RX signal
+#https://github.com/rikluost/sionna-PlutoSDR/blob/main/SDR_Sionna_1T1R.py#L119
+def signal_correlation(rx_samples_np, tx_samples_np, use_npconvolve=True):
+    # Perform cross-correlation in real and imaginary parts
+    # TTI_corr_real = tf.nn.conv1d(tf.reshape(tf.math.real(rx_samples_tf), [1, -1, 1]),
+    #                             filters=tf.reshape(tf.math.real(tx_samples), [-1, 1, 1]), stride=1, padding='SAME')
+    # TTI_corr_imag = tf.nn.conv1d(tf.reshape(tf.math.imag(rx_samples_tf), [1, -1, 1]),
+    #                             filters=tf.reshape(tf.math.imag(tx_samples), [-1, 1, 1]), stride=1, padding='SAME')
+
+    # # Combine real and imaginary parts and calculate the magnitude of the correlation
+    # correlation = tf.math.abs(tf.complex(TTI_corr_real, TTI_corr_imag))
+    # correlation = tf.reshape(correlation, [-1])
+
+    if use_npconvolve:
+        # Perform cross-correlation in real and imaginary parts
+        TTI_corr_real_np = np.convolve(np.real(rx_samples_np), np.real(tx_samples_np), mode='same')
+        TTI_corr_imag_np = np.convolve(np.imag(rx_samples_np), np.imag(tx_samples_np), mode='same')
+
+        # Combine real and imaginary parts and calculate the magnitude of the correlation
+        TTI_corr = np.abs(TTI_corr_real_np + 1j * TTI_corr_imag_np)
+        TTI_corr = TTI_corr.reshape(-1)
+    else:
+        #find the start symbol of the first full TTI with 500 samples of noise measurements in front
+        #TTI_corr is a correlation signal obtained by cross-correlating the received samples (rx_samples) with the transmitted samples (flat_samples). 
+        #The goal is to find the alignment (offset) between the two signals.
+        TTI_corr = signal.correlate(rx_samples_np, tx_samples_np, mode='full', method='fft')
+        #The output is the full discrete linear cross-correlation of the inputs. 
+        #The output is the same size as in1
+
+    return TTI_corr
+
+
+def check_corrcondition(final_correlation, SINR, corr_threshold, minSINR=5, maxSINR=30):
+    # final_correlation, self.corr_threshold, SINR, minSINR, maxSINR
+    condition1 = np.greater(final_correlation, corr_threshold)
+    condition2 = np.greater(SINR, minSINR)
+    combined_condition2 = np.logical_and(condition1, condition2)
+
+    condition3 = np.less(SINR, maxSINR)
+    combined_condition = np.logical_and(np.logical_and(condition1, condition2), condition3)
+
+    # Update txp_up and txp_down based on conditions
+    if not combined_condition2:
+        #update_txp_up()
+        needmorepower = True
+    else:
+        #$self.update_txp_down()
+        needmorepower = False
+
+    # Set success flag
+    success = 1 if combined_condition else 0
+    return success, needmorepower
+
+def detect_signaloffsetv2(rx_samples, tx_samples, num_samples, threshold=0, leadingzeros=500, guard_size=20, add_td_samples=0, normalize=True):
     #add_td_samples: number of additional symbols to cater fordelay spread
-    flat_samples = tx_SAMPLES.flatten()  # Flatten the input samples
-    tx_std = np.std(flat_samples)  # Standard deviation of the input samples
+    tx_samples = tx_samples.flatten()  # Flatten the input samples
+    tx_std = np.std(tx_samples)  # Standard deviation of the input samples
 
     if normalize:
         # Assuming rx_samples is a NumPy array and other variables are defined
@@ -103,13 +156,106 @@ def detect_signaloffset(rx_samples, tx_SAMPLES, num_samples, leadingzeros=500, a
         rx_samples_normalized = rx_samples
 
     # Calculate the correlation between TX and RX signal
-    #find the start symbol of the first full TTI with 500 samples of noise measurements in front
-    #TTI_corr is a correlation signal obtained by cross-correlating the received samples (rx_samples) with the transmitted samples (flat_samples). 
-    #The goal is to find the alignment (offset) between the two signals.
-    TTI_corr = signal.correlate(rx_samples, flat_samples, mode='full', method='fft')
+    correlation = signal_correlation(rx_samples, tx_samples, use_npconvolve=True)
+    correlation_mean = np.mean(correlation)
+    TTI_corr = correlation #correlation output
+    len_tx = len(tx_samples)
+    len_rx = len(rx_samples)
+
+    def find_max_offset():
+        TTI_offset_max = np.argmax(correlation) - len_tx // 2 + 1
+        return TTI_offset_max
+
+    def find_first_exceeding_threshold():
+        exceed_mask = correlation > correlation_mean * threshold
+        first_exceeding_index = np.argmax(exceed_mask)
+        # Adjust the index based on the search window and offset
+        return first_exceeding_index - len_tx // 2 + 1
+
+    # Decide which offset to use based on the threshold
+    if threshold == 0:
+        TTI_offset = find_max_offset()
+        #find the index of the max value of absolute values of the first half of the correlation signal. 
+        #TTI_offset is initially set to the alignment position (index). we subtract the length of flat_samples and add 1 to get the correct offset.
+        TTI_offset = np.argmax(np.abs(correlation[0:int(len(rx_samples) / 2)])) - len(tx_samples) + 1
+        
+    else:
+        TTI_offset = find_first_exceeding_threshold()
+        if (TTI_offset < leadingzeros) or (TTI_offset > (len_rx - leadingzeros)):
+            TTI_offset = find_max_offset()
+
+    # Access the correlation value at the found offset
+    final_correlation = correlation[TTI_offset + len_tx // 2 - 1] / correlation_mean
+    print("final_correlation:", final_correlation)
+
+    # Calculate rx_noise
+    rx_noise = rx_samples[TTI_offset - leadingzeros + guard_size : TTI_offset - guard_size]
+    #noise_p = np.var(rx_noise)
+
+    # Cut the received samples to the desired length
+    rx_TTI = rx_samples[TTI_offset : TTI_offset + num_samples + add_td_samples]
+    #rx_TTI.set_shape([SAMPLES.shape[0] + add_td_samples])
+
+    # Calculate the received signal power
+    #rx_p = np.var(rx_TTI)
+
+    # Calculate SINR
+    #SINR = 10 * np.log10(rx_p / noise_p)
+
+
+
+    # # RX TTI symbols + the additional symbols
+    # rx_TTI = rx_samples[TTI_offset:TTI_offset + num_samples + add_td_samples]
+
+    # # RX noise for SINR calculation
+    # guardsize=50
+    # rx_noise = rx_samples[TTI_offset - (leadingzeros-guardsize):TTI_offset - guardsize]
+
+    # Calculate the Pearson correlation between complex samples_orig and rx_TTI as acceptance metric
+    #extracts a portion of the received samples (rx_samples) starting from the TTI_offset and spanning num_samples elements.
+    received=np.abs(rx_samples)[TTI_offset:TTI_offset + num_samples]
+    #np.corrcoef(...) computes the Pearson correlation coefficient between the two sets of absolute values 
+    #The result of np.corrcoef(...) is a 2x2 matrix. The value at position [0, 1] (or equivalently, [1, 0]) represents the correlation coefficient between the two sets of data.
+    corr = np.corrcoef(np.abs(tx_samples), received)[0, 1]
+    print("Corr:", corr)
+
+    # Calculate TX power, RX power & noise power
+    tx_TTI_p = np.var(tx_samples)  # TX power
+    noise_p = np.var(rx_noise)  # Noise power
+    rx_TTI_p = np.var(rx_TTI)  # RX signal power
+    SINR = 10 * np.log10(rx_TTI_p / noise_p)  # Calculate SINR from received powers
+    resulttext = f'SINR ={SINR:1.1f}, TTI start index = {TTI_offset}, correlation = {corr:1.2f}, TX_p/RX_p = {tx_TTI_p/rx_TTI_p:1.2f}'
+    print(resulttext)
+    return rx_samples_normalized, rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR
+
+
+def detect_signaloffset(rx_samples, tx_samples, num_samples, leadingzeros=500, add_td_samples=0, normalize=True):
+    #add_td_samples: number of additional symbols to cater fordelay spread
+    tx_samples = tx_samples.flatten()  # Flatten the input samples
+    tx_std = np.std(tx_samples)  # Standard deviation of the input samples
+
+    if normalize:
+        # Assuming rx_samples is a NumPy array and other variables are defined
+        rx_samples = rx_samples.astype(np.complex64)  # Convert received IQ samples to NumPy complex64
+        # Remove any offset
+        rx_mean = np.mean(rx_samples)
+        rx_samples -= rx_mean
+
+        # Set the same standard deviation as in the input samples
+        rx_std = np.std(rx_samples)
+        if tx_std is not None:
+            std_multiplier = np.float16(tx_std / rx_std) * 0.9  # Calculate new multiplier for same stdev in TX and RX
+            rx_samples *= std_multiplier  # Set the stdev
+        rx_samples_normalized = rx_samples
+    else:
+        rx_samples_normalized = rx_samples
+
+    # Calculate the correlation between TX and RX signal
+    TTI_corr = signal_correlation(rx_samples, tx_samples, use_npconvolve=True)
+
     #find the index of the max value of absolute values of the first half of the correlation signal. 
     #TTI_offset is initially set to the alignment position (index). we subtract the length of flat_samples and add 1 to get the correct offset.
-    TTI_offset = np.argmax(np.abs(TTI_corr[0:int(len(rx_samples) / 2)])) - len(flat_samples) + 1
+    TTI_offset = np.argmax(np.abs(TTI_corr[0:int(len(rx_samples) / 2)])) - len(tx_samples) + 1
     if TTI_offset < leadingzeros + num_samples: #ensure that it points to the start of the first full Transmission Time Interval (TTI) with noise measurements in front.
         TTI_offset += leadingzeros + num_samples
 
@@ -125,11 +271,11 @@ def detect_signaloffset(rx_samples, tx_SAMPLES, num_samples, leadingzeros=500, a
     received=np.abs(rx_samples)[TTI_offset:TTI_offset + num_samples]
     #np.corrcoef(...) computes the Pearson correlation coefficient between the two sets of absolute values 
     #The result of np.corrcoef(...) is a 2x2 matrix. The value at position [0, 1] (or equivalently, [1, 0]) represents the correlation coefficient between the two sets of data.
-    corr = np.corrcoef(np.abs(flat_samples), received)[0, 1]
+    corr = np.corrcoef(np.abs(tx_samples), received)[0, 1]
     print("Corr:", corr)
 
     # Calculate TX power, RX power & noise power
-    tx_TTI_p = np.var(flat_samples)  # TX power
+    tx_TTI_p = np.var(tx_samples)  # TX power
     noise_p = np.var(rx_noise)  # Noise power
     rx_TTI_p = np.var(rx_TTI)  # RX signal power
     SINR = 10 * np.log10(rx_TTI_p / noise_p)  # Calculate SINR from received powers

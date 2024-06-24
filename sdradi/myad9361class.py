@@ -8,7 +8,7 @@ import numpy as np
 from scipy import signal
 from timeit import default_timer as timer
 import sys
-from processing import createcomplexsinusoid, calculate_spectrum, normalize_complexsignal, detect_signaloffset, plot_noisesignalPSD, plot_offsetdetection
+from processing import createcomplexsinusoid, calculate_spectrum, normalize_complexsignal, detect_signaloffset, plot_noisesignalPSD, plot_offsetdetection, detect_signaloffsetv2, check_corrcondition
 
 def printSDRproperties(sdr):
     print("Bandwidth of TX path:", sdr.tx_rf_bandwidth) #Bandwidth of front-end analog filter of TX path
@@ -411,8 +411,10 @@ class SDR:
     
     def SDR_RXTX_offset(self, SAMPLES, leadingzeros=500, add_td_samples=16, tx_gain=-10, rx_gain=10, make_plot=True):
         #add_td_samples: number of additional symbols to cater fordelay spread
+
         out_shape = list(SAMPLES.shape) # store the input tensor shape, [80]
         num_samples = SAMPLES.shape[-1] # number of samples in the input 80
+        SAMPLES = SAMPLES.flatten()
 
         #x_sdr = mysdr(SAMPLES = x_time, SDR_TX_GAIN=-10, SDR_RX_GAIN = 10, add_td_samples = 16, debug=True) # transmit
         self.SDR_TX_stop()
@@ -428,12 +430,15 @@ class SDR:
         fails = 0 # how many times the process failed to reach pearson r > self.corr_threshold
         success = 0 #  how many times the process reached pearson r > self.corr_threshold
         timeout = 5
+        #rx_samples = np.ones(SAMPLES.shape[0] + add_td_samples, dtype=np.complex64)
         while success == 0 and fails < timeout:       
             # RX samples 
             rx_samples = self.SDR_RX_receive(combinerule='drop', normalize=False)
 
             #the use of tx_SAMPLES is for adjust_stdev and perform correlation
-            rx_samples_normalized, rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR = detect_signaloffset(rx_samples, tx_SAMPLES=SAMPLES, num_samples=num_samples, leadingzeros=leadingzeros, add_td_samples=add_td_samples)
+            # rx_samples_normalized, rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR = detect_signaloffset(rx_samples, tx_SAMPLES=SAMPLES, num_samples=num_samples, leadingzeros=leadingzeros, add_td_samples=add_td_samples)
+
+            rx_samples_normalized, rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR = detect_signaloffsetv2(rx_samples, tx_SAMPLES=SAMPLES, num_samples=num_samples, leadingzeros=leadingzeros, add_td_samples=add_td_samples)
 
             if make_plot:
                 plot_noisesignalPSD(rx_samples, rx_samples_normalized, tx_SAMPLES=SAMPLES, \
@@ -444,9 +449,12 @@ class SDR:
                 print("Too many errors, timeout")
                 sys.exit(1)
             # check if the correlation is reasonable to assume sync is right, if not increase power and/or rx sensitivity
-            if (corr >= corr_threshold):
-                success = 1
-            else: 
+            # if (corr >= corr_threshold):
+            #     success = 1
+            # else: 
+            #     fails=fails+1
+            success, needmorepower = check_corrcondition(corr, SINR, corr_threshold, minSINR=5, maxSINR=30)
+            if success != 1:
                 fails=fails+1
         
         SDR_TX_GAIN = self.sdr.tx_hardwaregain_chan0
