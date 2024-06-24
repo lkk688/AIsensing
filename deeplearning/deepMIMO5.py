@@ -3720,8 +3720,8 @@ if __name__ == '__main__':
 
     #testOFDMModulatorDemodulator()
     scenario='O1_60'
-    dataset_folder='data' #r'D:\Dataset\CommunicationDataset\O1_60'
-    #dataset_folder=r'D:\Dataset\CommunicationDataset\O1_60'
+    #dataset_folder='data' #r'D:\Dataset\CommunicationDataset\O1_60'
+    dataset_folder=r'D:\Dataset\CommunicationDataset\O1_60'
     ofdmtest = True
     if ofdmtest is not True:
         transmit = Transmitter(scenario, dataset_folder, num_rx = 1, num_tx = 1, \
@@ -3738,7 +3738,7 @@ if __name__ == '__main__':
                     USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=True) #"kronecker" "empty"
         #channeltype="perfect", "awgn", "ofdm", "time"
         b_hat, BER = transmit(ebno_db = 15.0, channeltype='ofdm', perfect_csi=False)
-        b_hat, BER = transmit(ebno_db = 15.0, channeltype='ofdm', perfect_csi=True)
+        #b_hat, BER = transmit(ebno_db = 15.0, channeltype='ofdm', perfect_csi=True)#has error due to shape difference
     print("Finished")
 
     

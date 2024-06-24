@@ -168,7 +168,7 @@ def simulationloop(ebno_dbs, eval_transceiver, b=None, channeltype='awgn'):
 
 if __name__ == '__main__':
     scenario='O1_60'
-    dataset_folder='data'
+    dataset_folder=r'D:\Dataset\CommunicationDataset\O1_60' #'data'
 
     # Bit per channel use
     NUM_BITS_PER_SYMBOL = 2 # QPSK
@@ -199,7 +199,7 @@ if __name__ == '__main__':
 
     eval_transceiver = Transmitter(scenario, dataset_folder, num_rx = 1, num_tx = 1, \
                 batch_size =BATCH_SIZE, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = NUM_BITS_PER_SYMBOL,  \
-                USE_LDPC = False, pilot_pattern = "empty", guards=False, showfig=False) #"kronecker"
+                USE_LDPC = False, pilot_pattern = "kronecker", guards=False, showfig=False) #"kronecker" "empty"
         #channeltype="perfect", "awgn", "ofdm", "time"
     #Number of information bits per codeword
     k=eval_transceiver.k
