@@ -49,6 +49,13 @@ Our new AI processing framework aims to overcome these limitations. It offers th
    - Our open environment encourages Computer Science and Software Engineering students to innovate. Students can develop software and deep learning models using a specified general-purpose dataset format, without requiring deep domain-specific knowledge in wireless communication. 
    - Our AI processing framework bridges the gap between theory and practice, empowering researchers and students alike. As we refine our implementation, we anticipate further breakthroughs in wireless communication and radar sensing. By fostering collaboration and creativity, we build upon the solid foundation we've established.
 
+## Test NVIDIA Sionna
+Install Nvidia sionna from [SionnaGithub](https://github.com/NVlabs/sionna/tree/main):
+```bash
+$ pip install sionna
+(mycondapy310) (base) lkk@lkk-intel12:~/Developer$ git clone https://github.com/NVlabs/sionna.git
+```
+
 ## DeepMIMO
 [DeepMIMO](https://deepmimo.net/) is a generic dataset that enables a wide range of machine/deep learning applications for MIMO systems. It takes as input a set of parameters (such as antenna array configurations and time-domain/OFDM parameters) and generates MIMO channel realizations, corresponding locations, angles of arrival/departure, etc., based on these parameters and on a ray-tracing scenario selected from those available in DeepMIMO.
 

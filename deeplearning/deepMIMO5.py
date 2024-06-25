@@ -3683,14 +3683,27 @@ class Transmitter():
             else: #perform channel estimation via pilots
                 print("Num of Pilots:", len(self.RESOURCE_GRID.pilot_pattern.pilots)) #1
                 # Receiver
-                #ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
-                ls_est = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
+                ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
+                #ls_est = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
 
                 #Observed resource grid y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols,fft_size], (64, 1, 1, 14, 76) complex
                 #no : [batch_size, num_rx, num_rx_ant] 
                 h_hat, err_var = ls_est([y, no]) #tf tensor (64, 1, 1, 1, 1, 14, 64), (1, 1, 1, 1, 1, 14, 64)
                 #h_ls : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols,fft_size], tf.complex
                 #Channel estimates accross the entire resource grid for all transmitters and streams
+
+            if self.showfig:
+                h_perfect = h_out[0,0,0,0,0,0] #(64, 1, 1, 1, 16, 1, 44)
+                h_est = h_hat[0,0,0,0,0,0] #(64, 1, 1, 1, 1, 14, 44)
+                plt.figure()
+                plt.plot(np.real(h_perfect))
+                plt.plot(np.imag(h_perfect))
+                plt.plot(np.real(h_est), "--")
+                plt.plot(np.imag(h_est), "--")
+                plt.xlabel("Subcarrier index")
+                plt.ylabel("Channel frequency response")
+                plt.legend(["Ideal (real part)", "Ideal (imaginary part)", "Estimated (real part)", "Estimated (imaginary part)"]);
+                plt.title("Comparison of channel frequency responses");
 
             #lmmse_equ = LMMSEEqualizer(self.RESOURCE_GRID, self.STREAM_MANAGEMENT)
             lmmse_equ = MyLMMSEEqualizer(self.RESOURCE_GRID, self.STREAM_MANAGEMENT)
@@ -3726,11 +3739,12 @@ if __name__ == '__main__':
     dataset_folder='data/DeepMIMO'
     #dataset_folder=r'D:\Dataset\CommunicationDataset\O1_60'
     ofdmtest = True
+    showfigure = True
     if ofdmtest is not True:
         transmit = Transmitter(scenario, dataset_folder, num_rx = 1, num_tx = 1, \
                     batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
                     subcarrier_spacing=60e3, \
-                    USE_LDPC = False, pilot_pattern = "empty", guards=False, showfig=True) #"kronecker"
+                    USE_LDPC = False, pilot_pattern = "empty", guards=False, showfig=showfigure) #"kronecker"
         #channeltype="perfect", "awgn", "ofdm", "time"
         b_hat, BER = transmit(ebno_db = 15.0, channeltype='awgn')
         b_hat, BER = transmit(ebno_db = 15.0, channeltype='time')
@@ -3738,7 +3752,7 @@ if __name__ == '__main__':
         transmit = Transmitter(scenario, dataset_folder, num_rx = 1, num_tx = 1, \
                     batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
                     subcarrier_spacing=60e3, \
-                    USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=True) #"kronecker" "empty"
+                    USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=showfigure) #"kronecker" "empty"
         #channeltype="perfect", "awgn", "ofdm", "time"
         b_hat, BER = transmit(ebno_db = 5.0, channeltype='ofdm', perfect_csi=False)
         #b_hat, BER = transmit(ebno_db = 15.0, channeltype='ofdm', perfect_csi=True)#has error due to shape difference
