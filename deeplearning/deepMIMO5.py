@@ -3590,7 +3590,7 @@ class Transmitter():
                 plt.xlabel(r"Time step $\ell$")
                 plt.ylabel(r"$|\bar{h}|$");
             #channel_time = ApplyTimeChannel(self.RESOURCE_GRID.num_time_samples, l_tot=l_tot, add_awgn=False)
-            channel_time = MyApplyTimeChannel(self.RESOURCE_GRID.num_time_samples, l_tot=l_tot, add_awgn=False)
+            channel_time = MyApplyTimeChannel(self.RESOURCE_GRID.num_time_samples, l_tot=l_tot, add_awgn=True)
             # OFDM modulator and demodulator
             modulator = OFDMModulator(self.RESOURCE_GRID.cyclic_prefix_length)
             demodulator = OFDMDemodulator(self.RESOURCE_GRID.fft_size, l_min, self.RESOURCE_GRID.cyclic_prefix_length)
@@ -3605,9 +3605,10 @@ class Transmitter():
             # insufficiently long cyclic prefix will become visible. This
             # is in contrast to frequency-domain modeling which imposes
             # no inter-symbol interfernce.
-            #y_time = channel_time([x_time, h_time, no]) #[64, 1, 1, 1174]
-            y_time = channel_time([x_time, h_time]) #(64, 1, 1, 1090) complex
+            y_time = channel_time([x_time, h_time, no]) #[64, 1, 1, 1174]
+            #y_time = channel_time([x_time, h_time]) #(64, 1, 1, 1090) complex
 
+            #Do modulator and demodulator test
             y_test = demodulator(x_time)
             differences = np.abs(x_rg - y_test)
             threshold=1e-7
@@ -3615,9 +3616,10 @@ class Transmitter():
             print("Number of differences:", num_differences)
             print(np.allclose(x_rg, y_test))
             print("Demodulation error (L2 norm):", np.linalg.norm(x_rg - y_test))
+            
             # OFDM demodulation and cyclic prefix removal
             y = demodulator(y_time)
-            y = y_test
+            #y = y_test
             #y: [64, 1, 1, 14, 76]
         return y, h_out
     
@@ -3721,7 +3723,8 @@ if __name__ == '__main__':
     #testOFDMModulatorDemodulator()
     scenario='O1_60'
     #dataset_folder='data' #r'D:\Dataset\CommunicationDataset\O1_60'
-    dataset_folder=r'D:\Dataset\CommunicationDataset\O1_60'
+    dataset_folder='data/DeepMIMO'
+    #dataset_folder=r'D:\Dataset\CommunicationDataset\O1_60'
     ofdmtest = True
     if ofdmtest is not True:
         transmit = Transmitter(scenario, dataset_folder, num_rx = 1, num_tx = 1, \
@@ -3737,8 +3740,9 @@ if __name__ == '__main__':
                     subcarrier_spacing=60e3, \
                     USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=True) #"kronecker" "empty"
         #channeltype="perfect", "awgn", "ofdm", "time"
-        b_hat, BER = transmit(ebno_db = 15.0, channeltype='ofdm', perfect_csi=False)
+        b_hat, BER = transmit(ebno_db = 5.0, channeltype='ofdm', perfect_csi=False)
         #b_hat, BER = transmit(ebno_db = 15.0, channeltype='ofdm', perfect_csi=True)#has error due to shape difference
+        b_hat, BER = transmit(ebno_db = 5.0, channeltype='time', perfect_csi=False)
     print("Finished")
 
     

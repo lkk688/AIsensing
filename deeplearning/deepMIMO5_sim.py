@@ -168,7 +168,8 @@ def simulationloop(ebno_dbs, eval_transceiver, b=None, channeltype='awgn'):
 
 if __name__ == '__main__':
     scenario='O1_60'
-    dataset_folder=r'D:\Dataset\CommunicationDataset\O1_60' #'data'
+    dataset_folder='data/DeepMIMO'
+    #dataset_folder=r'D:\Dataset\CommunicationDataset\O1_60' #'data'
 
     # Bit per channel use
     NUM_BITS_PER_SYMBOL = 2 # QPSK
@@ -177,7 +178,7 @@ if __name__ == '__main__':
     EBN0_DB_MIN = -3.0
 
     # Maximum value of Eb/N0 [dB] for simulations
-    EBN0_DB_MAX = 5.0
+    EBN0_DB_MAX = 12.0 #5.0
 
     # How many examples are processed by Sionna in parallel
     BATCH_SIZE = 128
@@ -232,6 +233,15 @@ if __name__ == '__main__':
     bers=simulationloop(ebno_dbs, eval_transceiver, channeltype='ofdm')
     legend.append('OFDM channel')
     BER_list.append(bers)
+
+    eval_transceiver = Transmitter(scenario, dataset_folder, num_rx = 1, num_tx = 1, \
+            batch_size =BATCH_SIZE, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = NUM_BITS_PER_SYMBOL,  \
+            USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=False) #"kronecker"
+    #channeltype="perfect", "awgn", "ofdm", "time"
+    bers=simulationloop(ebno_dbs, eval_transceiver, channeltype='time')
+    legend.append('Time channel')
+    BER_list.append(bers)
+
 
     ber_plot(ebno_dbs, BER_list, legend=legend, ylabel="BER", title="Bit Error Rate", ebno=True, xlim=None,
              ylim=None, is_bler=None, savefigpath='./data/berlist.jpg')

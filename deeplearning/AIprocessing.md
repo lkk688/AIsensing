@@ -55,6 +55,11 @@ Our new AI processing framework aims to overcome these limitations. It offers th
 DeepMIMO provides multiple scenarios that one can select from. We use the O1 scenario with the carrier frequency set to 60 GHz (O1_60). We need to download the "O1_60" data files from this [page](https://deepmimo.net/scenarios/o1-scenario/). The downloaded zip file should be extracted into a folder, and the parameter DeepMIMO_params['dataset_folder'] should be set to point to this folder. To use DeepMIMO, the DeepMIMO dataset first needs to be generated. The generated DeepMIMO dataset contains channels for different locations of the users and basestations. The layout of the O1 scenario is shown in the figure below.
 ![DeepMIMO O1](../imgs/deepmimo_o1.png)
 
+Install DeepMIMO python package
+```bash
+pip install DeepMIMO
+```
+
 In our `deepMIMO5.py` file, we need to setup the `dataset_folder='data'` in the main file, or setup `dataset_folder=r'D:\Dataset\CommunicationDataset\O1_60'` in Windows side. It will use the following function to get the DeepMIMO dataset:
 ```bash
 DeepMIMO_dataset = get_deepMIMOdata(scenario=scenario, dataset_folder=dataset_folder, showfig=showfig)

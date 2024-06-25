@@ -3551,10 +3551,10 @@ class MyOFDMEqualizer():
     def __call__(self, inputs):
 
         y, h_hat, err_var, no = inputs
-        # y has shape:
+        # y has shape: (64, 1, 1, 14, 76)
         # [batch_size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size]
 
-        # h_hat has shape:
+        # h_hat has shape: (64, 1, 1, 1, 1, 14, 44), dtype=complex128
         # [batch_size, num_rx, num_rx_ant, num_tx, num_streams,...
         #  ..., num_ofdm_symbols, num_effective_subcarriers]
 
@@ -3657,6 +3657,7 @@ class MyOFDMEqualizer():
         s_csi = tf.linalg.diag(tf.reduce_sum(err_var_dt, -1))
 
         # Final covariance matrix
+        s_inf = tf.cast(s_inf, dtype=s_no.dtype) #new added to convert complex128 to complex64
         s = s_inf + s_no + s_csi #(64, 1, 1, 64, 1, 1)
         s = tf.cast(s, self._dtype)
 
