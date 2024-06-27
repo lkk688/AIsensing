@@ -446,11 +446,7 @@ class Transmitter():
             #y: [64, 1, 1, 14, 76]
         return y, h_out
 
-    def uplinktransmission(self, b=None, ebno_db = 15.0, perfect_csi=False):
-        #Compute the noise power for a given Eb/No value. This takes not only the coderate but also the overheads related pilot transmissions and nulled carriers
-        no = ebnodb2no(ebno_db, self.num_bits_per_symbol, self.coderate)
-        # Convert it to a NumPy float
-        no = np.float32(no) #0.0158
+    def uplinktransmission(self, b=None, no=0, perfect_csi=False):
 
         if b is None:
             binary_source = BinarySource()
@@ -473,42 +469,40 @@ class Transmitter():
         
         #apply channel
         y = self.applychannel([x_rg, h_out, no])
-        print("y shape:", y.shape)
-        return y
+        
+        return y, x_rg
     
-    def receiver(self):
+    def channel_estimation(self, y, no, h_out=None):
+        #perform channel estimation via pilots
+        print("Num of Pilots:", len(self.RESOURCE_GRID.pilot_pattern.pilots)) #1
+        # Receiver
+        ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
+        #ls_est = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
 
-    def __call__(self, b=None, ebno_db = 15.0, channeltype='ofdm', perfect_csi=False):
-        # Transmitter
-        if b is None:
-            binary_source = BinarySource()
-            # Start Transmitter self.k Number of information bits per codeword
-            b = binary_source([self.batch_size, 1, self.num_streams_per_tx, self.k]) #[64,1,1,3584] if empty [64,1,1,1536] [batch_size, num_tx, num_streams_per_tx, num_databits]
-        if self.USE_LDPC:
-            c = self.encoder(b) #tf.tensor[64,1,1,3072] [batch_size, num_tx, num_streams_per_tx, num_codewords]
-        else:
-            c = b
-        x = self.mapper(c) #np.array[64,1,1,896] if empty np.array[64,1,1,1064] 1064*4=4256 [batch_size, num_tx, num_streams_per_tx, num_data_symbols]
-        x_rg = self.rg_mapper(x) ##complex array[64,1,1,14,76] 14*76=1064
-        #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76]
+        #Observed resource grid y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols,fft_size], (64, 1, 1, 14, 76) complex
+        #no : [batch_size, num_rx, num_rx_ant] 
+        h_hat, err_var = ls_est([y, no]) #tf tensor (64, 1, 1, 1, 1, 14, 64), (1, 1, 1, 1, 1, 14, 64)
+        #h_ls : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols,fft_size], tf.complex
+        #Channel estimates accross the entire resource grid for all transmitters and streams
 
-        #set noise level
-        ebnorange=np.linspace(-7, -5.25, 10)
-        #ebno_db = 15.0
-        #no = ebnodb2no(ebno_db, num_bits_per_symbol, coderate, RESOURCE_GRID)
-        #Compute the noise power for a given Eb/No value. This takes not only the coderate but also the overheads related pilot transmissions and nulled carriers
-        no = ebnodb2no(ebno_db, self.num_bits_per_symbol, self.coderate)
-        # Convert it to a NumPy float
-        no = np.float32(no) #0.0158
+        if self.showfig:
+            h_est = h_hat[0,0,0,0,0,0] #(64, 1, 1, 1, 1, 14, 44)
+            plt.figure()
+            if h_out is not None:
+                h_perfect = h_out[0,0,0,0,0,0] #(64, 1, 1, 1, 16, 1, 44)
+                plt.plot(np.real(h_perfect))
+                plt.plot(np.imag(h_perfect))
+            plt.plot(np.real(h_est), "--")
+            plt.plot(np.imag(h_est), "--")
+            plt.xlabel("Subcarrier index")
+            plt.ylabel("Channel frequency response")
+            plt.legend(["Ideal (real part)", "Ideal (imaginary part)", "Estimated (real part)", "Estimated (imaginary part)"]);
+            plt.title("Comparison of channel frequency responses");
+        return h_hat, err_var
 
-        y, h_out = self.generateChannel(x_rg, no, channeltype=channeltype)
-        # y is the symbol received after the channel and noise
-        #Channel outputs y : [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], complex    
-        print(y.shape) #[64, 1, 1, 14, 76] dim (3,4 removed)
-        #print(y.real)
-        #print(y.imag)
-
+    def receiver(self, y, no, x_rg, b=None, perfect_csi= False):
         print(self.RESOURCE_GRID.pilot_pattern) #<__main__.EmptyPilotPattern object at 0x7f2659dfd9c0>
+        print("Num of Pilots:", len(self.RESOURCE_GRID.pilot_pattern.pilots))
         if self.pilot_pattern == "empty" and perfect_csi == False: #"kronecker", "empty"
             #no channel estimation
             llr = self.mydemapper([y, no]) #[64, 1, 1, 14, 304]
@@ -521,37 +515,9 @@ class Transmitter():
             #BER=calculate_BER(b, b_perfect)
             #print("Perfect BER:", BER)
         else: # channel estimation or perfect_csi
-            if perfect_csi == True:
-                # For perfect CSI, the receiver gets the channel frequency response as input
-                # However, the channel estimator only computes estimates on the non-nulled
-                # subcarriers. Therefore, we need to remove them here from `h_freq` (done inside the self.generateChannel).
-                # This step can be skipped if no subcarriers are nulled. 
-                h_hat, err_var = h_out, 0. #(64, 1, 1, 1, 16, 1, 64)
-            else: #perform channel estimation via pilots
-                print("Num of Pilots:", len(self.RESOURCE_GRID.pilot_pattern.pilots)) #1
-                # Receiver
-                ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
-                #ls_est = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
-
-                #Observed resource grid y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols,fft_size], (64, 1, 1, 14, 76) complex
-                #no : [batch_size, num_rx, num_rx_ant] 
-                h_hat, err_var = ls_est([y, no]) #tf tensor (64, 1, 1, 1, 1, 14, 64), (1, 1, 1, 1, 1, 14, 64)
-                #h_ls : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols,fft_size], tf.complex
-                #Channel estimates accross the entire resource grid for all transmitters and streams
-
-            if self.showfig:
-                h_perfect = h_out[0,0,0,0,0,0] #(64, 1, 1, 1, 16, 1, 44)
-                h_est = h_hat[0,0,0,0,0,0] #(64, 1, 1, 1, 1, 14, 44)
-                plt.figure()
-                plt.plot(np.real(h_perfect))
-                plt.plot(np.imag(h_perfect))
-                plt.plot(np.real(h_est), "--")
-                plt.plot(np.imag(h_est), "--")
-                plt.xlabel("Subcarrier index")
-                plt.ylabel("Channel frequency response")
-                plt.legend(["Ideal (real part)", "Ideal (imaginary part)", "Estimated (real part)", "Estimated (imaginary part)"]);
-                plt.title("Comparison of channel frequency responses");
-
+            #perform channel estimation via pilots
+            h_hat, err_var = self.channel_estimation(y, no)
+            
             #lmmse_equ = LMMSEEqualizer(self.RESOURCE_GRID, self.STREAM_MANAGEMENT)
             lmmse_equ = MyLMMSEEqualizer(self.RESOURCE_GRID, self.STREAM_MANAGEMENT)
             #input (y, h_hat, err_var, no)
@@ -573,8 +539,27 @@ class Transmitter():
             b_hat = b_hat_tf.numpy()
         else:
             b_hat = hard_decisions(llr_est, np.int32) 
-        BER=calculate_BER(b, b_hat)
-        print("BER Value:", BER)
+        if b is not None:
+            BER=calculate_BER(b, b_hat)
+            print("BER Value:", BER)
+            return b_hat, BER
+        else:
+            return b_hat, None
+
+
+    def __call__(self, b=None, ebno_db = 15.0, channeltype='ofdm', perfect_csi=False):
+        # Transmitter
+        y, x_rg = self.uplinktransmission(b=b, ebno_db=ebno_db, perfect_csi=perfect_csi)
+        print("y shape:", y.shape)
+
+        #Compute the noise power for a given Eb/No value. This takes not only the coderate but also the overheads related pilot transmissions and nulled carriers
+        no = ebnodb2no(ebno_db, self.num_bits_per_symbol, self.coderate)
+        # Convert it to a NumPy float
+        no = np.float32(no) #0.0158
+
+        self.channel_estimation(y, no, h_out=None)
+
+        b_hat, BER = self.receiver(y, no, x_rg, b=None, perfect_csi= False)
         return b_hat, BER
 
 

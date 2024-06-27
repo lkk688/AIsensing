@@ -77,7 +77,7 @@ Create a Conda virtual environment with python 3.10 (`tensorrt==8.5.3.1` does no
    $ conda deactivate #To deactivate an active environment
 ```
 
-Install cuda and cudnn (Windows Native - Windows 7 or higher (64-bit) (no GPU support after TF 2.10))
+Install cuda, cudnn, tensorflow, and pytorch (Windows Native - Windows 7 or higher (64-bit) (no GPU support after TF 2.10))
 ```bash
    #install cuda under Conda
    conda install -y cuda -c nvidia/label/cuda-11.8.0 #new method from https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html#conda-installation
