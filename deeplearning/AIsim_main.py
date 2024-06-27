@@ -48,11 +48,12 @@ def to_numpy(input_array):
     raise TypeError("Input type not supported. Please provide a NumPy array, TensorFlow tensor, or PyTorch tensor.")
 
 class Transmitter():
-    def __init__(self, channeltype="deepmimo", scenario='O1_60', dataset_folder='data/DeepMIMO', num_rx = 1, num_tx = 1, \
+    def __init__(self, channeldataset='deepmimo', channeltype="ofdm", scenario='O1_60', dataset_folder='data/DeepMIMO', num_rx = 1, num_tx = 1, \
                  batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
                  subcarrier_spacing=15e3, num_guard_carriers=[15,16], pilot_ofdm_symbol_indices=[2], \
                 USE_LDPC = True, pilot_pattern = "kronecker", guards = True, showfig = True) -> None:
         self.channeltype = channeltype
+        self.channeldataset = channeldataset
         self.fft_size = fft_size
         self.batch_size = batch_size
         self.num_ofdm_symbols = num_ofdm_symbols
@@ -167,6 +168,34 @@ class Transmitter():
         #receiver part
         self.mydemapper = MyDemapper("app", constellation_type="qam", num_bits_per_symbol=num_bits_per_symbol)
 
+        #Channel part
+        if self.channeldataset=='deepmimo':
+            self.create_DeepMIMOchanneldataset() #get self.data_loader
+        elif self.channeldataset=='cdl':
+            self.create_CDLchanneldataset() #get self.cdl
+        #call get_channelcir to get channelcir
+        
+        if self.channeltype=='ofdm':
+            # Function that will apply the channel frequency response to an input signal
+            #channel_freq = ApplyOFDMChannel(add_awgn=True)
+            # Generate the OFDM channel
+            self.applychannel = MyApplyOFDMChannel(add_awgn=True)
+            #h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, fft_size]
+            #(64, 1, 1, 1, 16, 1, 76)
+        elif self.channeltype=='time': #time channel:
+            #channel_time = ApplyTimeChannel(self.RESOURCE_GRID.num_time_samples, l_tot=l_tot, add_awgn=False)
+            bandwidth = self.RESOURCE_GRID.bandwidth #4560000
+            l_min, l_max = time_lag_discrete_time_channel(bandwidth) #-6, 20
+            l_tot = l_max-l_min+1 #27
+            self.l_tot = l_tot
+            self.l_min = l_min
+            self.l_max = l_max
+            self.applychannel = MyApplyTimeChannel(self.RESOURCE_GRID.num_time_samples, l_tot=l_tot, add_awgn=True)
+            # OFDM modulator and demodulator
+            self.modulator = OFDMModulator(self.RESOURCE_GRID.cyclic_prefix_length)
+            self.demodulator = OFDMDemodulator(self.RESOURCE_GRID.fft_size, l_min, self.RESOURCE_GRID.cyclic_prefix_length)
+
+
     def create_DeepMIMOchanneldataset(self):
         num_rx = self.num_rx
         #DeepMIMO provides multiple [scenarios](https://deepmimo.net/scenarios/) that one can select from. 
@@ -248,11 +277,13 @@ class Transmitter():
         #To account for time-varying channels, a channel impulse responses is sampled at the `sampling_frequency` for `num_time_samples` samples.
 
     def get_channelcir(self,returnformat='numpy'):
-        if self.channeltype=='deepmimo':
+        if self.channeldataset=='deepmimo':
             h_b, tau_b = next(iter(self.data_loader)) #h_b: [64, 1, 1, 1, 16, 10, 1], tau_b=[64, 1, 1, 10]
-        elif self.channeltype=='cdl':
-            h_b, tau_b = self.cdl(batch_size=self.batch_size, num_time_steps=self.RESOURCE_GRID.num_ofdm_symbols, sampling_frequency=1/self.RESOURCE_GRID.ofdm_symbol_duration)
-
+        elif self.channeldataset=='cdl':
+            if self.channeltype=='ofdm':
+                h_b, tau_b = self.cdl(batch_size=self.batch_size, num_time_steps=self.RESOURCE_GRID.num_ofdm_symbols, sampling_frequency=1/self.RESOURCE_GRID.ofdm_symbol_duration)
+            elif self.channeltype=='time':
+                h_b, tau_b = self.cdl(batch_size=self.batch_size, num_time_steps=self.RESOURCE_GRID.num_time_samples+self.l_tot-1, sampling_frequency=self.RESOURCE_GRID.bandwidth)
         # In CDL, Direction = "uplink" the UT is transmitting.
         # num_bs_ant = 16 = num_rx_ant
         # num_ut_ant = 2 = num_tx_ant
@@ -289,13 +320,11 @@ class Transmitter():
         h_b, tau_b = self.get_channelcir()
         from sionna.channel import subcarrier_frequencies, cir_to_ofdm_channel, cir_to_time_channel, time_lag_discrete_time_channel
         from sionna.channel import ApplyOFDMChannel, ApplyTimeChannel, OFDMChannel, TimeChannel
-        
+
         frequencies = subcarrier_frequencies(self.RESOURCE_GRID.fft_size, self.RESOURCE_GRID.subcarrier_spacing)
         h_freq = cir_to_ofdm_channel(frequencies, h_b, tau_b, normalize=True)
         #h_freq.shape #[batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm_symbols, num_subcarriers]
 
-        # Function that will apply the channel frequency response to an input signal
-        channel_freq = ApplyOFDMChannel(add_awgn=True)
         if self.showfig:
             plt.figure()
             plt.title("Channel frequency response at given time")
@@ -304,6 +333,22 @@ class Transmitter():
             plt.xlabel("OFDM Symbol Index")
             plt.ylabel(r"$h$")
             plt.legend(["Real part", "Imaginary part"]);
+        return h_freq
+    
+    def get_timechannelresponse(self):
+        h_b, tau_b = self.get_channelcir()
+        #h_time = cir_to_time_channel(rg.bandwidth, a, tau, l_min=l_min, l_max=l_max, normalize=True)
+        #[2, 1, 16, 1, 2, 1164, 17]
+        h_time = cir_to_time_channel(self.RESOURCE_GRID.bandwidth, h_b, tau_b, l_min=self.l_min, l_max=self.l_max, normalize=True) 
+        #h_time: [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, l_max - l_min + 1]
+        if self.showfig:
+            plt.figure()
+            plt.title("Discrete-time channel impulse response")
+            plt.stem(np.abs(h_time[0,0,0,0,0,0]))
+            plt.xlabel(r"Time step $\ell$")
+            plt.ylabel(r"$|\bar{h}|$");
+        return h_time
+    
 
     def generateChannel(self, x_rg, no, channeltype='ofdm'):
         #x_rg:[batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76]
@@ -401,6 +446,38 @@ class Transmitter():
             #y: [64, 1, 1, 14, 76]
         return y, h_out
 
+    def uplinktransmission(self, b=None, ebno_db = 15.0, perfect_csi=False):
+        #Compute the noise power for a given Eb/No value. This takes not only the coderate but also the overheads related pilot transmissions and nulled carriers
+        no = ebnodb2no(ebno_db, self.num_bits_per_symbol, self.coderate)
+        # Convert it to a NumPy float
+        no = np.float32(no) #0.0158
+
+        if b is None:
+            binary_source = BinarySource()
+            # Start Transmitter self.k Number of information bits per codeword
+            b = binary_source([self.batch_size, 1, self.num_streams_per_tx, self.k]) #[64,1,1,3584] if empty [64,1,1,1536] [batch_size, num_tx, num_streams_per_tx, num_databits]
+        if self.USE_LDPC:
+            c = self.encoder(b) #tf.tensor[64,1,1,3072] [batch_size, num_tx, num_streams_per_tx, num_codewords]
+        else:
+            c = b
+        x = self.mapper(c) #np.array[64,1,1,896] if empty np.array[64,1,1,1064] 1064*4=4256 [batch_size, num_tx, num_streams_per_tx, num_data_symbols]
+        x_rg = self.rg_mapper(x) ##complex array[64,1,1,14,76] 14*76=1064
+        #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76]
+
+        #we generate random batches of CIR, transform them in the frequency domain and apply them to the resource grid in the frequency domain.
+        if self.channeltype=='ofdm':
+            h_out = self.get_OFDMchannelresponse()
+            print("h_freq shape:", h_out.shape)
+        elif self.channeltype=='time':
+            h_out = self.get_timechannelresponse()
+        
+        #apply channel
+        y = self.applychannel([x_rg, h_out, no])
+        print("y shape:", y.shape)
+        return y
+    
+    def receiver(self):
+
     def __call__(self, b=None, ebno_db = 15.0, channeltype='ofdm', perfect_csi=False):
         # Transmitter
         if b is None:
@@ -419,6 +496,7 @@ class Transmitter():
         ebnorange=np.linspace(-7, -5.25, 10)
         #ebno_db = 15.0
         #no = ebnodb2no(ebno_db, num_bits_per_symbol, coderate, RESOURCE_GRID)
+        #Compute the noise power for a given Eb/No value. This takes not only the coderate but also the overheads related pilot transmissions and nulled carriers
         no = ebnodb2no(ebno_db, self.num_bits_per_symbol, self.coderate)
         # Convert it to a NumPy float
         no = np.float32(no) #0.0158
