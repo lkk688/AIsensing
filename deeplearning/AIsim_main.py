@@ -48,7 +48,8 @@ def to_numpy(input_array):
     raise TypeError("Input type not supported. Please provide a NumPy array, TensorFlow tensor, or PyTorch tensor.")
 
 class Transmitter():
-    def __init__(self, channeldataset='deepmimo', channeltype="ofdm", scenario='O1_60', dataset_folder='data/DeepMIMO', num_rx = 1, num_tx = 1, \
+    def __init__(self, channeldataset='deepmimo', channeltype="ofdm", scenario='O1_60', dataset_folder='data/DeepMIMO', \
+                 direction="uplink", num_ut = 1, num_ut_ant=2, num_bs = 1, num_bs_ant=16,\
                  batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
                  subcarrier_spacing=15e3, num_guard_carriers=[15,16], pilot_ofdm_symbol_indices=[2], \
                 USE_LDPC = True, pilot_pattern = "kronecker", guards = True, showfig = True) -> None:
@@ -62,20 +63,26 @@ class Transmitter():
         self.pilot_pattern = pilot_pattern
         self.scenario = scenario
         self.dataset_folder = dataset_folder
-        self.num_rx = num_rx
-        self.num_tx = num_tx
-
-        self.num_ut = num_rx #1
-        self.num_bs = num_tx #1
-        self.num_ut_ant = num_rx #2 #4
-        self.num_bs_ant = 16 #8
+        
+        self.num_ut = num_ut #num_rx #1
+        self.num_bs = num_bs #num_tx #1
+        self.num_ut_ant = num_ut_ant #num_rx #2 #4
+        self.num_bs_ant = num_bs_ant #8
         #[batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]
-
-        # The number of transmitted streams is equal to the number of UT antennas
-        # in both uplink and downlink
-        #NUM_STREAMS_PER_TX = NUM_UT_ANT
-        #NUM_UT_ANT = num_rx
-        num_streams_per_tx = num_rx ##1
+        if direction=="uplink": #the UT is transmitting.
+            self.num_tx = self.num_ut
+            self.num_rx = self.num_bs
+            # The number of transmitted streams is equal to the number of UT antennas
+            # in both uplink and downlink
+            #NUM_STREAMS_PER_TX = NUM_UT_ANT
+            #NUM_UT_ANT = num_rx
+            num_streams_per_tx = num_ut_ant #num_rx ##1
+        else:#downlink
+            self.num_tx = self.num_bs
+            self.num_rx = self.num_ut
+            num_streams_per_tx = num_bs_ant #num_rx ##1
+        self.num_streams_per_tx = num_streams_per_tx
+            
         # Create an RX-TX association matrix.
         # RX_TX_ASSOCIATION[i,j]=1 means that receiver i gets at least one stream
         # from transmitter j. Depending on the transmission direction (uplink or downlink),
@@ -90,7 +97,7 @@ class Transmitter():
         # we have only a single transmitter and receiver,
         # the RX-TX association matrix is simply:
         #RX_TX_ASSOCIATION = np.array([[1]]) #np.ones([num_rx, 1], int)
-        RX_TX_ASSOCIATION = np.ones([num_rx, num_tx], int) #[[1]]
+        RX_TX_ASSOCIATION = np.ones([self.num_rx, self.num_tx], int) #[[1]]
         self.STREAM_MANAGEMENT = StreamManagement(RX_TX_ASSOCIATION, num_streams_per_tx) #RX_TX_ASSOCIATION, NUM_STREAMS_PER_TX
 
         if guards:
@@ -111,7 +118,7 @@ class Transmitter():
         RESOURCE_GRID = MyResourceGrid( num_ofdm_symbols=num_ofdm_symbols,
                                             fft_size=fft_size,
                                             subcarrier_spacing=subcarrier_spacing, #60e3, #30e3,
-                                            num_tx=num_tx, #1
+                                            num_tx=self.num_tx, #1
                                             num_streams_per_tx=num_streams_per_tx, #1
                                             cyclic_prefix_length=cyclic_prefix_length,
                                             num_guard_carriers=num_guard_carriers,
@@ -136,14 +143,13 @@ class Transmitter():
                         label="Stream {}".format(i))
             plt.legend()
         print("Average energy per pilot symbol: {:1.2f}".format(np.mean(np.abs(RESOURCE_GRID.pilot_pattern.pilots[0,0])**2)))
-        self.num_streams_per_tx = num_streams_per_tx
         self.RESOURCE_GRID = RESOURCE_GRID
-        print("RG num_ofdm_symbols", RESOURCE_GRID.num_ofdm_symbols)
+        print("RG num_ofdm_symbols", RESOURCE_GRID.num_ofdm_symbols) #14
         print("RG ofdm_symbol_duration", RESOURCE_GRID.ofdm_symbol_duration)
 
         #num_bits_per_symbol = 4
         # Codeword length
-        n = int(RESOURCE_GRID.num_data_symbols * num_bits_per_symbol) #num_data_symbols:64*14=896 896*4=3584, if empty 1064*4=4256
+        n = int(RESOURCE_GRID.num_data_symbols * num_bits_per_symbol) #num_data_symbols: if empty 1064*4=4256
 
         #USE_LDPC = True
         if USE_LDPC:
@@ -230,8 +236,6 @@ class Transmitter():
         # Define the number of UT and BS antennas.
         # For the CDL model, a single UT and BS are supported.
         #The CDL model only works for systems with a single transmitter and a single receiver. The transmitter and receiver can be equipped with multiple antennas.
-        num_ut = 1
-        num_bs = 1
         num_ut_ant = self.num_ut_ant #2
         num_bs_ant = self.num_bs_ant #16 #8
 
@@ -287,8 +291,8 @@ class Transmitter():
         # In CDL, Direction = "uplink" the UT is transmitting.
         # num_bs_ant = 16 = num_rx_ant
         # num_ut_ant = 2 = num_tx_ant
-        #print(h_b.shape) #[batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]
-        #print(tau_b.shape) #[batch, num_rx, num_tx, num_paths]
+        #print(h_b.shape) #[batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps] (64, 1, 16, 1, 2, 23, 14)
+        #print(tau_b.shape) #[batch, num_rx, num_tx, num_paths] (64, 1, 1, 23)
         if returnformat=='numpy':
             h_b=to_numpy(h_b)
             tau_b=to_numpy(tau_b)
@@ -324,7 +328,7 @@ class Transmitter():
 
         frequencies = subcarrier_frequencies(self.RESOURCE_GRID.fft_size, self.RESOURCE_GRID.subcarrier_spacing)
         h_freq = cir_to_ofdm_channel(frequencies, h_b, tau_b, normalize=True)
-        #h_freq.shape #[batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm_symbols, num_subcarriers]
+        #h_freq.shape #[batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm_symbols, num_subcarriers] (64, 1, 16, 1, 2, 14, 76)
 
         if self.showfig:
             plt.figure()
@@ -460,30 +464,30 @@ class Transmitter():
             c = b
         x = self.mapper(c) #np.array[64,1,1,896] if empty np.array[64,1,1,1064] 1064*4=4256 [batch_size, num_tx, num_streams_per_tx, num_data_symbols]
         x_rg = self.rg_mapper(x) ##complex array[64,1,1,14,76] 14*76=1064
-        #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76]
+        #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76] (64, 1, 2, 14, 76)
 
         #we generate random batches of CIR, transform them in the frequency domain and apply them to the resource grid in the frequency domain.
         if self.channeltype=='ofdm':
             h_out = self.get_OFDMchannelresponse()
-            print("h_freq shape:", h_out.shape)
+            print("h_freq shape:", h_out.shape) #(64, 1, 16, 1, 2, 14, 76)
         elif self.channeltype=='time':
             h_out = self.get_timechannelresponse()
         
         #apply channel
         y = self.applychannel([x_rg, h_out, no])
         
-        return y, x_rg
+        return y, x_rg, h_out
     
     def channel_estimation(self, y, no, h_out=None):
         #perform channel estimation via pilots
         print("Num of Pilots:", len(self.RESOURCE_GRID.pilot_pattern.pilots)) #1
         # Receiver
-        ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
-        #ls_est = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
+        #ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
+        ls_est = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
 
         #Observed resource grid y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols,fft_size], (64, 1, 1, 14, 76) complex
         #no : [batch_size, num_rx, num_rx_ant] 
-        h_hat, err_var = ls_est([y, no]) #tf tensor (64, 1, 1, 1, 1, 14, 64), (1, 1, 1, 1, 1, 14, 64)
+        h_hat, err_var = ls_est([y, no]) #tf tensor (64, 1, 16, 1, 2, 14, 44), (1, 1, 1, 1, 2, 14, 44)
         #h_ls : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols,fft_size], tf.complex
         #Channel estimates accross the entire resource grid for all transmitters and streams
 
@@ -528,11 +532,11 @@ class Transmitter():
             x_hat, no_eff = lmmse_equ([y, h_hat, err_var, no]) #(64, 1, 1, 912), (64, 1, 1, 912)
             #Estimated symbols x_hat : [batch_size, num_tx, num_streams, num_data_symbols], tf.complex
             #Effective noise variance for each estimated symbol no_eff : [batch_size, num_tx, num_streams, num_data_symbols], tf.float
-            x_hat=x_hat.numpy() #(64, 1, 1, 912)
-            no_eff=no_eff.numpy() #(64, 1, 1, 912)
+            x_hat=x_hat.numpy() #(64, 1, 2, 572)
+            no_eff=no_eff.numpy() #(64, 1, 2, 572)
             no_eff=np.mean(no_eff)
 
-            llr_est = self.mydemapper([x_hat, no_eff]) #(64, 1, 1, 3072)
+            llr_est = self.mydemapper([x_hat, no_eff]) #(64, 1, 2, 2288)
             #output: [batch size, num_rx, num_rx_ant, n * num_bits_per_symbol]
 
         #llr_est #(64, 1, 1, 4256)
@@ -540,7 +544,7 @@ class Transmitter():
             b_hat_tf = self.decoder(llr_est) #[64, 1, 1, 2128]
             b_hat = b_hat_tf.numpy()
         else:
-            b_hat = hard_decisions(llr_est, np.int32) 
+            b_hat = hard_decisions(llr_est, np.int32)  #(64, 1, 2, 2288)
         if b is not None:
             BER=calculate_BER(b, b_hat)
             print("BER Value:", BER)
@@ -550,27 +554,32 @@ class Transmitter():
 
 
     def __call__(self, b=None, ebno_db = 15.0, channeltype='ofdm', perfect_csi=False):
-        # Transmitter
-        y, x_rg = self.uplinktransmission(b=b, ebno_db=ebno_db, perfect_csi=perfect_csi)
-        print("y shape:", y.shape)
-
         #Compute the noise power for a given Eb/No value. This takes not only the coderate but also the overheads related pilot transmissions and nulled carriers
         no = ebnodb2no(ebno_db, self.num_bits_per_symbol, self.coderate)
         # Convert it to a NumPy float
         no = np.float32(no) #0.0158
 
-        self.channel_estimation(y, no, h_out=None)
+        # Transmitter
+        y, x_rg, h_out = self.uplinktransmission(b=b, no=no, perfect_csi=perfect_csi)
+        print("y shape:", y.shape) #(64, 1, 16, 14, 76)
 
-        b_hat, BER = self.receiver(y, no, x_rg, b=None, perfect_csi= False)
+        #only for test, already included in receiver
+        h_hat, err_var = self.channel_estimation(y, no, h_out=h_out)
+
+        b_hat, BER = self.receiver(y, no, x_rg, b=b, perfect_csi= perfect_csi)
         return b_hat, BER
 
 def test_CDLchannel():
-    transmit = Transmitter(channeldataset='cdl', channeltype='ofdm', num_rx = 1, num_tx = 1, \
+    # transmit = Transmitter(channeldataset='cdl', channeltype='ofdm', direction='uplink', \
+    #                 batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
+    #                 subcarrier_spacing=60e3, \
+    #                 USE_LDPC = False, pilot_pattern = "empty", guards=False, showfig=showfigure)
+    transmit = Transmitter(channeldataset='cdl', channeltype='ofdm', direction='uplink', \
                     batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
                     subcarrier_spacing=60e3, \
-                    USE_LDPC = False, pilot_pattern = "empty", guards=False, showfig=showfigure)
+                    USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=showfigure) #"kronecker" "empty"
     transmit.get_channelcir()
-    transmit.get_OFDMchannelresponse()
+    h_out=transmit.get_OFDMchannelresponse()
     b_hat, BER = transmit(ebno_db = 15.0)
 
 if __name__ == '__main__':
