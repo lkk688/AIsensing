@@ -49,7 +49,52 @@ Our new AI processing framework aims to overcome these limitations. It offers th
    - Our open environment encourages Computer Science and Software Engineering students to innovate. Students can develop software and deep learning models using a specified general-purpose dataset format, without requiring deep domain-specific knowledge in wireless communication. 
    - Our AI processing framework bridges the gap between theory and practice, empowering researchers and students alike. As we refine our implementation, we anticipate further breakthroughs in wireless communication and radar sensing. By fostering collaboration and creativity, we build upon the solid foundation we've established.
 
+## Setup Python Environment
+
+```bash
+   curl https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o Miniconda3-latest-Linux-x86_64.sh
+   bash Miniconda3-latest-Linux-x86_64.sh
+```
+
+You can also install conda in silent mode, but you need to run additional commands to initialize PATH and perform init
+
+```bash
+   $ python3 -V #system's python3 version
+   Python 3.10.12
+   $ bash Miniconda3-latest-Linux-x86_64.sh -b -u
+   $ source ~/miniconda3/bin/activate
+   $ conda init bash
+```
+".bashrc" has been updated, and close and re-open your current shell to make changes effective.
+
+Create a Conda virtual environment with python 3.10 (`tensorrt==8.5.3.1` does not support python3.11):
+
+```bash
+   $ conda info --envs #check existing conda environment
+   $ conda create --name py310cu118 python=3.10
+   $ conda activate py310cu118
+   $ conda info
+   $ conda deactivate #To deactivate an active environment
+```
+
+Install cuda and cudnn (Windows Native - Windows 7 or higher (64-bit) (no GPU support after TF 2.10))
+```bash
+   #install cuda under Conda
+   conda install -y cuda -c nvidia/label/cuda-11.8.0 #new method from https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html#conda-installation
+   # Install pytorch
+   conda install -y pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia
+   # install cuDNN and Tensorflow
+   #python3 -m pip install nvidia-cudnn-cu11==8.6.0.163 tensorflow==2.12.0
+   pip install nvidia-cudnn-cu11==8.7.0.84
+   pip install tensorflow[and-cuda]==2.14.0
+   (py310cu118) PS D:\Developer\radarsensing> pip install tensorflow==2.14.0
+   (py310cu118) PS D:\Developer\radarsensing> pip install nvidia-cudnn-cu11
+   Successfully installed nvidia-cublas-cu11-11.11.3.6 nvidia-cuda-nvrtc-cu11-11.8.89 nvidia-cudnn-cu11-9.1.1.17
+
+```
+
 ## Test NVIDIA Sionna
+
 Install Nvidia sionna from [SionnaGithub](https://github.com/NVlabs/sionna/tree/main):
 ```bash
 $ pip install sionna
