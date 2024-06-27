@@ -85,12 +85,25 @@ Install cuda, cudnn, tensorflow, and pytorch (Windows Native - Windows 7 or high
    conda install -y pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia
    # install cuDNN and Tensorflow
    #python3 -m pip install nvidia-cudnn-cu11==8.6.0.163 tensorflow==2.12.0
-   pip install nvidia-cudnn-cu11==8.7.0.84
-   pip install tensorflow[and-cuda]==2.14.0
+   #pip install nvidia-cudnn-cu11==8.7.0.84
+   #pip install tensorflow[and-cuda]==2.14.0
    (py310cu118) PS D:\Developer\radarsensing> pip install tensorflow==2.14.0
    (py310cu118) PS D:\Developer\radarsensing> pip install nvidia-cudnn-cu11
    Successfully installed nvidia-cublas-cu11-11.11.3.6 nvidia-cuda-nvrtc-cu11-11.8.89 nvidia-cudnn-cu11-9.1.1.17
+   python -c "import tensorflow as tf; print('tf version:', tf.__version__); print(tf.config.list_physical_devices('GPU'))"
+   # Verify Pytorch installation
+   python -c "import torch; print('Torch version:', torch.__version__); print(torch.cuda.is_available())"
+```
 
+Install other python packages:
+```bash
+   conda install -y -c conda-forge jupyterlab
+   conda install -y ipykernel
+   jupyter kernelspec list #view current jupyter kernels
+   ipython kernel install --user --name=py310cu118
+   conda install -y numpy matplotlib pandas Pillow scipy pyyaml scikit-image 
+   pip install pyqt5 pyqt6 PySide6 pyqtgraph opencv-python-headless PyOpenGL PyOpenGL_accelerate pyopengl
+   pip install sionna DeepMIMO pyadi-iio
 ```
 
 ## Test NVIDIA Sionna

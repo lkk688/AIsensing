@@ -306,6 +306,7 @@ class Transmitter():
             plt.legend(["Real part", "Imaginary part"])
             plt.xlabel(r"$t$ [us]")
             plt.ylabel(r"$a$");
+        return h_b, tau_b
 
     # def get_htau_batch(self, returnformat='numpy'):
     #     h_b, tau_b = next(iter(self.data_loader)) #h_b: [64, 1, 1, 1, 16, 10, 1], tau_b=[64, 1, 1, 10]
@@ -353,7 +354,8 @@ class Transmitter():
     def generateChannel(self, x_rg, no, channeltype='ofdm'):
         #x_rg:[batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76]
 
-        h_b, tau_b = self.get_htau_batch()
+        #h_b, tau_b = self.get_htau_batch()
+        h_b, tau_b = self.get_channelcir()
         h_out = None
         #print(h_b.shape) #complex (64, 1, 1, 1, 16, 10, 1)[batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps] 
         #print(tau_b.shape) #float (64, 1, 1, 10)[batch, num_rx, num_tx, num_paths]
@@ -562,6 +564,14 @@ class Transmitter():
         b_hat, BER = self.receiver(y, no, x_rg, b=None, perfect_csi= False)
         return b_hat, BER
 
+def test_CDLchannel():
+    transmit = Transmitter(channeldataset='cdl', channeltype='ofdm', num_rx = 1, num_tx = 1, \
+                    batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
+                    subcarrier_spacing=60e3, \
+                    USE_LDPC = False, pilot_pattern = "empty", guards=False, showfig=showfigure)
+    transmit.get_channelcir()
+    transmit.get_OFDMchannelresponse()
+    b_hat, BER = transmit(ebno_db = 15.0)
 
 if __name__ == '__main__':
 
@@ -572,23 +582,8 @@ if __name__ == '__main__':
     #dataset_folder=r'D:\Dataset\CommunicationDataset\O1_60'
     ofdmtest = True
     showfigure = True
-    if ofdmtest is not True:
-        transmit = Transmitter(scenario, dataset_folder, num_rx = 1, num_tx = 1, \
-                    batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
-                    subcarrier_spacing=60e3, \
-                    USE_LDPC = False, pilot_pattern = "empty", guards=False, showfig=showfigure) #"kronecker"
-        #channeltype="perfect", "awgn", "ofdm", "time"
-        b_hat, BER = transmit(ebno_db = 15.0, channeltype='awgn')
-        b_hat, BER = transmit(ebno_db = 15.0, channeltype='time')
-    else:
-        transmit = Transmitter(scenario, dataset_folder, num_rx = 1, num_tx = 1, \
-                    batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
-                    subcarrier_spacing=60e3, \
-                    USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=showfigure) #"kronecker" "empty"
-        #channeltype="perfect", "awgn", "ofdm", "time"
-        b_hat, BER = transmit(ebno_db = 5.0, channeltype='ofdm', perfect_csi=False)
-        #b_hat, BER = transmit(ebno_db = 15.0, channeltype='ofdm', perfect_csi=True)#has error due to shape difference
-        b_hat, BER = transmit(ebno_db = 5.0, channeltype='time', perfect_csi=False)
+    if ofdmtest is True:
+        test_CDLchannel()
     print("Finished")
 
 
