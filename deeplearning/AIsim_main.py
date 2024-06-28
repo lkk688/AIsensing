@@ -51,8 +51,9 @@ class Transmitter():
     def __init__(self, channeldataset='deepmimo', channeltype="ofdm", scenario='O1_60', dataset_folder='data/DeepMIMO', \
                  direction="uplink", num_ut = 1, num_ut_ant=2, num_bs = 1, num_bs_ant=16,\
                  batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
-                 subcarrier_spacing=15e3, num_guard_carriers=[15,16], pilot_ofdm_symbol_indices=[2], \
+                 subcarrier_spacing=15e3, num_guard_carriers=None, pilot_ofdm_symbol_indices=None, \
                 USE_LDPC = True, pilot_pattern = "kronecker", guards = True, showfig = True) -> None:
+                #num_guard_carriers=[15,16]
         self.channeltype = channeltype
         self.channeldataset = channeldataset
         self.fft_size = fft_size
@@ -142,14 +143,14 @@ class Transmitter():
                         markerfmt="C{}.".format(i), linefmt="C{}-".format(i),
                         label="Stream {}".format(i))
             plt.legend()
-        print("Average energy per pilot symbol: {:1.2f}".format(np.mean(np.abs(RESOURCE_GRID.pilot_pattern.pilots[0,0])**2)))
+            print("Average energy per pilot symbol: {:1.2f}".format(np.mean(np.abs(RESOURCE_GRID.pilot_pattern.pilots[0,0])**2)))
         self.RESOURCE_GRID = RESOURCE_GRID
         print("RG num_ofdm_symbols", RESOURCE_GRID.num_ofdm_symbols) #14
         print("RG ofdm_symbol_duration", RESOURCE_GRID.ofdm_symbol_duration)
 
         #num_bits_per_symbol = 4
         # Codeword length
-        n = int(RESOURCE_GRID.num_data_symbols * num_bits_per_symbol) #num_data_symbols: if empty 1064*4=4256
+        n = int(RESOURCE_GRID.num_data_symbols * num_bits_per_symbol) #num_data_symbols: if empty 1064*4=4256, else, 768*4=3072
 
         #USE_LDPC = True
         if USE_LDPC:
@@ -164,7 +165,7 @@ class Transmitter():
             coderate = 1
             # Number of information bits per codeword
             k = int(n * coderate)  
-        self.k = k # Number of information bits per codeword
+        self.k = k # Number of information bits per codeword, 3072
         self.USE_LDPC = USE_LDPC
         self.coderate = coderate
         
@@ -196,11 +197,17 @@ class Transmitter():
             self.l_tot = l_tot
             self.l_min = l_min
             self.l_max = l_max
-            self.applychannel = MyApplyTimeChannel(self.RESOURCE_GRID.num_time_samples, l_tot=l_tot, add_awgn=True)
+            #self.applychannel = MyApplyTimeChannel(self.RESOURCE_GRID.num_time_samples, l_tot=l_tot, add_awgn=True)
+            self.applychannel = ApplyTimeChannel(self.RESOURCE_GRID.num_time_samples, l_tot=l_tot, add_awgn=True)
             # OFDM modulator and demodulator
             self.modulator = OFDMModulator(self.RESOURCE_GRID.cyclic_prefix_length)
             self.demodulator = OFDMDemodulator(self.RESOURCE_GRID.fft_size, l_min, self.RESOURCE_GRID.cyclic_prefix_length)
-
+        if self.pilot_pattern != "empty":
+            self.remove_nulled_scs = RemoveNulledSubcarriers(self.RESOURCE_GRID)
+            #ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
+            self.ls_est = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
+            #lmmse_equ = LMMSEEqualizer(self.RESOURCE_GRID, self.STREAM_MANAGEMENT)
+            self.lmmse_equ = MyLMMSEEqualizer(self.RESOURCE_GRID, self.STREAM_MANAGEMENT)
 
     def create_DeepMIMOchanneldataset(self):
         num_rx = self.num_rx
@@ -285,9 +292,12 @@ class Transmitter():
             h_b, tau_b = next(iter(self.data_loader)) #h_b: [64, 1, 1, 1, 16, 10, 1], tau_b=[64, 1, 1, 10]
         elif self.channeldataset=='cdl':
             if self.channeltype=='ofdm':
-                h_b, tau_b = self.cdl(batch_size=self.batch_size, num_time_steps=self.RESOURCE_GRID.num_ofdm_symbols, sampling_frequency=1/self.RESOURCE_GRID.ofdm_symbol_duration)
+                num_time_steps = self.RESOURCE_GRID.num_ofdm_symbols
+                sampling_frequency=1/self.RESOURCE_GRID.ofdm_symbol_duration
             elif self.channeltype=='time':
-                h_b, tau_b = self.cdl(batch_size=self.batch_size, num_time_steps=self.RESOURCE_GRID.num_time_samples+self.l_tot-1, sampling_frequency=self.RESOURCE_GRID.bandwidth)
+                num_time_steps = self.RESOURCE_GRID.num_time_samples+self.l_tot-1
+                sampling_frequency=self.RESOURCE_GRID.bandwidth
+            h_b, tau_b = self.cdl(batch_size=self.batch_size, num_time_steps=num_time_steps, sampling_frequency=sampling_frequency)
         # In CDL, Direction = "uplink" the UT is transmitting.
         # num_bs_ant = 16 = num_rx_ant
         # num_ut_ant = 2 = num_tx_ant
@@ -296,6 +306,7 @@ class Transmitter():
         if returnformat=='numpy':
             h_b=to_numpy(h_b)
             tau_b=to_numpy(tau_b)
+
         if self.showfig:
             plt.figure()
             plt.title("Channel impulse response realization")
@@ -305,11 +316,14 @@ class Transmitter():
 
             plt.figure()
             plt.title("Time evolution of path gain")
-            plt.plot(np.arange(self.RESOURCE_GRID.num_ofdm_symbols)*self.RESOURCE_GRID.ofdm_symbol_duration/1e-6, np.real(h_b)[0,0,0,0,0,0,:])
-            plt.plot(np.arange(self.RESOURCE_GRID.num_ofdm_symbols)*self.RESOURCE_GRID.ofdm_symbol_duration/1e-6, np.imag(h_b)[0,0,0,0,0,0,:])
+            #x_timesteps = np.arange(num_time_steps)*self.RESOURCE_GRID.ofdm_symbol_duration/1e-6
+            x_timesteps = np.arange(num_time_steps)/sampling_frequency/1e-6
+            plt.plot(x_timesteps, np.real(h_b)[0,0,0,0,0,0,:])
+            plt.plot(x_timesteps, np.imag(h_b)[0,0,0,0,0,0,:])
             plt.legend(["Real part", "Imaginary part"])
             plt.xlabel(r"$t$ [us]")
             plt.ylabel(r"$a$");
+        
         return h_b, tau_b
 
     # def get_htau_batch(self, returnformat='numpy'):
@@ -457,7 +471,7 @@ class Transmitter():
         if b is None:
             binary_source = BinarySource()
             # Start Transmitter self.k Number of information bits per codeword
-            b = binary_source([self.batch_size, 1, self.num_streams_per_tx, self.k]) #[64,1,1,3584] if empty [64,1,1,1536] [batch_size, num_tx, num_streams_per_tx, num_databits]
+            b = binary_source([self.batch_size, 1, self.num_streams_per_tx, self.k]) #[64,1,2,4256] if empty [64,1,1,1536] [batch_size, num_tx, num_streams_per_tx, num_databits]
         if self.USE_LDPC:
             c = self.encoder(b) #tf.tensor[64,1,1,3072] [batch_size, num_tx, num_streams_per_tx, num_codewords]
         else:
@@ -474,69 +488,107 @@ class Transmitter():
             h_out = self.get_timechannelresponse()
         
         #apply channel
-        y = self.applychannel([x_rg, h_out, no])
+        if self.channeltype == 'ofdm':
+            y = self.applychannel([x_rg, h_out, no])
+        else:#time channel
+            # OFDM modulation with cyclic prefix insertion
+            #x_rg:[batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76]
+            x_time = self.modulator(x_rg) #output: (64, 1, 1, 1064)
+            # Compute the channel output
+            # This computes the full convolution between the time-varying
+            # discrete-time channel impulse reponse and the discrete-time
+            # transmit signal. With this technique, the effects of an
+            # insufficiently long cyclic prefix will become visible. This
+            # is in contrast to frequency-domain modeling which imposes
+            # no inter-symbol interfernce.
+            y_time = self.applychannel([x_time, h_out, no])
+            #Do modulator and demodulator test
+            y_test = self.demodulator(x_time)
+            differences = np.abs(x_rg - y_test)
+            threshold=1e-7
+            num_differences = np.sum(differences > threshold)
+            print("Number of differences:", num_differences)
+            print(np.allclose(x_rg, y_test))
+            print("Demodulation error (L2 norm):", np.linalg.norm(x_rg - y_test))
+            
+            # OFDM demodulation and cyclic prefix removal
+            y = self.demodulator(y_time)
+        #x :  Channel inputs [batch size, num_tx, num_tx_ant, num_time_samples], tf.complex
+        #h_time : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_samples + l_tot - 1, l_tot], tf.complex
         
-        return y, x_rg, h_out
+        return y, x_rg, b, h_out
     
-    def channel_estimation(self, y, no, h_out=None):
+    def channel_estimation(self, y, no, h_out=None, perfect_csi= False):
         #perform channel estimation via pilots
         print("Num of Pilots:", len(self.RESOURCE_GRID.pilot_pattern.pilots)) #1
-        # Receiver
-        #ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
-        ls_est = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
+        h_perfect = None
+    
+        if perfect_csi:
+            # For perfect CSI, the receiver gets the channel frequency response as input
+            # However, the channel estimator only computes estimates on the non-nulled
+            # subcarriers. Therefore, we need to remove them here from `h_freq`.
+            # This step can be skipped if no subcarriers are nulled. 
+            h_perfect, err_var = self.remove_nulled_scs(h_out), 0.
+            print("h_out after remove nulled shape:", h_perfect.shape)
+        else:
+            #Observed resource grid y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols,fft_size], (64, 1, 1, 14, 76) complex
+            #no : [batch_size, num_rx, num_rx_ant] 
+            h_hat, err_var = self.ls_est([y, no]) #tf tensor (64, 1, 16, 1, 2, 14, 64), (1, 1, 1, 1, 2, 14, 64)
+            #h_ls : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols,fft_size], tf.complex
+            #Channel estimates accross the entire resource grid for all transmitters and streams
+        
+            if self.showfig and self.channeltype=='ofdm':
+                h_est = h_hat[0,0,0,0,0,0] #(64, 1, 1, 1, 1, 14, 44)
+                plt.figure()
+                if h_out is not None:
+                    h_perfect, err_var = self.remove_nulled_scs(h_out), 0.
+                    h_perfect = h_perfect[0,0,0,0,0,0] #(64, 1, 1, 1, 16, 1, 44)
+                    plt.plot(np.real(h_perfect))
+                    plt.plot(np.imag(h_perfect))
+                plt.plot(np.real(h_est), "--")
+                plt.plot(np.imag(h_est), "--")
+                plt.xlabel("Subcarrier index")
+                plt.ylabel("Channel frequency response")
+                plt.legend(["Ideal (real part)", "Ideal (imaginary part)", "Estimated (real part)", "Estimated (imaginary part)"]);
+                plt.title("Comparison of channel frequency responses");
+        
+        if perfect_csi:
+            return h_perfect, err_var
+        else:
+            return h_hat, err_var
 
-        #Observed resource grid y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols,fft_size], (64, 1, 1, 14, 76) complex
-        #no : [batch_size, num_rx, num_rx_ant] 
-        h_hat, err_var = ls_est([y, no]) #tf tensor (64, 1, 16, 1, 2, 14, 44), (1, 1, 1, 1, 2, 14, 44)
-        #h_ls : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols,fft_size], tf.complex
-        #Channel estimates accross the entire resource grid for all transmitters and streams
-
-        if self.showfig:
-            h_est = h_hat[0,0,0,0,0,0] #(64, 1, 1, 1, 1, 14, 44)
-            plt.figure()
-            if h_out is not None:
-                h_perfect = h_out[0,0,0,0,0,0] #(64, 1, 1, 1, 16, 1, 44)
-                plt.plot(np.real(h_perfect))
-                plt.plot(np.imag(h_perfect))
-            plt.plot(np.real(h_est), "--")
-            plt.plot(np.imag(h_est), "--")
-            plt.xlabel("Subcarrier index")
-            plt.ylabel("Channel frequency response")
-            plt.legend(["Ideal (real part)", "Ideal (imaginary part)", "Estimated (real part)", "Estimated (imaginary part)"]);
-            plt.title("Comparison of channel frequency responses");
-        return h_hat, err_var
-
-    def receiver(self, y, no, x_rg, b=None, perfect_csi= False):
+    def receiver(self, y, no, x_rg, b=None, h_out=None, perfect_csi= False):
         print(self.RESOURCE_GRID.pilot_pattern) #<__main__.EmptyPilotPattern object at 0x7f2659dfd9c0>
         print("Num of Pilots:", len(self.RESOURCE_GRID.pilot_pattern.pilots))
-        if self.pilot_pattern == "empty" and perfect_csi == False: #"kronecker", "empty"
+        if self.pilot_pattern == "empty": # and perfect_csi == False: #"kronecker", "empty"
             #no channel estimation
-            llr = self.mydemapper([y, no]) #[64, 1, 1, 14, 304]
+            x_hat = y[:,:,0:self.num_streams_per_tx,:,:] #(64, 1, 2, 14, 76)
+            llr = self.mydemapper([x_hat, no]) #[64, 1, 16, 14, 76]=>(64, 1, 16, 14, 304)
             # Reshape the array by collapsing the last two dimensions
-            llr_est = llr.reshape(llr.shape[:-2] + (-1,)) #(64, 1, 1, 4256)
-
-            llr_perfect = self.mydemapper([x_rg, no]) #[64, 1, 1, 14, 304]
-            llr_perfect = llr_perfect.reshape(llr_perfect.shape[:-2] + (-1,)) #(64, 1, 1, 4256)
+            llr_est = llr.reshape(llr.shape[:-2] + (-1,)) #(64, 1, 16, 4256)
+        #elif self.pilot_pattern == "empty" and perfect_csi == True:
+            llr_perfect = self.mydemapper([x_rg, no]) #(64, 1, 2, 14, 76)=>(64, 1, 2, 14, 304)
+            llr_perfect = llr_perfect.reshape(llr_perfect.shape[:-2] + (-1,)) #(64, 1, 2, 4256)
+            #llr_est = llr_perfect
             b_perfect = hard_decisions(llr_perfect, np.int32) ##(64, 1, 1, 4256) 0,1 [64, 1, 1, 14, 304] 2128
-            #BER=calculate_BER(b, b_perfect)
-            #print("Perfect BER:", BER)
+            if b is not None:
+                BER=calculate_BER(b, b_perfect)
+                print("Perfect BER:", BER)
         else: # channel estimation or perfect_csi
             #perform channel estimation via pilots
-            h_hat, err_var = self.channel_estimation(y, no)
-            
-            #lmmse_equ = LMMSEEqualizer(self.RESOURCE_GRID, self.STREAM_MANAGEMENT)
-            lmmse_equ = MyLMMSEEqualizer(self.RESOURCE_GRID, self.STREAM_MANAGEMENT)
+            h_hat, err_var = self.channel_estimation(y=y, no=no, h_out=h_out, perfect_csi=perfect_csi)
+            #h_hat shape: (64, 1, 16, 1, 2, 14, 64)
             #input (y, h_hat, err_var, no)
             #Received OFDM resource grid after cyclic prefix removal and FFT y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], tf.complex
             #Channel estimates for all streams from all transmitters h_hat : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols, num_effective_subcarriers], tf.complex
-            x_hat, no_eff = lmmse_equ([y, h_hat, err_var, no]) #(64, 1, 1, 912), (64, 1, 1, 912)
+            x_hat, no_eff = self.lmmse_equ([y, h_hat, err_var, no]) #(64, 1, 1, 912), (64, 1, 1, 912)
             #Estimated symbols x_hat : [batch_size, num_tx, num_streams, num_data_symbols], tf.complex
             #Effective noise variance for each estimated symbol no_eff : [batch_size, num_tx, num_streams, num_data_symbols], tf.float
-            x_hat=x_hat.numpy() #(64, 1, 2, 572)
-            no_eff=no_eff.numpy() #(64, 1, 2, 572)
+            x_hat=x_hat.numpy() #(64, 1, 2, 768)
+            no_eff=no_eff.numpy() #(64, 1, 2, 768)
             no_eff=np.mean(no_eff)
 
-            llr_est = self.mydemapper([x_hat, no_eff]) #(64, 1, 2, 2288)
+            llr_est = self.mydemapper([x_hat, no_eff]) #(64, 1, 2, 3072)
             #output: [batch size, num_rx, num_rx_ant, n * num_bits_per_symbol]
 
         #llr_est #(64, 1, 1, 4256)
@@ -544,7 +596,7 @@ class Transmitter():
             b_hat_tf = self.decoder(llr_est) #[64, 1, 1, 2128]
             b_hat = b_hat_tf.numpy()
         else:
-            b_hat = hard_decisions(llr_est, np.int32)  #(64, 1, 2, 2288)
+            b_hat = hard_decisions(llr_est, np.int32)  #(64, 1, 2, 3072)
         if b is not None:
             BER=calculate_BER(b, b_hat)
             print("BER Value:", BER)
@@ -553,20 +605,21 @@ class Transmitter():
             return b_hat, None
 
 
-    def __call__(self, b=None, ebno_db = 15.0, channeltype='ofdm', perfect_csi=False):
+    def __call__(self, b=None, ebno_db = 15.0, perfect_csi=False):
         #Compute the noise power for a given Eb/No value. This takes not only the coderate but also the overheads related pilot transmissions and nulled carriers
         no = ebnodb2no(ebno_db, self.num_bits_per_symbol, self.coderate)
         # Convert it to a NumPy float
         no = np.float32(no) #0.0158
 
         # Transmitter
-        y, x_rg, h_out = self.uplinktransmission(b=b, no=no, perfect_csi=perfect_csi)
-        print("y shape:", y.shape) #(64, 1, 16, 14, 76)
+        y, x_rg, b, h_out = self.uplinktransmission(b=b, no=no, perfect_csi=perfect_csi)
+        print("y shape:", y.shape) #(64, 1, 16, 14, 76) [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size]
 
-        #only for test, already included in receiver
-        h_hat, err_var = self.channel_estimation(y, no, h_out=h_out)
+        if self.pilot_pattern != "empty":
+            #only for test, already included in receiver
+            h_hat, err_var = self.channel_estimation(y, no, h_out=h_out)
 
-        b_hat, BER = self.receiver(y, no, x_rg, b=b, perfect_csi= perfect_csi)
+        b_hat, BER = self.receiver(y, no, x_rg, b=b, h_out=h_out, perfect_csi= perfect_csi)
         return b_hat, BER
 
 def test_CDLchannel():
@@ -574,13 +627,26 @@ def test_CDLchannel():
     #                 batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
     #                 subcarrier_spacing=60e3, \
     #                 USE_LDPC = False, pilot_pattern = "empty", guards=False, showfig=showfigure)
+    # b_hat, BER = transmit(ebno_db = 15.0, channeltype='ofdm', perfect_csi=False)
+    # b_hat, BER = transmit(ebno_db = 15.0, channeltype='ofdm', perfect_csi=True)
+    #not work for MIMO
+
+    transmit = Transmitter(channeldataset='cdl', channeltype='time', direction='uplink', \
+                    batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
+                    subcarrier_spacing=60e3, \
+                    USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=showfigure)
+    b_hat, BER = transmit(ebno_db = 15.0, perfect_csi=False)
+    b_hat, BER = transmit(ebno_db = 15.0, perfect_csi=True)
+
+
     transmit = Transmitter(channeldataset='cdl', channeltype='ofdm', direction='uplink', \
                     batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
                     subcarrier_spacing=60e3, \
                     USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=showfigure) #"kronecker" "empty"
-    transmit.get_channelcir()
-    h_out=transmit.get_OFDMchannelresponse()
-    b_hat, BER = transmit(ebno_db = 15.0)
+    #transmit.get_channelcir()
+    #h_out=transmit.get_OFDMchannelresponse()
+    b_hat, BER = transmit(ebno_db = 15.0, perfect_csi=False)
+    b_hat, BER = transmit(ebno_db = 15.0, perfect_csi=True)
 
 if __name__ == '__main__':
 
