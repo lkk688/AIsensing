@@ -15,7 +15,11 @@ from matplotlib import colors
 
 from deepMIMO5 import get_deepMIMOdata, DeepMIMODataset
 from deepMIMO5 import StreamManagement, MyResourceGrid, Mapper, MyResourceGridMapper, MyDemapper, OFDMModulator, OFDMDemodulator, BinarySource, ebnodb2no, hard_decisions, calculate_BER
-from deepMIMO5 import complex_normal, mygenerate_OFDMchannel, RemoveNulledSubcarriers, MyApplyOFDMChannel, time_lag_discrete_time_channel, cir_to_time_channel, MyApplyTimeChannel
+from deepMIMO5 import complex_normal, mygenerate_OFDMchannel, RemoveNulledSubcarriers, \
+    MyApplyOFDMChannel, MyApplyTimeChannel
+from deepMIMO5 import time_lag_discrete_time_channel, cir_to_time_channel, cir_to_ofdm_channel, subcarrier_frequencies
+#from sionna.channel import subcarrier_frequencies, cir_to_ofdm_channel, cir_to_time_channel, time_lag_discrete_time_channel
+        #from sionna.channel import ApplyOFDMChannel, ApplyTimeChannel, OFDMChannel, TimeChannel
 
 from sionna_tf import MyLMMSEEqualizer, LMMSEEqualizer, SymbolLogits2LLRs#, OFDMDemodulator #ZFPrecoder, OFDMModulator, KroneckerPilotPattern, Demapper, RemoveNulledSubcarriers, 
 from channel import MyLSChannelEstimator, LSChannelEstimator, ApplyTimeChannel#, time_lag_discrete_time_channel #, ApplyTimeChannel #cir_to_time_channel
@@ -147,6 +151,8 @@ class Transmitter():
         self.RESOURCE_GRID = RESOURCE_GRID
         print("RG num_ofdm_symbols", RESOURCE_GRID.num_ofdm_symbols) #14
         print("RG ofdm_symbol_duration", RESOURCE_GRID.ofdm_symbol_duration)
+        self.frequencies = subcarrier_frequencies(RESOURCE_GRID.fft_size, RESOURCE_GRID.subcarrier_spacing) #corresponding to the different subcarriers
+        print("subcarriers frequencies", self.frequencies)
 
         #num_bits_per_symbol = 4
         # Codeword length
@@ -335,13 +341,13 @@ class Transmitter():
     #         h_b=h_b.numpy()
     #     return h_b, tau_b
 
-    def get_OFDMchannelresponse(self):
-        h_b, tau_b = self.get_channelcir()
-        from sionna.channel import subcarrier_frequencies, cir_to_ofdm_channel, cir_to_time_channel, time_lag_discrete_time_channel
-        from sionna.channel import ApplyOFDMChannel, ApplyTimeChannel, OFDMChannel, TimeChannel
+    def get_OFDMchannelresponse(self, h_b, tau_b):
+        #h_b, tau_b = self.get_channelcir()
+        #from sionna.channel import subcarrier_frequencies, cir_to_ofdm_channel, cir_to_time_channel, time_lag_discrete_time_channel
+        #from sionna.channel import ApplyOFDMChannel, ApplyTimeChannel, OFDMChannel, TimeChannel
 
-        frequencies = subcarrier_frequencies(self.RESOURCE_GRID.fft_size, self.RESOURCE_GRID.subcarrier_spacing)
-        h_freq = cir_to_ofdm_channel(frequencies, h_b, tau_b, normalize=True)
+        #frequencies = subcarrier_frequencies(self.RESOURCE_GRID.fft_size, self.RESOURCE_GRID.subcarrier_spacing)
+        h_freq = cir_to_ofdm_channel(self.frequencies, h_b, tau_b, normalize=True)
         #h_freq.shape #[batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm_symbols, num_subcarriers] (64, 1, 16, 1, 2, 14, 76)
 
         if self.showfig:
@@ -354,8 +360,8 @@ class Transmitter():
             plt.legend(["Real part", "Imaginary part"]);
         return h_freq
     
-    def get_timechannelresponse(self):
-        h_b, tau_b = self.get_channelcir()
+    def get_timechannelresponse(self, h_b, tau_b):
+        #h_b, tau_b = self.get_channelcir()
         #h_time = cir_to_time_channel(rg.bandwidth, a, tau, l_min=l_min, l_max=l_max, normalize=True)
         #[2, 1, 16, 1, 2, 1164, 17]
         h_time = cir_to_time_channel(self.RESOURCE_GRID.bandwidth, h_b, tau_b, l_min=self.l_min, l_max=self.l_max, normalize=True) 
@@ -481,11 +487,12 @@ class Transmitter():
         #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76] (64, 1, 2, 14, 76)
 
         #we generate random batches of CIR, transform them in the frequency domain and apply them to the resource grid in the frequency domain.
+        h_b, tau_b = self.get_channelcir()
         if self.channeltype=='ofdm':
-            h_out = self.get_OFDMchannelresponse()
+            h_out = self.get_OFDMchannelresponse(h_b, tau_b)
             print("h_freq shape:", h_out.shape) #(64, 1, 16, 1, 2, 14, 76)
         elif self.channeltype=='time':
-            h_out = self.get_timechannelresponse()
+            h_out = self.get_timechannelresponse(h_b, tau_b)
         
         #apply channel
         if self.channeltype == 'ofdm':
@@ -516,9 +523,9 @@ class Transmitter():
         #x :  Channel inputs [batch size, num_tx, num_tx_ant, num_time_samples], tf.complex
         #h_time : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_samples + l_tot - 1, l_tot], tf.complex
         
-        return y, x_rg, b, h_out
+        return y, x_rg, b, h_b, tau_b, h_out
     
-    def channel_estimation(self, y, no, h_out=None, perfect_csi= False):
+    def ofdmchannel_estimation(self, y, no, h_out=None, perfect_csi= False):
         #perform channel estimation via pilots
         print("Num of Pilots:", len(self.RESOURCE_GRID.pilot_pattern.pilots)) #1
         h_perfect = None
@@ -537,7 +544,7 @@ class Transmitter():
             #h_ls : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols,fft_size], tf.complex
             #Channel estimates accross the entire resource grid for all transmitters and streams
         
-            if self.showfig and self.channeltype=='ofdm':
+            if self.showfig:
                 h_est = h_hat[0,0,0,0,0,0] #(64, 1, 1, 1, 1, 14, 44)
                 plt.figure()
                 if h_out is not None:
@@ -557,7 +564,48 @@ class Transmitter():
         else:
             return h_hat, err_var
 
-    def receiver(self, y, no, x_rg, b=None, h_out=None, perfect_csi= False):
+    def timechannel_estimation(self, y, no, a=None, tau=None, perfect_csi= False):
+        if perfect_csi or self.showfig:
+            print("a shape:", a.shape)
+            print("tau shape:", tau.shape)
+            
+            # We need to sub-sample the channel impulse reponse to compute perfect CSI
+            # for the receiver as it only needs one channel realization per OFDM symbol
+            a_freq = a[...,self.RESOURCE_GRID.cyclic_prefix_length:-1:(self.RESOURCE_GRID.fft_size+self.RESOURCE_GRID.cyclic_prefix_length)] #(64, 1, 16, 1, 2, 23, 15)
+            a_freq = a_freq[...,:self.RESOURCE_GRID.num_ofdm_symbols] #(64, 1, 16, 1, 2, 23, 14)
+            print("a_freq shape:", a_freq.shape)
+            
+            # Compute the channel frequency response
+            h_freq = cir_to_ofdm_channel(self.frequencies, a_freq, tau, normalize=True)
+            print("h_freq shape:", h_freq.shape) #(64, 1, 16, 1, 2, 14, 76)
+            h_perfect, err_var = self.remove_nulled_scs(h_freq), 0.
+            print("h_perfect shape:", h_perfect.shape) #(64, 1, 16, 1, 2, 14, 64)
+        
+        if (not perfect_csi) and self.showfig:
+            h_hat, err_var = self.ls_est ([y, no])
+            print("h_hat shape:", h_hat.shape)
+            print("err_var shape:", err_var.shape)
+        
+        if self.showfig:
+            # we assumed perfect CSI, i.e., h_perfect correpsond to the exact ideal channel frequency response.
+            h_perf = h_perfect[0,0,0,0,0,0]
+            h_est = h_hat[0,0,0,0,0,0]
+            plt.figure()
+            plt.plot(np.real(h_perf))
+            plt.plot(np.imag(h_perf))
+            plt.plot(np.real(h_est), "--")
+            plt.plot(np.imag(h_est), "--")
+            plt.xlabel("Subcarrier index")
+            plt.ylabel("Channel frequency response")
+            plt.legend(["Ideal (real part)", "Ideal (imaginary part)", "Estimated (real part)", "Estimated (imaginary part)"]);
+            plt.title("Comparison of channel frequency responses");
+
+        if perfect_csi:
+            return h_perfect, err_var
+        else:
+            return h_hat, err_var
+
+    def receiver(self, y, no, x_rg, b=None, h_b=None, tau_b=None, h_out=None, perfect_csi= False):
         print(self.RESOURCE_GRID.pilot_pattern) #<__main__.EmptyPilotPattern object at 0x7f2659dfd9c0>
         print("Num of Pilots:", len(self.RESOURCE_GRID.pilot_pattern.pilots))
         if self.pilot_pattern == "empty": # and perfect_csi == False: #"kronecker", "empty"
@@ -576,7 +624,10 @@ class Transmitter():
                 print("Perfect BER:", BER)
         else: # channel estimation or perfect_csi
             #perform channel estimation via pilots
-            h_hat, err_var = self.channel_estimation(y=y, no=no, h_out=h_out, perfect_csi=perfect_csi)
+            if self.channeltype=='ofdm':
+                h_hat, err_var = self.ofdmchannel_estimation(y=y, no=no, h_out=h_out, perfect_csi=perfect_csi)
+            else: #time channel
+                h_hat, err_var = self.timechannel_estimation(y=y, no=no, a=h_b, tau=tau_b, perfect_csi=perfect_csi)
             #h_hat shape: (64, 1, 16, 1, 2, 14, 64)
             #input (y, h_hat, err_var, no)
             #Received OFDM resource grid after cyclic prefix removal and FFT y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], tf.complex
@@ -612,14 +663,10 @@ class Transmitter():
         no = np.float32(no) #0.0158
 
         # Transmitter
-        y, x_rg, b, h_out = self.uplinktransmission(b=b, no=no, perfect_csi=perfect_csi)
+        y, x_rg, b, h_b, tau_b, h_out = self.uplinktransmission(b=b, no=no, perfect_csi=perfect_csi)
         print("y shape:", y.shape) #(64, 1, 16, 14, 76) [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size]
 
-        if self.pilot_pattern != "empty":
-            #only for test, already included in receiver
-            h_hat, err_var = self.channel_estimation(y, no, h_out=h_out)
-
-        b_hat, BER = self.receiver(y, no, x_rg, b=b, h_out=h_out, perfect_csi= perfect_csi)
+        b_hat, BER = self.receiver(y, no, x_rg, b=b, h_b=h_b, tau_b=tau_b, h_out=h_out, perfect_csi= perfect_csi)
         return b_hat, BER
 
 def test_CDLchannel():
