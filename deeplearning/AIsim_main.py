@@ -568,22 +568,10 @@ class Transmitter():
             return h_hat, err_var
 
     def test_timechannel_estimation(self,b=None, no=0):
-        if b is None:
-            binary_source = BinarySource()
-            # Start Transmitter self.k Number of information bits per codeword
-            b = binary_source([self.batch_size, 1, self.num_streams_per_tx, self.k]) #[64,1,2,4256] if empty [64,1,1,1536] [batch_size, num_tx, num_streams_per_tx, num_databits]
-        if self.USE_LDPC:
-            c = self.encoder(b) #tf.tensor[64,1,1,3072] [batch_size, num_tx, num_streams_per_tx, num_codewords]
-        else:
-            c = b
-        x = self.mapper(c) #np.array[64,1,1,896] if empty np.array[64,1,1,1064] 1064*4=4256 [batch_size, num_tx, num_streams_per_tx, num_data_symbols]
-        x_rg = self.rg_mapper(x) ##complex array[64,1,1,14,76] 14*76=1064
-        #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76] (64, 1, 2, 14, 76)
-
-        # OFDM modulation with cyclic prefix insertion
-        x_time = self.modulator(x_rg)
-        print("x_time shape:", x_time.shape) #(64, 1, 2, 1148)
-
+        ebno_db = 30
+        from sionna.utils import ebnodb2no #BinarySource, sim_ber
+        #no = ebnodb2no(ebno_db, self.num_bits_per_symbol, self.coderate)
+        
         # The CIR needs to be sampled every 1/bandwith [s].
         # In contrast to frequency-domain modeling, this implies
         # that the channel can change over the duration of a single
@@ -670,6 +658,34 @@ class Transmitter():
             plt.xlabel(r"Time step $\ell$")
             plt.ylabel(r"$|\bar{h}|$");
 
+                # OFDM modulator and demodulator
+        from sionna.ofdm import OFDMModulator, OFDMDemodulator, ZFPrecoder, RemoveNulledSubcarriers
+        from sionna.mapping import Mapper, Demapper
+        from sionna.ofdm import ResourceGrid, ResourceGridMapper, LSChannelEstimator, LMMSEEqualizer
+        modulator = OFDMModulator(rg.cyclic_prefix_length)
+        demodulator = OFDMDemodulator(rg.fft_size, l_min, rg.cyclic_prefix_length)
+
+        # The mapper maps blocks of information bits to constellation symbols
+        mapper = Mapper("qam", self.num_bits_per_symbol)
+
+        # The resource grid mapper maps symbols onto an OFDM resource grid
+        rg_mapper = ResourceGridMapper(rg)
+
+        if b is None:
+            binary_source = BinarySource()
+            # Start Transmitter self.k Number of information bits per codeword
+            b = binary_source([self.batch_size, 1, self.num_streams_per_tx, self.k]) #[64,1,2,4256] if empty [64,1,1,1536] [batch_size, num_tx, num_streams_per_tx, num_databits]
+        if self.USE_LDPC:
+            c = self.encoder(b) #tf.tensor[64,1,1,3072] [batch_size, num_tx, num_streams_per_tx, num_codewords]
+        else:
+            c = b
+        x = mapper(c) #np.array[64,1,1,896] if empty np.array[64,1,1,1064] 1064*4=4256 [batch_size, num_tx, num_streams_per_tx, num_data_symbols]
+        x_rg = rg_mapper(x) ##complex array[64,1,1,14,76] 14*76=1064
+        #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76] (64, 1, 2, 14, 76)
+
+        # OFDM modulation with cyclic prefix insertion
+        x_time = modulator(x_rg)
+        print("x_time shape:", x_time.shape) #(64, 1, 2, 1148)
         
         # time_channel = TimeChannel(self.cdl, self.RESOURCE_GRID.bandwidth, self.RESOURCE_GRID.num_time_samples,
         #                    l_min=self.l_min, l_max=self.l_max, normalize_channel=True,
@@ -678,13 +694,20 @@ class Transmitter():
         # y_time1, h_time = time_channel([x_time, no])
         # print("y_time1 shape:", y_time1.shape)
         import tensorflow as tf
-        x_time = tf.convert_to_tensor(x_time, dtype=tf.complex64)
+        no = ebnodb2no(ebno_db, self.num_bits_per_symbol, self.coderate, rg)
+        #x_time = tf.convert_to_tensor(x_time, dtype=tf.complex64)
         #y_time = self.applychannel([x_time, h_time, no]) 
         y_time = channel_time([x_time, h_time, no]) 
         print("y_time shape:", y_time.shape) #(64, 1, 16, 1174)
 
+        # time_channel = TimeChannel(cdl, rg.bandwidth, rg.num_time_samples,
+        #                    l_min=l_min, l_max=l_max, normalize_channel=True,
+        #                    add_awgn=True, return_channel=True)
+
+        # y_time, h_time = time_channel([x_time, no])
+
         # OFDM demodulation and cyclic prefix removal
-        y = self.demodulator(y_time) 
+        y = demodulator(y_time) 
         print("y shape:", y.shape) #(64, 1, 16, 14, 76)
 
         a, tau = cir
