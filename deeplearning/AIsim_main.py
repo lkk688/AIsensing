@@ -589,7 +589,19 @@ class Transmitter():
         # that the channel can change over the duration of a single
         # OFDM symbol. We now also need to simulate more
         # time steps.
-        from sionna.channel import cir_to_time_channel, ApplyOFDMChannel, ApplyTimeChannel, OFDMChannel, TimeChannel
+        from sionna.channel import cir_to_ofdm_channel, cir_to_time_channel, ApplyOFDMChannel, ApplyTimeChannel, OFDMChannel, TimeChannel
+        num_streams_per_tx = 2
+        from sionna.ofdm import ResourceGrid#, ResourceGridMapper, LSChannelEstimator, LMMSEEqualizer
+        rg = ResourceGrid(num_ofdm_symbols=14,
+                  fft_size=76,
+                  subcarrier_spacing=60e3, #15e3,
+                  num_tx=1,
+                  num_streams_per_tx=num_streams_per_tx,
+                  cyclic_prefix_length=6,
+                  num_guard_carriers=[5,6],
+                  dc_null=True,
+                  pilot_pattern="kronecker",
+                  pilot_ofdm_symbol_indices=[2,11])
 
         carrier_frequency = 2.6e9 # Carrier frequency in Hz.
                           # This is needed here to define the antenna element spacing.
@@ -624,21 +636,21 @@ class Transmitter():
         # Configure a channel impulse reponse (CIR) generator for the CDL model.
         # cdl() will generate CIRs that can be converted to discrete time or discrete frequency.
         cdl = CDL(cdl_model, delay_spread, carrier_frequency, ut_array, bs_array, direction, min_speed=speed)
-        l_min, l_max = time_lag_discrete_time_channel(self.RESOURCE_GRID.bandwidth)
+        l_min, l_max = time_lag_discrete_time_channel(rg.bandwidth)
         l_tot = l_max-l_min+1
 
-        a, tau = cdl(batch_size=2, num_time_steps=self.RESOURCE_GRID.num_time_samples+l_tot-1, sampling_frequency=self.RESOURCE_GRID.bandwidth)
+        a, tau = cdl(batch_size=2, num_time_steps=rg.num_time_samples+l_tot-1, sampling_frequency=rg.bandwidth)
         #a, tau = cdl(batch_size=32, num_time_steps=self.RESOURCE_GRID.num_ofdm_symbols, sampling_frequency=1/self.RESOURCE_GRID.ofdm_symbol_duration)
 
-        cir = self.cdl(self.batch_size, self.RESOURCE_GRID.num_time_samples+self.l_tot-1, self.RESOURCE_GRID.bandwidth)
-        h_time = cir_to_time_channel(self.RESOURCE_GRID.bandwidth, a, tau, l_min=l_min, l_max=l_max, normalize=True)
+        cir = self.cdl(self.batch_size, rg.num_time_samples+self.l_tot-1, rg.bandwidth)
+        h_time = cir_to_time_channel(rg.bandwidth, a, tau, l_min=l_min, l_max=l_max, normalize=True)
 
         # Compute the discrete-time channel impulse reponse
-        h_time = cir_to_time_channel(self.RESOURCE_GRID.bandwidth, *cir, self.l_min, self.l_max, normalize=True)
+        h_time = cir_to_time_channel(rg.bandwidth, *cir, self.l_min, self.l_max, normalize=True)
         print("h_time shape:", h_time.shape) #(64, 1, 16, 1, 2, 1174, 27)
 
         # Function that will apply the discrete-time channel impulse response to an input signal
-        channel_time = ApplyTimeChannel(self.RESOURCE_GRID.num_time_samples, l_tot=l_tot, add_awgn=True)
+        channel_time = ApplyTimeChannel(rg.num_time_samples, l_tot=l_tot, add_awgn=True)
 
         #we generate random batches of CIR, transform them in the frequency domain and apply them to the resource grid in the frequency domain.
         #h_b, tau_b = self.get_channelcir()
@@ -681,8 +693,8 @@ class Transmitter():
         
         # We need to sub-sample the channel impulse reponse to compute perfect CSI
         # for the receiver as it only needs one channel realization per OFDM symbol
-        a_freq = a[...,self.RESOURCE_GRID.cyclic_prefix_length:-1:(self.RESOURCE_GRID.fft_size+self.RESOURCE_GRID.cyclic_prefix_length)]
-        a_freq = a_freq[...,:self.RESOURCE_GRID.num_ofdm_symbols]
+        a_freq = a[...,rg.cyclic_prefix_length:-1:(rg.fft_size+rg.cyclic_prefix_length)]
+        a_freq = a_freq[...,:rg.num_ofdm_symbols]
         print("a_freq shape:", a_freq.shape)#(64, 1, 16, 1, 2, 23, 14)
         
         # Compute the channel frequency response
@@ -694,8 +706,13 @@ class Transmitter():
 
         h_perf = h_hat[0,0,0,0,0,0]
 
+        from sionna.ofdm import LSChannelEstimator #ResourceGrid, ResourceGridMapper, LSChannelEstimator, LMMSEEqualizer
+        # The LS channel estimator will provide channel estimates and error variances
+        ls_est = LSChannelEstimator(rg, interpolation_type="nn")
+
         # We now compute the LS channel estimate from the pilots.
-        h_est, _ = self.ls_est ([y, no]) #(64, 1, 16, 1, 2, 14, 64)
+        y = tf.convert_to_tensor(y, dtype=tf.complex64)
+        h_est, _ = ls_est ([y, no]) #(64, 1, 16, 1, 2, 14, 64)
         h_est = h_est[0,0,0,0,0,0]
 
         plt.figure()
