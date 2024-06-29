@@ -580,20 +580,65 @@ class Transmitter():
         x_rg = self.rg_mapper(x) ##complex array[64,1,1,14,76] 14*76=1064
         #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76] (64, 1, 2, 14, 76)
 
+        # OFDM modulation with cyclic prefix insertion
+        x_time = self.modulator(x_rg)
+        print("x_time shape:", x_time.shape) #(64, 1, 2, 1148)
+
         # The CIR needs to be sampled every 1/bandwith [s].
         # In contrast to frequency-domain modeling, this implies
         # that the channel can change over the duration of a single
         # OFDM symbol. We now also need to simulate more
         # time steps.
         from sionna.channel import cir_to_time_channel, ApplyOFDMChannel, ApplyTimeChannel, OFDMChannel, TimeChannel
+
+        carrier_frequency = 2.6e9 # Carrier frequency in Hz.
+                          # This is needed here to define the antenna element spacing.
+
+        from sionna.channel.tr38901 import AntennaArray, CDL, Antenna
+        num_ut_ant = 2
+        num_bs_ant = 16
+        ut_array = AntennaArray(num_rows=1,
+                                num_cols=int(num_ut_ant/2),
+                                polarization="dual",
+                                polarization_type="cross",
+                                antenna_pattern="38.901",
+                                carrier_frequency=carrier_frequency)
+
+        bs_array = AntennaArray(num_rows=1,
+                                num_cols=int(num_bs_ant/2),
+                                polarization="dual",
+                                polarization_type="cross",
+                                antenna_pattern="38.901",
+                                carrier_frequency=carrier_frequency)
+        
+        delay_spread = 300e-9 # Nominal delay spread in [s]. Please see the CDL documentation
+                      # about how to choose this value. 
+
+        direction = "uplink"  # The `direction` determines if the UT or BS is transmitting.
+                            # In the `uplink`, the UT is transmitting.
+        cdl_model = "B"       # Suitable values are ["A", "B", "C", "D", "E"]
+
+        speed = 10            # UT speed [m/s]. BSs are always assumed to be fixed.
+                            # The direction of travel will chosen randomly within the x-y plane.
+
+        # Configure a channel impulse reponse (CIR) generator for the CDL model.
+        # cdl() will generate CIRs that can be converted to discrete time or discrete frequency.
+        cdl = CDL(cdl_model, delay_spread, carrier_frequency, ut_array, bs_array, direction, min_speed=speed)
+        l_min, l_max = time_lag_discrete_time_channel(self.RESOURCE_GRID.bandwidth)
+        l_tot = l_max-l_min+1
+
+        a, tau = cdl(batch_size=2, num_time_steps=self.RESOURCE_GRID.num_time_samples+l_tot-1, sampling_frequency=self.RESOURCE_GRID.bandwidth)
+        #a, tau = cdl(batch_size=32, num_time_steps=self.RESOURCE_GRID.num_ofdm_symbols, sampling_frequency=1/self.RESOURCE_GRID.ofdm_symbol_duration)
+
         cir = self.cdl(self.batch_size, self.RESOURCE_GRID.num_time_samples+self.l_tot-1, self.RESOURCE_GRID.bandwidth)
+        h_time = cir_to_time_channel(self.RESOURCE_GRID.bandwidth, a, tau, l_min=l_min, l_max=l_max, normalize=True)
+
         # Compute the discrete-time channel impulse reponse
         h_time = cir_to_time_channel(self.RESOURCE_GRID.bandwidth, *cir, self.l_min, self.l_max, normalize=True)
         print("h_time shape:", h_time.shape) #(64, 1, 16, 1, 2, 1174, 27)
 
-        # OFDM modulation with cyclic prefix insertion
-        x_time = self.modulator(x_rg)
-        print("x_time shape:", x_time.shape) #(64, 1, 2, 1148)
+        # Function that will apply the discrete-time channel impulse response to an input signal
+        channel_time = ApplyTimeChannel(self.RESOURCE_GRID.num_time_samples, l_tot=l_tot, add_awgn=True)
 
         #we generate random batches of CIR, transform them in the frequency domain and apply them to the resource grid in the frequency domain.
         #h_b, tau_b = self.get_channelcir()
@@ -622,7 +667,8 @@ class Transmitter():
         # print("y_time1 shape:", y_time1.shape)
         import tensorflow as tf
         x_time = tf.convert_to_tensor(x_time, dtype=tf.complex64)
-        y_time = self.applychannel([x_time, h_time, no]) 
+        #y_time = self.applychannel([x_time, h_time, no]) 
+        y_time = channel_time([x_time, h_time, no]) 
         print("y_time shape:", y_time.shape) #(64, 1, 16, 1174)
 
         # OFDM demodulation and cyclic prefix removal
