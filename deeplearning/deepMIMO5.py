@@ -1571,9 +1571,9 @@ def subcarrier_frequencies(num_subcarriers, subcarrier_spacing,
     #num_subcarrier is even
     #use numpy to check num_subcarriers is an even number or not
     #if np.equal(np.floor(num_subcarriers/2), 0):
-    if num_subcarriers%2 == 0:
-        start=-num_subcarriers/2
-        limit=num_subcarriers/2
+    if num_subcarriers%2 == 0: #76%2
+        start=-num_subcarriers/2 #-38
+        limit=num_subcarriers/2 #38
     else:
         start=-(num_subcarriers-1)/2
         limit=(num_subcarriers-1)/2+1

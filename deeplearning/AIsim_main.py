@@ -151,8 +151,11 @@ class Transmitter():
         self.RESOURCE_GRID = RESOURCE_GRID
         print("RG num_ofdm_symbols", RESOURCE_GRID.num_ofdm_symbols) #14
         print("RG ofdm_symbol_duration", RESOURCE_GRID.ofdm_symbol_duration)
+        #from sionna.channel import subcarrier_frequencies
         self.frequencies = subcarrier_frequencies(RESOURCE_GRID.fft_size, RESOURCE_GRID.subcarrier_spacing) #corresponding to the different subcarriers
-        print("subcarriers frequencies", self.frequencies)
+        #76, 60k
+
+        print("subcarriers frequencies", self.frequencies) #-2280000. -2220000. -2160000...2100000.  2160000.  2220000
 
         #num_bits_per_symbol = 4
         # Codeword length
@@ -492,7 +495,7 @@ class Transmitter():
             h_out = self.get_OFDMchannelresponse(h_b, tau_b)
             print("h_freq shape:", h_out.shape) #(64, 1, 16, 1, 2, 14, 76)
         elif self.channeltype=='time':
-            h_out = self.get_timechannelresponse(h_b, tau_b)
+            h_out = self.get_timechannelresponse(h_b, tau_b) #(64, 1, 16, 1, 2, 1174, 27)
         
         #apply channel
         if self.channeltype == 'ofdm':
@@ -519,7 +522,7 @@ class Transmitter():
             print("Demodulation error (L2 norm):", np.linalg.norm(x_rg - y_test))
             
             # OFDM demodulation and cyclic prefix removal
-            y = self.demodulator(y_time)
+            y = self.demodulator(y_time) #y: (64, 1, 16, 14, 76)
         #x :  Channel inputs [batch size, num_tx, num_tx_ant, num_time_samples], tf.complex
         #h_time : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_samples + l_tot - 1, l_tot], tf.complex
         
@@ -564,10 +567,106 @@ class Transmitter():
         else:
             return h_hat, err_var
 
+    def test_timechannel_estimation(self,b=None, no=0):
+        if b is None:
+            binary_source = BinarySource()
+            # Start Transmitter self.k Number of information bits per codeword
+            b = binary_source([self.batch_size, 1, self.num_streams_per_tx, self.k]) #[64,1,2,4256] if empty [64,1,1,1536] [batch_size, num_tx, num_streams_per_tx, num_databits]
+        if self.USE_LDPC:
+            c = self.encoder(b) #tf.tensor[64,1,1,3072] [batch_size, num_tx, num_streams_per_tx, num_codewords]
+        else:
+            c = b
+        x = self.mapper(c) #np.array[64,1,1,896] if empty np.array[64,1,1,1064] 1064*4=4256 [batch_size, num_tx, num_streams_per_tx, num_data_symbols]
+        x_rg = self.rg_mapper(x) ##complex array[64,1,1,14,76] 14*76=1064
+        #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76] (64, 1, 2, 14, 76)
+
+        # The CIR needs to be sampled every 1/bandwith [s].
+        # In contrast to frequency-domain modeling, this implies
+        # that the channel can change over the duration of a single
+        # OFDM symbol. We now also need to simulate more
+        # time steps.
+        from sionna.channel import cir_to_time_channel, ApplyOFDMChannel, ApplyTimeChannel, OFDMChannel, TimeChannel
+        cir = self.cdl(self.batch_size, self.RESOURCE_GRID.num_time_samples+self.l_tot-1, self.RESOURCE_GRID.bandwidth)
+        # Compute the discrete-time channel impulse reponse
+        h_time = cir_to_time_channel(self.RESOURCE_GRID.bandwidth, *cir, self.l_min, self.l_max, normalize=True)
+        print("h_time shape:", h_time.shape) #(64, 1, 16, 1, 2, 1174, 27)
+
+        # OFDM modulation with cyclic prefix insertion
+        x_time = self.modulator(x_rg)
+        print("x_time shape:", x_time.shape) #(64, 1, 2, 1148)
+
+        #we generate random batches of CIR, transform them in the frequency domain and apply them to the resource grid in the frequency domain.
+        #h_b, tau_b = self.get_channelcir()
+        # if self.channeltype=='ofdm':
+        #     h_out = self.get_OFDMchannelresponse(h_b, tau_b)
+        #     print("h_freq shape:", h_out.shape) #(64, 1, 16, 1, 2, 14, 76)
+        # elif self.channeltype=='time':
+        #     h_out = self.get_timechannelresponse(h_b, tau_b) #(64, 1, 16, 1, 2, 1174, 27)
+        
+        #h_time = cir_to_time_channel(self.RESOURCE_GRID.bandwidth, *cir, self.l_min, self.l_max, normalize=True)
+        #h_out = cir_to_time_channel(self.RESOURCE_GRID.bandwidth, h_b, tau_b, l_min=self.l_min, l_max=self.l_max, normalize=True) 
+        #h_time: [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, l_max - l_min + 1]
+        if self.showfig:
+            plt.figure()
+            plt.title("Discrete-time channel impulse response")
+            plt.stem(np.abs(h_time[0,0,0,0,0,0]))
+            plt.xlabel(r"Time step $\ell$")
+            plt.ylabel(r"$|\bar{h}|$");
+
+        
+        # time_channel = TimeChannel(self.cdl, self.RESOURCE_GRID.bandwidth, self.RESOURCE_GRID.num_time_samples,
+        #                    l_min=self.l_min, l_max=self.l_max, normalize_channel=True,
+        #                    add_awgn=True, return_channel=True)
+
+        # y_time1, h_time = time_channel([x_time, no])
+        # print("y_time1 shape:", y_time1.shape)
+        import tensorflow as tf
+        x_time = tf.convert_to_tensor(x_time, dtype=tf.complex64)
+        y_time = self.applychannel([x_time, h_time, no]) 
+        print("y_time shape:", y_time.shape) #(64, 1, 16, 1174)
+
+        # OFDM demodulation and cyclic prefix removal
+        y = self.demodulator(y_time) 
+        print("y shape:", y.shape) #(64, 1, 16, 14, 76)
+
+        a, tau = cir
+        print("a shape:", a.shape) #(64, 1, 16, 1, 2, 23, 1174)
+        print("tau shape:", tau.shape) #(64, 1, 1, 23)
+        
+        # We need to sub-sample the channel impulse reponse to compute perfect CSI
+        # for the receiver as it only needs one channel realization per OFDM symbol
+        a_freq = a[...,self.RESOURCE_GRID.cyclic_prefix_length:-1:(self.RESOURCE_GRID.fft_size+self.RESOURCE_GRID.cyclic_prefix_length)]
+        a_freq = a_freq[...,:self.RESOURCE_GRID.num_ofdm_symbols]
+        print("a_freq shape:", a_freq.shape)#(64, 1, 16, 1, 2, 23, 14)
+        
+        # Compute the channel frequency response
+        h_freq = cir_to_ofdm_channel(self.frequencies, a_freq, tau, normalize=True)
+        print("h_freq shape:", h_freq.shape) #(64, 1, 16, 1, 2, 14, 76)
+        h_hat, err_var = self.remove_nulled_scs(h_freq), 0.
+        print("h_hat shape:", h_hat.shape) #(64, 1, 16, 1, 2, 14, 64)
+        
+
+        h_perf = h_hat[0,0,0,0,0,0]
+
+        # We now compute the LS channel estimate from the pilots.
+        h_est, _ = self.ls_est ([y, no]) #(64, 1, 16, 1, 2, 14, 64)
+        h_est = h_est[0,0,0,0,0,0]
+
+        plt.figure()
+        plt.plot(np.real(h_perf))
+        plt.plot(np.imag(h_perf))
+        plt.plot(np.real(h_est), "--")
+        plt.plot(np.imag(h_est), "--")
+        plt.xlabel("Subcarrier index")
+        plt.ylabel("Channel frequency response")
+        plt.legend(["Ideal (real part)", "Ideal (imaginary part)", "Estimated (real part)", "Estimated (imaginary part)"]);
+        plt.title("Comparison of channel frequency responses");
+
     def timechannel_estimation(self, y, no, a=None, tau=None, perfect_csi= False):
+
         if perfect_csi or self.showfig:
-            print("a shape:", a.shape)
-            print("tau shape:", tau.shape)
+            print("a shape:", a.shape) #(64, 1, 16, 1, 2, 23, 1174)
+            print("tau shape:", tau.shape) #(64, 1, 1, 23)
             
             # We need to sub-sample the channel impulse reponse to compute perfect CSI
             # for the receiver as it only needs one channel realization per OFDM symbol
@@ -581,10 +680,10 @@ class Transmitter():
             h_perfect, err_var = self.remove_nulled_scs(h_freq), 0.
             print("h_perfect shape:", h_perfect.shape) #(64, 1, 16, 1, 2, 14, 64)
         
-        if (not perfect_csi) and self.showfig:
+        if (not perfect_csi) or self.showfig:
             h_hat, err_var = self.ls_est ([y, no])
-            print("h_hat shape:", h_hat.shape)
-            print("err_var shape:", err_var.shape)
+            print("h_hat shape:", h_hat.shape) #(64, 1, 16, 1, 2, 14, 64)
+            print("err_var shape:", err_var.shape) #(1, 1, 1, 1, 2, 14, 64)
         
         if self.showfig:
             # we assumed perfect CSI, i.e., h_perfect correpsond to the exact ideal channel frequency response.
@@ -682,6 +781,7 @@ def test_CDLchannel():
                     batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
                     subcarrier_spacing=60e3, \
                     USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=showfigure)
+    transmit.test_timechannel_estimation(b=None, no=0.0)
     b_hat, BER = transmit(ebno_db = 15.0, perfect_csi=False)
     b_hat, BER = transmit(ebno_db = 15.0, perfect_csi=True)
 
