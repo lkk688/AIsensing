@@ -14,7 +14,7 @@ import tensorflow as tf
 from matplotlib import colors
 
 from deepMIMO5 import get_deepMIMOdata, DeepMIMODataset
-from deepMIMO5 import StreamManagement, MyResourceGrid, Mapper, MyResourceGridMapper, MyDemapper, OFDMModulator, OFDMDemodulator, BinarySource, ebnodb2no, hard_decisions, calculate_BER
+from deepMIMO5 import StreamManagement, MyResourceGrid, Mapper, MyResourceGridMapper, MyDemapper, BinarySource, ebnodb2no, hard_decisions, calculate_BER
 from deepMIMO5 import complex_normal, mygenerate_OFDMchannel, RemoveNulledSubcarriers, \
     MyApplyOFDMChannel, MyApplyTimeChannel
 from deepMIMO5 import time_lag_discrete_time_channel, cir_to_time_channel, cir_to_ofdm_channel, subcarrier_frequencies
@@ -22,6 +22,9 @@ from deepMIMO5 import time_lag_discrete_time_channel, cir_to_time_channel, cir_t
         #from sionna.channel import ApplyOFDMChannel, ApplyTimeChannel, OFDMChannel, TimeChannel
 
 from sionna_tf import MyLMMSEEqualizer, LMMSEEqualizer, SymbolLogits2LLRs#, OFDMDemodulator #ZFPrecoder, OFDMModulator, KroneckerPilotPattern, Demapper, RemoveNulledSubcarriers, 
+
+#from deepMIMO5 import OFDMModulator, OFDMDemodulator, 
+from sionna.ofdm import OFDMModulator, OFDMDemodulator
 from channel import MyLSChannelEstimator, LSChannelEstimator, ApplyTimeChannel#, time_lag_discrete_time_channel #, ApplyTimeChannel #cir_to_time_channel
 from ldpc.encoding import LDPC5GEncoder
 from ldpc.decoding import LDPC5GDecoder
@@ -513,17 +516,20 @@ class Transmitter():
             # is in contrast to frequency-domain modeling which imposes
             # no inter-symbol interfernce.
             
-            x_time = tf.convert_to_tensor(x_time, dtype=tf.complex64)
-            y_time = self.applychannel([x_time, h_out, no])
-            #Do modulator and demodulator test
-            y_test = self.demodulator(x_time)
-            differences = np.abs(x_rg - y_test)
-            threshold=1e-7
-            num_differences = np.sum(differences > threshold)
-            print("Number of differences:", num_differences)
-            print(np.allclose(x_rg, y_test))
-            print("Demodulation error (L2 norm):", np.linalg.norm(x_rg - y_test))
+            x_time = tf.convert_to_tensor(x_time, dtype=tf.complex64) #(2, 1, 2, 1148)
+            y_time = self.applychannel([x_time, h_out, no]) #(2, 1, 16, 1174)
+            # #Do modulator and demodulator test
+            # y_test = self.demodulator(x_time)
+            # differences = np.abs(x_rg - y_test)
+            # threshold=1e-7
+            # num_differences = np.sum(differences > threshold)
+            # print("Number of differences:", num_differences)
+            # print(np.allclose(x_rg, y_test))
+            # print("Demodulation error (L2 norm):", np.linalg.norm(x_rg - y_test))
             
+            
+            print("y_time shape:", y_time.shape) #(64, 1, 16, 1174)
+            y_time = tf.convert_to_tensor(y_time, dtype=tf.complex64)
             # OFDM demodulation and cyclic prefix removal
             y = self.demodulator(y_time) #y: (64, 1, 16, 14, 76)
         #x :  Channel inputs [batch size, num_tx, num_tx_ant, num_time_samples], tf.complex
@@ -580,7 +586,7 @@ class Transmitter():
         # that the channel can change over the duration of a single
         # OFDM symbol. We now also need to simulate more
         # time steps.
-        from sionna.channel import cir_to_ofdm_channel, cir_to_time_channel, ApplyOFDMChannel, ApplyTimeChannel, OFDMChannel, TimeChannel
+        #from sionna.channel import cir_to_ofdm_channel, cir_to_time_channel, ApplyOFDMChannel, ApplyTimeChannel, OFDMChannel, TimeChannel
         num_streams_per_tx = 2
         #from sionna.ofdm import ResourceGrid#, ResourceGridMapper, LSChannelEstimator, LMMSEEqualizer
         # rg = MyResourceGrid(num_ofdm_symbols=14,
@@ -598,47 +604,24 @@ class Transmitter():
         carrier_frequency = 2.6e9 # Carrier frequency in Hz.
                           # This is needed here to define the antenna element spacing.
 
-        from sionna.channel.tr38901 import AntennaArray, CDL, Antenna
-        num_ut_ant = 2
-        num_bs_ant = 16
-        ut_array = AntennaArray(num_rows=1,
-                                num_cols=int(num_ut_ant/2),
-                                polarization="dual",
-                                polarization_type="cross",
-                                antenna_pattern="38.901",
-                                carrier_frequency=carrier_frequency)
-
-        bs_array = AntennaArray(num_rows=1,
-                                num_cols=int(num_bs_ant/2),
-                                polarization="dual",
-                                polarization_type="cross",
-                                antenna_pattern="38.901",
-                                carrier_frequency=carrier_frequency)
-        
-        delay_spread = 300e-9 # Nominal delay spread in [s]. Please see the CDL documentation
-                      # about how to choose this value. 
-
-        direction = "uplink"  # The `direction` determines if the UT or BS is transmitting.
-                            # In the `uplink`, the UT is transmitting.
-        cdl_model = "B"       # Suitable values are ["A", "B", "C", "D", "E"]
-
-        speed = 10            # UT speed [m/s]. BSs are always assumed to be fixed.
-                            # The direction of travel will chosen randomly within the x-y plane.
-
         # Configure a channel impulse reponse (CIR) generator for the CDL model.
         # cdl() will generate CIRs that can be converted to discrete time or discrete frequency.
          #CDL(cdl_model, delay_spread, carrier_frequency, ut_array, bs_array, direction, min_speed=speed)
-        l_min, l_max = time_lag_discrete_time_channel(rg.bandwidth)
-        l_tot = l_max-l_min+1
+        # l_min, l_max = time_lag_discrete_time_channel(rg.bandwidth)
+        # l_tot = l_max-l_min+1
 
-        option1=False
+        option1=True
         if option1:
-            a, tau = self.cdl(batch_size=2, num_time_steps=rg.num_time_samples+l_tot-1, sampling_frequency=rg.bandwidth)
+            a, tau = self.cdl(batch_size=2, num_time_steps=rg.num_time_samples+self.l_tot-1, sampling_frequency=rg.bandwidth)
             #a, tau = cdl(batch_size=32, num_time_steps=self.RESOURCE_GRID.num_ofdm_symbols, sampling_frequency=1/self.RESOURCE_GRID.ofdm_symbol_duration)
-            h_time = cir_to_time_channel(rg.bandwidth, a, tau, l_min=l_min, l_max=l_max, normalize=True)
+            a = to_numpy(a)
+            tau= to_numpy(tau)
+            h_time = cir_to_time_channel(rg.bandwidth, a, tau, l_min=self.l_min, l_max=self.l_max, normalize=True)
         else:
             cir = self.cdl(self.batch_size, rg.num_time_samples+self.l_tot-1, rg.bandwidth)
             a, tau = cir
+            a = to_numpy(a)
+            tau= to_numpy(tau)
             print("a shape:", a.shape) #(64, 1, 16, 1, 2, 23, 1174)
             print("tau shape:", tau.shape) #(64, 1, 1, 23)
             # Compute the discrete-time channel impulse reponse
@@ -646,7 +629,7 @@ class Transmitter():
             print("h_time shape:", h_time.shape) #(64, 1, 16, 1, 2, 1174, 27)
 
         # Function that will apply the discrete-time channel impulse response to an input signal
-        channel_time = ApplyTimeChannel(rg.num_time_samples, l_tot=l_tot, add_awgn=True)
+        channel_time = ApplyTimeChannel(rg.num_time_samples, l_tot=self.l_tot, add_awgn=True)
 
         #we generate random batches of CIR, transform them in the frequency domain and apply them to the resource grid in the frequency domain.
         #h_b, tau_b = self.get_channelcir()
@@ -667,12 +650,12 @@ class Transmitter():
             plt.ylabel(r"$|\bar{h}|$");
 
                 # OFDM modulator and demodulator
-        from sionna.ofdm import OFDMModulator, OFDMDemodulator, ZFPrecoder, RemoveNulledSubcarriers
+        #from sionna.ofdm import OFDMModulator, OFDMDemodulator, ZFPrecoder, RemoveNulledSubcarriers
         #from deepMIMO5 import OFDMModulator, OFDMDemodulator
         #from sionna.mapping import Mapper, Demapper
         #from sionna.ofdm import ResourceGrid, ResourceGridMapper, LSChannelEstimator, LMMSEEqualizer
         modulator = OFDMModulator(rg.cyclic_prefix_length)
-        demodulator = OFDMDemodulator(rg.fft_size, l_min, rg.cyclic_prefix_length)
+        demodulator = OFDMDemodulator(rg.fft_size, self.l_min, rg.cyclic_prefix_length)
 
         # The mapper maps blocks of information bits to constellation symbols
         mapper = self.mapper #Mapper("qam", self.num_bits_per_symbol)
@@ -703,8 +686,9 @@ class Transmitter():
         # y_time1, h_time = time_channel([x_time, no])
         # print("y_time1 shape:", y_time1.shape)
         #no = ebnodb2no(ebno_db, self.num_bits_per_symbol, self.coderate, rg)
-        x_time = tf.convert_to_tensor(x_time, dtype=tf.complex64)
+        x_time = tf.convert_to_tensor(x_time, dtype=tf.complex64) #(2, 1, 2, 1148)
         #y_time = self.applychannel([x_time, h_time, no]) 
+        h_time = tf.convert_to_tensor(h_time, dtype=tf.complex64)
         y_time = channel_time([x_time, h_time, no]) 
         print("y_time shape:", y_time.shape) #(64, 1, 16, 1174)
 
@@ -713,6 +697,14 @@ class Transmitter():
         #                    add_awgn=True, return_channel=True)
 
         # y_time, h_time = time_channel([x_time, no])
+
+        # y_test = demodulator(x_time)
+        # differences = np.abs(x_rg - y_test.numpy()) #(2, 1, 2, 14, 76)
+        # threshold=1e-7
+        # num_differences = np.sum(differences > threshold)
+        # print("Number of differences:", num_differences)
+        # print(np.allclose(x_rg, y_test))
+        # print("Demodulation error (L2 norm):", np.linalg.norm(x_rg - y_test))
 
         # OFDM demodulation and cyclic prefix removal
         y = demodulator(y_time) 
