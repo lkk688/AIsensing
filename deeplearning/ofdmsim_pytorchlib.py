@@ -394,33 +394,43 @@ def DFT(rxsignal, plotDFT=False):
 
     return OFDM_RX_DFT
 
+#performs linear interpolation to estimate function values at specified points x based on given data points (xp, fp)
 def torch_interp(x, xp, fp):
     # Ensure xp and fp are sorted
-    sorted_indices = torch.argsort(xp)
-    xp = xp[sorted_indices].to(device=x.device)
+    sorted_indices = torch.argsort(xp) #Sort the indices of xp in ascending order.
+    xp = xp[sorted_indices].to(device=x.device) #Reorder xp based on the sorted indices 
     fp = fp[sorted_indices].to(device=x.device)
 
     # Find the indices to the left and right of x
-    indices_left = torch.searchsorted(xp, x, right=True)
-    indices_left = torch.clamp(indices_left, 0, len(xp) - 1)
+    indices_left = torch.searchsorted(xp, x, right=True) #Find the indices of the right neighbors of x in xp
+    indices_left = torch.clamp(indices_left, 0, len(xp) - 1) #Ensure the indices are within valid bounds.
 
-    indices_right = torch.clamp(indices_left - 1, 0, len(xp) - 1)
+    indices_right = torch.clamp(indices_left - 1, 0, len(xp) - 1) #Calculate the indices of the left neighbors.
 
     # Perform linear interpolation
-    x_left, x_right = xp[indices_left], xp[indices_right]
-    f_left, f_right = fp[indices_left], fp[indices_right]
-    interp_values = f_left + (f_right - f_left) * (x - x_left) / (x_right - x_left)
+    x_left, x_right = xp[indices_left], xp[indices_right] #Get the x-values of the left and right neighbors.
+    f_left, f_right = fp[indices_left], fp[indices_right] #Get the corresponding function values.
+    interp_values = f_left + (f_right - f_left) * (x - x_left) / (x_right - x_left) #Perform linear interpolation using the formula for a straight line between the neighbors.
 
     return interp_values
 
+#estimate the channel response (complex gain) for a wireless communication channel using the Least Squares (LS) method based on pilot symbols.
 def channelEstimate_LS(TTI_mask_RE, pilot_symbols, F, FFT_offset, Sp, OFDM_demod, plotEst=False):
+    #inputs: TTI_mask_RE: A mask indicating which resource elements (REs) are available in the time-frequency grid.
+    # pilot_symbols: Known pilot symbols transmitted over the channel.
+    # F: The total number of frequency bins (subcarriers).
+    # FFT_offset: The starting frequency bin index.
+    # Sp: Indices of the pilot symbols within the time-frequency grid.
+    # OFDM_demod: Demodulated received symbols (complex values) after OFDM demodulation.
+    
     # Pilot extraction
     pilots = OFDM_demod[TTI_mask_RE == 2] #[14,128]=>[36]
 
     # Divide the pilots by the set pilot values
+    #Divide the extracted pilot symbols by the known pilot values to obtain an estimate of the channel response at those pilot positions.
     H_estim_at_pilots = pilots / pilot_symbols #[36]/[36]=>[36]
 
-    # Interpolation indices
+    # Interpolation indices, Identify the indices of the pilot symbols within the Sp range.
     pilot_indices = torch.nonzero(TTI_mask_RE[Sp] == 2, as_tuple=False).squeeze() #[36] 28:30:32...
 
     # Interpolation for magnitude and phase

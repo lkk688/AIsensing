@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 import tensorflow as tf
 from matplotlib import colors
 
-from deepMIMO5 import get_deepMIMOdata, DeepMIMODataset
+from deepMIMO5 import get_deepMIMOdata, DeepMIMODataset, flatten_last_dims
 from deepMIMO5 import StreamManagement, MyResourceGrid, Mapper, MyResourceGridMapper, MyDemapper, BinarySource, ebnodb2no, hard_decisions, calculate_BER
 from deepMIMO5 import complex_normal, mygenerate_OFDMchannel, RemoveNulledSubcarriers, \
     MyApplyOFDMChannel, MyApplyTimeChannel
@@ -31,6 +31,326 @@ from ldpc.encoding import LDPC5GEncoder
 from ldpc.decoding import LDPC5GDecoder
 
 import scipy
+
+
+class NearestNeighborInterpolator:
+    # pylint: disable=line-too-long
+    r"""NearestNeighborInterpolator(pilot_pattern)
+
+    Nearest-neighbor channel estimate interpolation on a resource grid.
+
+    This class assigns to each element of an OFDM resource grid one of
+    ``num_pilots`` provided channel estimates and error
+    variances according to the nearest neighbor method. It is assumed
+    that the measurements were taken at the nonzero positions of a
+    :class:`~sionna.ofdm.PilotPattern`.
+
+    The figure below shows how four channel estimates are interpolated
+    accross a resource grid. Grey fields indicate measurement positions
+    while the colored regions show which resource elements are assigned
+    to the same measurement value.
+
+    .. image:: ../figures/nearest_neighbor_interpolation.png
+
+    Parameters
+    ----------
+    pilot_pattern : PilotPattern
+        An instance of :class:`~sionna.ofdm.PilotPattern`
+
+    Input
+    -----
+    h_hat : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_pilot_symbols], tf.complex
+        Channel estimates for the pilot-carrying resource elements
+
+    err_var : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_pilot_symbols], tf.complex
+        Channel estimation error variances for the pilot-carrying resource elements
+
+    Output
+    ------
+    h_hat : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size], tf.complex
+        Channel estimates accross the entire resource grid for all
+        transmitters and streams
+
+    err_var : Same shape as ``h_hat``, tf.float
+        Channel estimation error variances accross the entire resource grid
+        for all transmitters and streams
+    """
+    def __init__(self, pilot_pattern):
+        #super().__init__()
+
+        assert(pilot_pattern.num_pilot_symbols>0),\
+            """The pilot pattern cannot be empty"""
+
+        # Reshape mask to shape [-1,num_ofdm_symbols,num_effective_subcarriers]
+        mask = np.array(pilot_pattern.mask)
+        mask_shape = mask.shape # Store to reconstruct the original shape
+        mask = np.reshape(mask, [-1] + list(mask_shape[-2:]))
+
+        # Reshape the pilots to shape [-1, num_pilot_symbols]
+        pilots = pilot_pattern.pilots
+        pilots = np.reshape(pilots, [-1] + [pilots.shape[-1]])
+
+        max_num_zero_pilots = np.max(np.sum(np.abs(pilots)==0, -1))
+        assert max_num_zero_pilots<pilots.shape[-1],\
+            """Each pilot sequence must have at least one nonzero entry"""
+
+        # Compute gather indices for nearest neighbor interpolation
+        gather_ind = np.zeros_like(mask, dtype=np.int32)
+        for a in range(gather_ind.shape[0]): # For each pilot pattern...
+            i_p, j_p = np.where(mask[a]) # ...determine the pilot indices
+
+            for i in range(mask_shape[-2]): # Iterate over...
+                for j in range(mask_shape[-1]): # ... all resource elements
+
+                    # Compute Manhattan distance to all pilot positions
+                    d = np.abs(i-i_p) + np.abs(j-j_p)
+
+                    # Set the distance at all pilot positions with zero energy
+                    # equal to the maximum possible distance
+                    d[np.abs(pilots[a])==0] = np.sum(mask_shape[-2:])
+
+                    # Find the pilot index with the shortest distance...
+                    ind = np.argmin(d)
+
+                    # ... and store it in the index tensor
+                    gather_ind[a, i, j] = ind
+
+        # Reshape to the original shape of the mask, i.e.:
+        # [num_tx, num_streams_per_tx, num_ofdm_symbols,...
+        #  ..., num_effective_subcarriers]
+        #self._gather_ind = tf.reshape(gather_ind, mask_shape)
+        self._gather_ind = np.reshape(gather_ind, mask_shape)
+
+    def _interpolate(self, inputs):
+        # inputs has shape:
+        # [k, l, m, num_tx, num_streams_per_tx, num_pilots]
+
+        # Transpose inputs to bring batch_dims for gather last. New shape:
+        # [num_tx, num_streams_per_tx, num_pilots, k, l, m]
+        #perm = tf.roll(tf.range(tf.rank(inputs)), -3, 0)
+        #inputs = tf.transpose(inputs, perm)
+        perm = np.roll(np.arange(np.ndim(inputs)), -3, 0) # shift the dimensions.
+        inputs = np.transpose(inputs, perm)
+
+        # Interpolate through gather. Shape:
+        # [num_tx, num_streams_per_tx, num_ofdm_symbols,
+        #  ..., num_effective_subcarriers, k, l, m]
+        #outputs = tf.gather(inputs, self._gather_ind, 2, batch_dims=2)
+        outputs = np.take(inputs, self._gather_ind, axis=2, mode='wrap')
+
+        # Transpose outputs to bring batch_dims first again. New shape:
+        # [k, l, m, num_tx, num_streams_per_tx,...
+        #  ..., num_ofdm_symbols, num_effective_subcarriers]
+        #perm = tf.roll(tf.range(tf.rank(outputs)), 3, 0)
+        #outputs = tf.transpose(outputs, perm)
+        perm = np.roll(np.arange(np.ndim(outputs)), 3, 0)
+        outputs = np.transpose(outputs, perm)
+
+        return outputs
+
+    def __call__(self, h_hat, err_var):
+
+        h_hat = self._interpolate(h_hat)
+        err_var = self._interpolate(err_var)
+        return h_hat, err_var
+    
+class MyLSChannelEstimator():
+    # pylint: disable=line-too-long
+    r"""LSChannelEstimator(resource_grid, interpolation_type="nn", interpolator=None, dtype=tf.complex64, **kwargs)
+
+    Layer implementing least-squares (LS) channel estimation for OFDM MIMO systems.
+
+    After LS channel estimation at the pilot positions, the channel estimates
+    and error variances are interpolated accross the entire resource grid using
+    a specified interpolation function.
+
+    For simplicity, the underlying algorithm is described for a vectorized observation,
+    where we have a nonzero pilot for all elements to be estimated.
+    The actual implementation works on a full OFDM resource grid with sparse
+    pilot patterns. The following model is assumed:
+
+    .. math::
+
+        \mathbf{y} = \mathbf{h}\odot\mathbf{p} + \mathbf{n}
+
+    where :math:`\mathbf{y}\in\mathbb{C}^{M}` is the received signal vector,
+    :math:`\mathbf{p}\in\mathbb{C}^M` is the vector of pilot symbols,
+    :math:`\mathbf{h}\in\mathbb{C}^{M}` is the channel vector to be estimated,
+    and :math:`\mathbf{n}\in\mathbb{C}^M` is a zero-mean noise vector whose
+    elements have variance :math:`N_0`. The operator :math:`\odot` denotes
+    element-wise multiplication.
+
+    The channel estimate :math:`\hat{\mathbf{h}}` and error variances
+    :math:`\sigma^2_i`, :math:`i=0,\dots,M-1`, are computed as
+
+    .. math::
+
+        \hat{\mathbf{h}} &= \mathbf{y} \odot
+                           \frac{\mathbf{p}^\star}{\left|\mathbf{p}\right|^2}
+                         = \mathbf{h} + \tilde{\mathbf{h}}\\
+             \sigma^2_i &= \mathbb{E}\left[\tilde{h}_i \tilde{h}_i^\star \right]
+                         = \frac{N_0}{\left|p_i\right|^2}.
+
+    The channel estimates and error variances are then interpolated accross
+    the entire resource grid.
+
+    Parameters
+    ----------
+    resource_grid : ResourceGrid
+        An instance of :class:`~sionna.ofdm.ResourceGrid`.
+
+    interpolation_type : One of ["nn", "lin", "lin_time_avg"], string
+        The interpolation method to be used.
+        It is ignored if ``interpolator`` is not `None`.
+        Available options are :class:`~sionna.ofdm.NearestNeighborInterpolator` (`"nn`")
+        or :class:`~sionna.ofdm.LinearInterpolator` without (`"lin"`) or with
+        averaging across OFDM symbols (`"lin_time_avg"`).
+        Defaults to "nn".
+
+    interpolator : BaseChannelInterpolator
+        An instance of :class:`~sionna.ofdm.BaseChannelInterpolator`,
+        such as :class:`~sionna.ofdm.LMMSEInterpolator`,
+        or `None`. In the latter case, the interpolator specfied
+        by ``interpolation_type`` is used.
+        Otherwise, the ``interpolator`` is used and ``interpolation_type``
+        is ignored.
+        Defaults to `None`.
+
+    dtype : tf.Dtype
+        Datatype for internal calculations and the output dtype.
+        Defaults to `tf.complex64`.
+
+    Input
+    -----
+    (y, no) :
+        Tuple:
+
+    y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols,fft_size], tf.complex
+        Observed resource grid
+
+    no : [batch_size, num_rx, num_rx_ant] or only the first n>=0 dims, tf.float
+        Variance of the AWGN
+
+    Output
+    ------
+    h_ls : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols,fft_size], tf.complex
+        Channel estimates accross the entire resource grid for all
+        transmitters and streams
+
+    err_var : Same shape as ``h_ls``, tf.float
+        Channel estimation error variance accross the entire resource grid
+        for all transmitters and streams
+    """
+
+    def __init__(self, resource_grid, interpolation_type="nn", interpolator=None,**kwargs):
+        #super().__init__(dtype=dtype, **kwargs)
+
+        # assert isinstance(resource_grid, ResourceGrid),\
+        #     "You must provide a valid instance of ResourceGrid."
+        self._pilot_pattern = resource_grid.pilot_pattern
+
+        #added test code
+        mask = np.array(self._pilot_pattern.mask) #(1, 2, 14, 64)
+        mask_shape = mask.shape # Store to reconstruct the original shape
+        # Reshape the pilots to shape [-1, num_pilot_symbols]
+        pilots = self._pilot_pattern.pilots #(1, 2, 128)
+        print(mask_shape) #(1, 2, 14, 64)
+        print('mask:', mask[0,0,0,:]) #all 0
+        print('pilots:', pilots[0,0,:]) #(1, 2, 128) -0.99999994-0.99999994j 0.        +0.j          0.99999994+0.99999994j
+        #0.99999994-0.99999994j  0.        +0.j          0.99999994-0.99999994j
+        self._removed_nulled_scs = RemoveNulledSubcarriers(resource_grid)
+
+        assert interpolation_type in ["nn","lin","lin_time_avg",None], \
+            "Unsupported `interpolation_type`"
+        self._interpolation_type = interpolation_type
+
+        if self._interpolation_type == "nn":
+            self._interpol = NearestNeighborInterpolator(self._pilot_pattern)
+        # elif self._interpolation_type == "lin":
+        #     self._interpol = LinearInterpolator(self._pilot_pattern)
+        # elif self._interpolation_type == "lin_time_avg":
+        #     self._interpol = LinearInterpolator(self._pilot_pattern,
+        #                                         time_avg=True)
+
+        # Precompute indices to gather received pilot signals
+        num_pilot_symbols = self._pilot_pattern.num_pilot_symbols #128
+        mask = flatten_last_dims(self._pilot_pattern.mask) #(1, 2, 896)
+        #pilot_ind = tf.argsort(mask, axis=-1, direction="DESCENDING") #(1, 2, 896)
+        pilot_ind = np.argsort(mask, axis=-1)[..., ::-1] #reverses the order of the indices along the last axis
+        self._pilot_ind = pilot_ind[...,:num_pilot_symbols]
+
+        print(self._pilot_ind)
+
+
+    def estimate_at_pilot_locations(self, y_pilots, no):
+
+        # y_pilots : [batch_size, num_rx, num_rx_ant, num_tx, num_streams,
+        #               num_pilot_symbols], tf.complex
+        #     The observed signals for the pilot-carrying resource elements.
+
+        # no : [batch_size, num_rx, num_rx_ant] or only the first n>=0 dims,
+        #   tf.float
+        #     The variance of the AWGN.
+
+        # Compute LS channel estimates
+        # Note: Some might be Inf because pilots=0, but we do not care
+        # as only the valid estimates will be considered during interpolation.
+        # We do a save division to replace Inf by 0.
+        # Broadcasting from pilots here is automatic since pilots have shape
+        # [num_tx, num_streams, num_pilot_symbols]
+        h_ls = tf.math.divide_no_nan(y_pilots, self._pilot_pattern.pilots)
+
+        # Compute error variance and broadcast to the same shape as h_ls
+        # Expand rank of no for broadcasting
+        no = expand_to_rank(no, tf.rank(h_ls), -1)
+
+        # Expand rank of pilots for broadcasting
+        pilots = expand_to_rank(self._pilot_pattern.pilots, tf.rank(h_ls), 0)
+
+        # Compute error variance, broadcastable to the shape of h_ls
+        err_var = tf.math.divide_no_nan(no, tf.abs(pilots)**2)
+
+        return h_ls, err_var
+
+    #def call(self, inputs):
+    def __call__(self, inputs):
+
+        y, no = inputs #y: (64, 1, 1, 14, 76) complex64
+
+        # y has shape:
+        # [batch_size, num_rx, num_rx_ant, num_ofdm_symbols,..
+        # ... fft_size]
+        #
+        # no can have shapes [], [batch_size], [batch_size, num_rx]
+        # or [batch_size, num_rx, num_rx_ant]
+
+        # Removed nulled subcarriers (guards, dc)
+        y_eff = self._removed_nulled_scs(y) #(64, 1, 1, 14, 64) complex64
+
+        # Flatten the resource grid for pilot extraction
+        # New shape: [...,num_ofdm_symbols*num_effective_subcarriers]
+        y_eff_flat = flatten_last_dims(y_eff)
+
+        # Gather pilots along the last dimensions
+        # Resulting shape: y_eff_flat.shape[:-1] + pilot_ind.shape, i.e.:
+        # [batch_size, num_rx, num_rx_ant, num_tx, num_streams,...
+        #  ..., num_pilot_symbols]
+        y_pilots = tf.gather(y_eff_flat, self._pilot_ind, axis=-1)
+
+        # Compute LS channel estimates
+        # Note: Some might be Inf because pilots=0, but we do not care
+        # as only the valid estimates will be considered during interpolation.
+        # We do a save division to replace Inf by 0.
+        # Broadcasting from pilots here is automatic since pilots have shape
+        # [num_tx, num_streams, num_pilot_symbols]
+        h_hat, err_var = self.estimate_at_pilot_locations(y_pilots, no)
+
+        # Interpolate channel estimates over the resource grid
+        if self._interpolation_type is not None:
+            h_hat, err_var = self._interpol(h_hat, err_var) #h_hat: (64, 1, 1, 1, 1, 128)=>(64, 1, 1, 1, 1, 14, 64)
+            err_var = tf.maximum(err_var, tf.cast(0, err_var.dtype))
+
+        return h_hat, err_var
 
 def to_numpy(input_array):
     # Check if the input is already a NumPy array
