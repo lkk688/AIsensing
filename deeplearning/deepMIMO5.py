@@ -2960,24 +2960,24 @@ class OFDMModulator(): #Computes the frequency-domain representation of an OFDM 
         #self.l_min = l_min #int "l_min must be nonpositive."
         self.cyclic_prefix_length = cyclic_prefix_length #"`cyclic_prefix_length` must be nonnegative."
 
-    def __call__(self, inputs):
+    def __call__(self, inputs): #shape(2, 1, 2, 14, 76)
         # Shift DC subcarrier to first position
-        inputs = np.fft.ifftshift(inputs, axes=-1) #(64, 1, 1, 14, 76)
+        inputs = np.fft.ifftshift(inputs, axes=-1) #(2, 1, 2, 14, 76)
 
         # Compute IFFT along the last dimension
-        x = np.fft.ifft(inputs, axis=-1) #(64, 1, 1, 14, 76)
+        x = np.fft.ifft(inputs, axis=-1) #(2, 1, 2, 14, 76)
 
         # Obtain cyclic prefix
         last_dimension = np.shape(inputs)[-1] #76
-        cp = x[..., last_dimension-self.cyclic_prefix_length:] #(64, 1, 1, 14, 0)
+        cp = x[..., last_dimension-self.cyclic_prefix_length:] #(2, 1, 2, 14, 6)
 
         # Prepend cyclic prefix
-        x = np.concatenate([cp, x], axis=-1) #(64, 1, 1, 14, 76)
+        x = np.concatenate([cp, x], axis=-1) #(2, 1, 2, 14, 82)
 
         # Serialize last two dimensions
         x = x.reshape(x.shape[:-2] + (-1,))
 
-        return x #(64, 1, 1, 1064)
+        return x #(2, 1, 2, 1148)
 
 class OFDMDemodulator():
     r"""
@@ -3077,7 +3077,7 @@ class OFDMDemodulator():
         self._rest = np.mod(input_shape[-1], fft_size + cyclic_prefix_length) #1090/(76+0)=26
         self.num_ofdm_symbols = np.floor_divide(input_shape[-1] - self._rest, fft_size + cyclic_prefix_length) #14
     
-    def __call__(self, inputs, phase_compensation=False): #(64, 1, 1, 1090)
+    def __call__(self, inputs, phase_compensation=True): #(64, 1, 1, 1090)
         """Demodulate OFDM waveform onto a resource grid.
 
         Args:
@@ -3088,35 +3088,35 @@ class OFDMDemodulator():
             `complex64` : The demodulated inputs of shape
             `[...,num_ofdm_symbols, fft_size]`.
         """
-        input_shape = inputs.shape #(64, 1, 1, 1090)
+        input_shape = inputs.shape #[2, 1, 16, 1174]
         self.calculate_num_ofdm_symbols(input_shape=input_shape)
 
         # Cut last samples that do not fit into an OFDM symbol
-        inputs = inputs if self._rest==0 else inputs[...,:-self._rest] #(64, 1, 1, 1064)
+        inputs = inputs if self._rest==0 else inputs[...,:-self._rest] #(2, 1, 16, 1148)
 
         # Reshape input to separate OFDM symbols
         new_shape = np.concatenate([np.shape(inputs)[:-1], [self.num_ofdm_symbols],
-                            [self.fft_size + self.cyclic_prefix_length]], axis=0) #[64,  1,  1, 14, 76]
+                            [self.fft_size + self.cyclic_prefix_length]], axis=0) #[ 2,  1, 16, 14, 82]
         x = np.reshape(inputs, new_shape) #(64, 1, 1, 14, 76)
 
         # Remove cyclic prefix, cyclic_prefix_length=0
-        x = x[...,self.cyclic_prefix_length:] #(64, 1, 1, 14, 76)
+        x = x[...,self.cyclic_prefix_length:] #(2, 1, 16, 14, 76)
 
         # Compute FFT
-        x = np.fft.fft(x)
+        x = np.fft.fft(x) #(2, 1, 16, 14, 76)
 
         if phase_compensation:
             # Apply phase shift compensation to all subcarriers
             #rot = np.cast[self.phase_compensation, x.dtype]
             rot = self.phase_compensation.astype(x.dtype) #(76,)
             #rot = np.expand_dims(rot, axis=0)
-            rot = myexpand_to_rank(rot, x.ndim, axis=0)  #(1, 1, 1, 1, 76) rot = expand_to_rank(rot, tf.rank(x), 0)
-            x = x * rot #(64, 1, 1, 14, 76)
+            rot = myexpand_to_rank(rot, x.ndim, axis=0)  #(1, 1, 1, 1, 76) rot = expand_to_rank(rot, tf.rank(x), 0) 
+            x = x * rot #(2, 1, 16, 14, 76)
 
         # Shift DC subcarrier to the middle
         x = np.fft.fftshift(x, axes=-1)
 
-        return x #(64, 1, 1, 14, 76)
+        return x #(2, 1, 16, 14, 76)
 
 def ofdm_modulator(resource_grid, fft_size, cyclic_prefix_length):
     # Add cyclic prefix

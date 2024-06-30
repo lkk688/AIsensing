@@ -23,8 +23,9 @@ from deepMIMO5 import time_lag_discrete_time_channel, cir_to_time_channel, cir_t
 
 from sionna_tf import MyLMMSEEqualizer, LMMSEEqualizer, SymbolLogits2LLRs#, OFDMDemodulator #ZFPrecoder, OFDMModulator, KroneckerPilotPattern, Demapper, RemoveNulledSubcarriers, 
 
-#from deepMIMO5 import OFDMModulator, OFDMDemodulator, 
-from sionna.ofdm import OFDMModulator, OFDMDemodulator
+from deepMIMO5 import OFDMModulator, OFDMDemodulator
+#from sionna.ofdm import OFDMModulator, OFDMDemodulator
+#from sionna_tf import OFDMModulator, OFDMDemodulator
 from channel import MyLSChannelEstimator, LSChannelEstimator, ApplyTimeChannel#, time_lag_discrete_time_channel #, ApplyTimeChannel #cir_to_time_channel
 from ldpc.encoding import LDPC5GEncoder
 from ldpc.decoding import LDPC5GDecoder
@@ -531,7 +532,7 @@ class Transmitter():
             print("y_time shape:", y_time.shape) #(64, 1, 16, 1174)
             y_time = tf.convert_to_tensor(y_time, dtype=tf.complex64)
             # OFDM demodulation and cyclic prefix removal
-            y = self.demodulator(y_time) #y: (64, 1, 16, 14, 76)
+            y = self.demodulator(y_time) #y: (2, 1, 16, 14, 76)
         #x :  Channel inputs [batch size, num_tx, num_tx_ant, num_time_samples], tf.complex
         #h_time : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_samples + l_tot - 1, l_tot], tf.complex
         
@@ -690,6 +691,7 @@ class Transmitter():
         #y_time = self.applychannel([x_time, h_time, no]) 
         h_time = tf.convert_to_tensor(h_time, dtype=tf.complex64)
         y_time = channel_time([x_time, h_time, no]) 
+        y_time = to_numpy(y_time)
         print("y_time shape:", y_time.shape) #(64, 1, 16, 1174)
 
         # time_channel = TimeChannel(cdl, rg.bandwidth, rg.num_time_samples,
@@ -708,7 +710,7 @@ class Transmitter():
 
         # OFDM demodulation and cyclic prefix removal
         y = demodulator(y_time) 
-        print("y shape:", y.shape) #(64, 1, 16, 14, 76)
+        print("y shape:", y.shape) #(2, 1, 16, 14, 76)
 
         
         # We need to sub-sample the channel impulse reponse to compute perfect CSI
@@ -735,7 +737,7 @@ class Transmitter():
         # We now compute the LS channel estimate from the pilots.
         print(y[0,0,0,0,:])
         y = tf.convert_to_tensor(y, dtype=tf.complex64)
-        h_est, _ = ls_est ([y, no]) #(64, 1, 16, 1, 2, 14, 64)
+        h_est, _ = self.ls_est ([y, no]) #(64, 1, 16, 1, 2, 14, 64)
 
         h_est2, _ = ls_est2 ([y, no]) #(64, 1, 16, 1, 2, 14, 64)
         h_est = h_est[0,0,0,0,0,0]
@@ -774,14 +776,14 @@ class Transmitter():
             print("h_perfect shape:", h_perfect.shape) #(64, 1, 16, 1, 2, 14, 64)
         
         if (not perfect_csi) or self.showfig:
-            import tensorflow as tf
+            
             print(y[0,0,0,0,:])
             y=tf.convert_to_tensor(y, dtype=tf.complex64)
-            ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn")
-            ls_est2 = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
+            #ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn")
+            #ls_est = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
 
-            #h_hat, err_var = self.ls_est ([y, no])
-            h_hat, err_var = ls_est2 ([y, no])
+            h_hat, err_var = self.ls_est([y, no])
+            #h_hat, err_var = ls_est([y, no])
             print("h_hat shape:", h_hat.shape) #(64, 1, 16, 1, 2, 14, 64)
             print("err_var shape:", err_var.shape) #(1, 1, 1, 1, 2, 14, 64)
         
@@ -860,6 +862,7 @@ class Transmitter():
         no = ebnodb2no(ebno_db, self.num_bits_per_symbol, self.coderate)
         # Convert it to a NumPy float
         no = np.float32(no) #0.0158
+        no=0.0
 
         # Transmitter
         y, x_rg, b, h_b, tau_b, h_out = self.uplinktransmission(b=b, no=no, perfect_csi=perfect_csi)
