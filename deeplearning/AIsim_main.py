@@ -26,7 +26,7 @@ from sionna_tf import MyLMMSEEqualizer, LMMSEEqualizer, SymbolLogits2LLRs#, OFDM
 from deepMIMO5 import OFDMModulator, OFDMDemodulator
 #from sionna.ofdm import OFDMModulator, OFDMDemodulator
 #from sionna_tf import OFDMModulator, OFDMDemodulator
-from channel import MyLSChannelEstimator, LSChannelEstimator, ApplyTimeChannel#, time_lag_discrete_time_channel #, ApplyTimeChannel #cir_to_time_channel
+from channel import MyLSChannelEstimator #, LSChannelEstimator, ApplyTimeChannel#, time_lag_discrete_time_channel #, ApplyTimeChannel #cir_to_time_channel
 from ldpc.encoding import LDPC5GEncoder
 from ldpc.decoding import LDPC5GDecoder
 
@@ -211,7 +211,7 @@ class Transmitter():
             self.l_min = l_min
             self.l_max = l_max
             #self.applychannel = MyApplyTimeChannel(self.RESOURCE_GRID.num_time_samples, l_tot=l_tot, add_awgn=True)
-            self.applychannel = ApplyTimeChannel(self.RESOURCE_GRID.num_time_samples, l_tot=l_tot, add_awgn=True)
+            self.applychannel = MyApplyTimeChannel(self.RESOURCE_GRID.num_time_samples, l_tot=l_tot, add_awgn=True)
             # OFDM modulator and demodulator
             self.modulator = OFDMModulator(self.RESOURCE_GRID.cyclic_prefix_length)
             self.demodulator = OFDMDemodulator(self.RESOURCE_GRID.fft_size, l_min, self.RESOURCE_GRID.cyclic_prefix_length)
@@ -517,7 +517,8 @@ class Transmitter():
             # is in contrast to frequency-domain modeling which imposes
             # no inter-symbol interfernce.
             
-            x_time = tf.convert_to_tensor(x_time, dtype=tf.complex64) #(2, 1, 2, 1148)
+            #x_time = tf.convert_to_tensor(x_time, dtype=tf.complex64) #(2, 1, 2, 1148)
+            #h_out = to_numpy(h_out) h_out is tf tensor
             y_time = self.applychannel([x_time, h_out, no]) #(2, 1, 16, 1174)
             # #Do modulator and demodulator test
             # y_test = self.demodulator(x_time)
@@ -530,7 +531,7 @@ class Transmitter():
             
             
             print("y_time shape:", y_time.shape) #(64, 1, 16, 1174)
-            y_time = tf.convert_to_tensor(y_time, dtype=tf.complex64)
+            #y_time = tf.convert_to_tensor(y_time, dtype=tf.complex64)
             # OFDM demodulation and cyclic prefix removal
             y = self.demodulator(y_time) #y: (2, 1, 16, 14, 76)
         #x :  Channel inputs [batch size, num_tx, num_tx_ant, num_time_samples], tf.complex
@@ -630,7 +631,8 @@ class Transmitter():
             print("h_time shape:", h_time.shape) #(64, 1, 16, 1, 2, 1174, 27)
 
         # Function that will apply the discrete-time channel impulse response to an input signal
-        channel_time = ApplyTimeChannel(rg.num_time_samples, l_tot=self.l_tot, add_awgn=True)
+        channel_time = MyApplyTimeChannel(rg.num_time_samples, l_tot=self.l_tot, add_awgn=True)
+        
 
         #we generate random batches of CIR, transform them in the frequency domain and apply them to the resource grid in the frequency domain.
         #h_b, tau_b = self.get_channelcir()
@@ -687,11 +689,11 @@ class Transmitter():
         # y_time1, h_time = time_channel([x_time, no])
         # print("y_time1 shape:", y_time1.shape)
         #no = ebnodb2no(ebno_db, self.num_bits_per_symbol, self.coderate, rg)
-        x_time = tf.convert_to_tensor(x_time, dtype=tf.complex64) #(2, 1, 2, 1148)
+        #x_time = tf.convert_to_tensor(x_time, dtype=tf.complex64) #(2, 1, 2, 1148)
         #y_time = self.applychannel([x_time, h_time, no]) 
-        h_time = tf.convert_to_tensor(h_time, dtype=tf.complex64)
+        #h_time = tf.convert_to_tensor(h_time, dtype=tf.complex64)
         y_time = channel_time([x_time, h_time, no]) 
-        y_time = to_numpy(y_time)
+        #y_time = to_numpy(y_time)
         print("y_time shape:", y_time.shape) #(64, 1, 16, 1174)
 
         # time_channel = TimeChannel(cdl, rg.bandwidth, rg.num_time_samples,
@@ -776,9 +778,6 @@ class Transmitter():
             print("h_perfect shape:", h_perfect.shape) #(64, 1, 16, 1, 2, 14, 64)
         
         if (not perfect_csi) or self.showfig:
-            
-            print(y[0,0,0,0,:])
-            y=tf.convert_to_tensor(y, dtype=tf.complex64)
             #ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn")
             #ls_est = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
 
@@ -825,6 +824,7 @@ class Transmitter():
                 print("Perfect BER:", BER)
         else: # channel estimation or perfect_csi
             #perform channel estimation via pilots
+            y=tf.convert_to_tensor(y, dtype=tf.complex64)
             if self.channeltype=='ofdm':
                 h_hat, err_var = self.ofdmchannel_estimation(y=y, no=no, h_out=h_out, perfect_csi=perfect_csi)
             else: #time channel
@@ -862,7 +862,6 @@ class Transmitter():
         no = ebnodb2no(ebno_db, self.num_bits_per_symbol, self.coderate)
         # Convert it to a NumPy float
         no = np.float32(no) #0.0158
-        no=0.0
 
         # Transmitter
         y, x_rg, b, h_b, tau_b, h_out = self.uplinktransmission(b=b, no=no, perfect_csi=perfect_csi)
@@ -885,8 +884,8 @@ def test_CDLchannel():
                     subcarrier_spacing=60e3, \
                     USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=showfigure)
     transmit.test_timechannel_estimation(b=None, no=0.0)
-    b_hat, BER = transmit(ebno_db = 15.0, perfect_csi=False)
-    b_hat, BER = transmit(ebno_db = 15.0, perfect_csi=True)
+    b_hat, BER = transmit(ebno_db = 25.0, perfect_csi=False)
+    b_hat, BER = transmit(ebno_db = 25.0, perfect_csi=True)
 
     transmit = Transmitter(channeldataset='cdl', channeltype='ofdm', direction='uplink', \
                     batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
