@@ -1458,15 +1458,15 @@ class LinearInterpolator(BaseChannelInterpolator):
         self._time_avg = time_avg
 
         # Reshape mask to shape [-1,num_ofdm_symbols,num_effective_subcarriers]
-        mask = np.array(pilot_pattern.mask)
+        mask = np.array(pilot_pattern.mask) #(1, 2, 14, 64)
         mask_shape = mask.shape # Store to reconstruct the original shape
-        mask = np.reshape(mask, [-1] + list(mask_shape[-2:]))
+        mask = np.reshape(mask, [-1] + list(mask_shape[-2:])) #(2, 14, 64)
 
         # Reshape the pilots to shape [-1, num_pilot_symbols]
-        pilots = pilot_pattern.pilots
-        pilots = np.reshape(pilots, [-1] + [pilots.shape[-1]])
+        pilots = pilot_pattern.pilots #(1, 2, 128)
+        pilots = np.reshape(pilots, [-1] + [pilots.shape[-1]]) #(2, 128)
 
-        max_num_zero_pilots = np.max(np.sum(np.abs(pilots)==0, -1))
+        max_num_zero_pilots = np.max(np.sum(np.abs(pilots)==0, -1)) #64
         assert max_num_zero_pilots<pilots.shape[-1],\
             """Each pilot sequence must have at least one nonzero entry"""
 
@@ -2120,6 +2120,16 @@ class MyLSChannelEstimator():
         # assert isinstance(resource_grid, ResourceGrid),\
         #     "You must provide a valid instance of ResourceGrid."
         self._pilot_pattern = resource_grid.pilot_pattern
+
+        #added test code
+        mask = np.array(self._pilot_pattern.mask) #(1, 2, 14, 64)
+        mask_shape = mask.shape # Store to reconstruct the original shape
+        # Reshape the pilots to shape [-1, num_pilot_symbols]
+        pilots = self._pilot_pattern.pilots #(1, 2, 128)
+        print(mask_shape) #(1, 2, 14, 64)
+        print('mask:', mask[0,0,0,:]) #all 0
+        print('pilots:', pilots[0,0,:]) #(1, 2, 128) -0.99999994-0.99999994j 0.        +0.j          0.99999994+0.99999994j
+        #0.99999994-0.99999994j  0.        +0.j          0.99999994-0.99999994j
         self._removed_nulled_scs = MyRemoveNulledSubcarriers(resource_grid)
 
         assert interpolation_type in ["nn","lin","lin_time_avg",None], \
@@ -2139,10 +2149,12 @@ class MyLSChannelEstimator():
                                                 time_avg=True)
 
         # Precompute indices to gather received pilot signals
-        num_pilot_symbols = self._pilot_pattern.num_pilot_symbols
-        mask = flatten_last_dims(self._pilot_pattern.mask)
-        pilot_ind = tf.argsort(mask, axis=-1, direction="DESCENDING")
+        num_pilot_symbols = self._pilot_pattern.num_pilot_symbols #128
+        mask = flatten_last_dims(self._pilot_pattern.mask) #(1, 2, 896)
+        pilot_ind = tf.argsort(mask, axis=-1, direction="DESCENDING") #(1, 2, 896)
         self._pilot_ind = pilot_ind[...,:num_pilot_symbols]
+
+        print(self._pilot_ind)
 
 
     def estimate_at_pilot_locations(self, y_pilots, no):
