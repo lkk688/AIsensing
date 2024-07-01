@@ -1,5 +1,6 @@
 import numpy as np
 import tensorflow as tf
+import torch
 import matplotlib.pyplot as plt
 
 h_hat_pilot_tf=np.load('h_hat_pilot_tf.npy') 
@@ -21,6 +22,12 @@ print(np.allclose(outputs_inter_tf, outputs_inter)) #False
 #inputs_inter_tf(1, 2, 128, 1, 1, 1)  inter_gather_ind_tf: (1, 2, 14, 64)
 outputs_tf = tf.gather(inputs_inter_tf, inter_gather_ind_tf, 2, batch_dims=2) #(1, 2, 14, 64, 1, 1, 1)
 print(np.allclose(outputs_inter_tf, outputs_tf)) #True
+
+# Gather values from sample_grid using indices
+# sample_idx = torch.from_numpy(inter_gather_ind)
+# sample_idx = sample_idx.round().to(torch.int64)
+# outputs_torch = torch.gather(torch.from_numpy(inputs_inter), dim=2, index=sample_idx)
+# print(np.allclose(outputs_torch, outputs_tf)) #True
 
 gather_ind_nobatch = inter_gather_ind[0, 0] #ignore first two dimensions as batch (14, 64)
 outputs = np.take(inputs_inter, gather_ind_nobatch, axis=2) #(1, 2, 14, 64, 1, 1, 1)
