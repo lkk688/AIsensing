@@ -1376,29 +1376,29 @@ class NearestNeighborInterpolator(BaseChannelInterpolator):
         # Reshape to the original shape of the mask, i.e.:
         # [num_tx, num_streams_per_tx, num_ofdm_symbols,...
         #  ..., num_effective_subcarriers]
-        self._gather_ind = tf.reshape(gather_ind, mask_shape)
+        self._gather_ind = tf.reshape(gather_ind, mask_shape) #(1, 2, 14, 64)
 
-    def _interpolate(self, inputs):
+    def _interpolate(self, inputs): #h_ls: (2, 1, 16, 1, 2, 128), err_var: (1, 1, 1, 1, 2, 128)
         # inputs has shape:
         # [k, l, m, num_tx, num_streams_per_tx, num_pilots]
 
         # Transpose inputs to bring batch_dims for gather last. New shape:
         # [num_tx, num_streams_per_tx, num_pilots, k, l, m]
-        perm = tf.roll(tf.range(tf.rank(inputs)), -3, 0)
-        inputs = tf.transpose(inputs, perm)
+        perm = tf.roll(tf.range(tf.rank(inputs)), -3, 0) #[3, 4, 5, 0, 1, 2]
+        inputs = tf.transpose(inputs, perm) #(1, 2, 128, 2, 1, 16)
 
         # Interpolate through gather. Shape:
         # [num_tx, num_streams_per_tx, num_ofdm_symbols,
         #  ..., num_effective_subcarriers, k, l, m]
-        outputs = tf.gather(inputs, self._gather_ind, 2, batch_dims=2)
-
+        outputs = tf.gather(inputs, self._gather_ind, 2, batch_dims=2) #inputs: (1, 2, 128, 2, 1, 16) _gather_ind: (1, 2, 14, 64)
+        #outputs: (1, 2, 14, 64, 2, 1, 16)
         # Transpose outputs to bring batch_dims first again. New shape:
         # [k, l, m, num_tx, num_streams_per_tx,...
         #  ..., num_ofdm_symbols, num_effective_subcarriers]
-        perm = tf.roll(tf.range(tf.rank(outputs)), 3, 0)
+        perm = tf.roll(tf.range(tf.rank(outputs)), 3, 0) #[4, 5, 6, 0, 1, 2, 3]
         outputs = tf.transpose(outputs, perm)
 
-        return outputs
+        return outputs #(2, 1, 16, 1, 2, 14, 64)
 
     def __call__(self, h_hat, err_var):
 
@@ -2126,10 +2126,10 @@ class MyLSChannelEstimator():
         mask_shape = mask.shape # Store to reconstruct the original shape
         # Reshape the pilots to shape [-1, num_pilot_symbols]
         pilots = self._pilot_pattern.pilots #(1, 2, 128)
-        print(mask_shape) #(1, 2, 14, 64)
-        print('mask:', mask[0,0,0,:]) #all 0
-        print('pilots:', pilots[0,0,:]) #(1, 2, 128) -0.99999994-0.99999994j 0.        +0.j          0.99999994+0.99999994j
-        #0.99999994-0.99999994j  0.        +0.j          0.99999994-0.99999994j
+        #print(mask_shape) #(1, 2, 14, 64)
+        #print('mask:', mask[0,0,0,:]) #all 0
+        #print('pilots:', pilots[0,0,:]) #0.99999994-0.99999994j  0.        +0.j         -0.99999994-0.99999994j
+        #0.        +0.j         -0.99999994-0.99999994j  0.        +0.j
         self._removed_nulled_scs = MyRemoveNulledSubcarriers(resource_grid)
 
         assert interpolation_type in ["nn","lin","lin_time_avg",None], \
@@ -2151,16 +2151,17 @@ class MyLSChannelEstimator():
         # Precompute indices to gather received pilot signals
         num_pilot_symbols = self._pilot_pattern.num_pilot_symbols #128
         mask = flatten_last_dims(self._pilot_pattern.mask) #(1, 2, 896)
+        np.save('mask_tf.npy', mask)
         pilot_ind = tf.argsort(mask, axis=-1, direction="DESCENDING") #(1, 2, 896)
         self._pilot_ind = pilot_ind[...,:num_pilot_symbols]
 
-        print(self._pilot_ind)
+        print(self._pilot_ind) #(1, 2, 128) int32
 
 
     def estimate_at_pilot_locations(self, y_pilots, no):
 
         # y_pilots : [batch_size, num_rx, num_rx_ant, num_tx, num_streams,
-        #               num_pilot_symbols], tf.complex
+        #               num_pilot_symbols], tf.complex (2, 1, 16, 1, 2, 128)
         #     The observed signals for the pilot-carrying resource elements.
 
         # no : [batch_size, num_rx, num_rx_ant] or only the first n>=0 dims,
@@ -2173,24 +2174,24 @@ class MyLSChannelEstimator():
         # We do a save division to replace Inf by 0.
         # Broadcasting from pilots here is automatic since pilots have shape
         # [num_tx, num_streams, num_pilot_symbols]
-        h_ls = tf.math.divide_no_nan(y_pilots, self._pilot_pattern.pilots)
+        h_ls = tf.math.divide_no_nan(y_pilots, self._pilot_pattern.pilots) #pilots: (1, 2, 128)=>(2, 1, 16, 1, 2, 128)
 
         # Compute error variance and broadcast to the same shape as h_ls
         # Expand rank of no for broadcasting
-        no = expand_to_rank(no, tf.rank(h_ls), -1)
+        no = expand_to_rank(no, tf.rank(h_ls), -1) #(1, 1, 1, 1, 1, 1)
 
         # Expand rank of pilots for broadcasting
-        pilots = expand_to_rank(self._pilot_pattern.pilots, tf.rank(h_ls), 0)
+        pilots = expand_to_rank(self._pilot_pattern.pilots, tf.rank(h_ls), 0) #(1, 1, 1, 1, 2, 128)
 
         # Compute error variance, broadcastable to the shape of h_ls
-        err_var = tf.math.divide_no_nan(no, tf.abs(pilots)**2)
+        err_var = tf.math.divide_no_nan(no, tf.abs(pilots)**2) #(1, 1, 1, 1, 2, 128)
 
-        return h_ls, err_var
+        return h_ls, err_var #h_ls: (2, 1, 16, 1, 2, 128), err_var: (1, 1, 1, 1, 2, 128)
 
     #def call(self, inputs):
     def __call__(self, inputs):
 
-        y, no = inputs #y: (64, 1, 1, 14, 76) complex64
+        y, no = inputs #y: (2, 1, 16, 14, 76) tf complex64
 
         # y has shape:
         # [batch_size, num_rx, num_rx_ant, num_ofdm_symbols,..
@@ -2200,17 +2201,30 @@ class MyLSChannelEstimator():
         # or [batch_size, num_rx, num_rx_ant]
 
         # Removed nulled subcarriers (guards, dc)
-        y_eff = self._removed_nulled_scs(y) #(64, 1, 1, 14, 64) complex64
+        y_eff = self._removed_nulled_scs(y) #(2, 1, 16, 14, 64) complex64
 
         # Flatten the resource grid for pilot extraction
         # New shape: [...,num_ofdm_symbols*num_effective_subcarriers]
-        y_eff_flat = flatten_last_dims(y_eff)
+        y_eff_flat = flatten_last_dims(y_eff) #(2, 1, 16, 896)
+        import matplotlib.pyplot as plt
+        plt.figure()
+        plt.plot(np.real(y_eff_flat[0,0,0,:]))
+        plt.plot(np.imag(y_eff_flat[0,0,0,:]))
+        plt.title('y_eff_flat')
 
-        # Gather pilots along the last dimensions
+        # Gather pilots along the last dimensions, pilot_ind: (1, 2, 128)
         # Resulting shape: y_eff_flat.shape[:-1] + pilot_ind.shape, i.e.:
         # [batch_size, num_rx, num_rx_ant, num_tx, num_streams,...
         #  ..., num_pilot_symbols]
-        y_pilots = tf.gather(y_eff_flat, self._pilot_ind, axis=-1)
+        y_pilots = tf.gather(y_eff_flat, self._pilot_ind, axis=-1) #y_eff_flat:(2, 1, 16, 896) pilot_ind: (1, 2, 128) =>(2, 1, 16, 1, 2, 128)
+        
+        plt.figure()
+        plt.plot(np.real(y_pilots[0,0,0,0,0,:]))
+        plt.plot(np.imag(y_pilots[0,0,0,0,0,:]))
+        plt.title('y_pilots')
+        np.save('y_eff_flat_tf.npy', y_eff_flat.numpy())
+        np.save('pilot_ind_tf.npy', self._pilot_ind)
+        np.save('y_pilots_tf.npy', y_pilots.numpy())
 
         # Compute LS channel estimates
         # Note: Some might be Inf because pilots=0, but we do not care
@@ -2218,11 +2232,11 @@ class MyLSChannelEstimator():
         # We do a save division to replace Inf by 0.
         # Broadcasting from pilots here is automatic since pilots have shape
         # [num_tx, num_streams, num_pilot_symbols]
-        h_hat, err_var = self.estimate_at_pilot_locations(y_pilots, no)
-
+        h_hat, err_var = self.estimate_at_pilot_locations(y_pilots, no)#h_hat: (2, 1, 16, 1, 2, 128), err_var: (1, 1, 1, 1, 2, 128)
+        #h_ls: (2, 1, 16, 1, 2, 128), err_var: (1, 1, 1, 1, 2, 128)
         # Interpolate channel estimates over the resource grid
         if self._interpolation_type is not None:
-            h_hat, err_var = self._interpol(h_hat, err_var) #h_hat: (64, 1, 1, 1, 1, 128)=>(64, 1, 1, 1, 1, 14, 64)
+            h_hat, err_var = self._interpol(h_hat, err_var) #h_hat: (2, 1, 16, 1, 2, 14, 64)=>(2, 1, 16, 1, 2, 14, 64)
             err_var = tf.maximum(err_var, tf.cast(0, err_var.dtype))
 
         return h_hat, err_var
