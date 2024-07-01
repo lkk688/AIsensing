@@ -1377,6 +1377,7 @@ class NearestNeighborInterpolator(BaseChannelInterpolator):
         # [num_tx, num_streams_per_tx, num_ofdm_symbols,...
         #  ..., num_effective_subcarriers]
         self._gather_ind = tf.reshape(gather_ind, mask_shape) #(1, 2, 14, 64)
+        np.save('inter_gather_ind_tf.npy', self._gather_ind.numpy())
 
     def _interpolate(self, inputs): #h_ls: (2, 1, 16, 1, 2, 128), err_var: (1, 1, 1, 1, 2, 128)
         # inputs has shape:
@@ -1386,11 +1387,12 @@ class NearestNeighborInterpolator(BaseChannelInterpolator):
         # [num_tx, num_streams_per_tx, num_pilots, k, l, m]
         perm = tf.roll(tf.range(tf.rank(inputs)), -3, 0) #[3, 4, 5, 0, 1, 2]
         inputs = tf.transpose(inputs, perm) #(1, 2, 128, 2, 1, 16)
-
+        np.save('inputs_inter_tf.npy', inputs.numpy())
         # Interpolate through gather. Shape:
         # [num_tx, num_streams_per_tx, num_ofdm_symbols,
         #  ..., num_effective_subcarriers, k, l, m]
         outputs = tf.gather(inputs, self._gather_ind, 2, batch_dims=2) #inputs: (1, 2, 128, 2, 1, 16) _gather_ind: (1, 2, 14, 64)
+        np.save('outputs_inter_tf.npy', outputs.numpy())
         #outputs: (1, 2, 14, 64, 2, 1, 16)
         # Transpose outputs to bring batch_dims first again. New shape:
         # [k, l, m, num_tx, num_streams_per_tx,...
@@ -2222,9 +2224,9 @@ class MyLSChannelEstimator():
         # plt.plot(np.real(y_pilots[0,0,0,0,0,:]))
         # plt.plot(np.imag(y_pilots[0,0,0,0,0,:]))
         # plt.title('y_pilots')
-        # np.save('y_eff_flat_tf.npy', y_eff_flat.numpy())
-        # np.save('pilot_ind_tf.npy', self._pilot_ind)
-        # np.save('y_pilots_tf.npy', y_pilots.numpy())
+        np.save('y_eff_flat_tf.npy', y_eff_flat.numpy())
+        np.save('pilot_ind_tf.npy', self._pilot_ind)
+        np.save('y_pilots_tf.npy', y_pilots.numpy())
 
         # Compute LS channel estimates
         # Note: Some might be Inf because pilots=0, but we do not care
@@ -2233,10 +2235,12 @@ class MyLSChannelEstimator():
         # Broadcasting from pilots here is automatic since pilots have shape
         # [num_tx, num_streams, num_pilot_symbols]
         h_hat, err_var = self.estimate_at_pilot_locations(y_pilots, no)#h_hat: (2, 1, 16, 1, 2, 128), err_var: (1, 1, 1, 1, 2, 128)
+        np.save('h_hat_pilot_tf.npy', h_hat.numpy())
         #h_ls: (2, 1, 16, 1, 2, 128), err_var: (1, 1, 1, 1, 2, 128)
         # Interpolate channel estimates over the resource grid
         if self._interpolation_type is not None:
             h_hat, err_var = self._interpol(h_hat, err_var) #h_hat: (2, 1, 16, 1, 2, 128)=>(2, 1, 16, 1, 2, 14, 64)
+            np.save('h_hat_inter_tf.npy', h_hat.numpy())
             err_var = tf.maximum(err_var, tf.cast(0, err_var.dtype))
 
         return h_hat, err_var

@@ -2,6 +2,36 @@ import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
 
+h_hat_pilot_tf=np.load('h_hat_pilot_tf.npy') 
+h_hat_pilot=np.load('h_hat_pilot.npy') 
+print(np.allclose(h_hat_pilot_tf, h_hat_pilot)) #True
+
+inter_gather_ind_tf=np.load('inter_gather_ind_tf.npy') 
+inter_gather_ind=np.load('inter_gather_ind.npy') 
+print(np.allclose(inter_gather_ind_tf, inter_gather_ind)) #True
+
+inputs_inter_tf=np.load('inputs_inter_tf.npy') 
+inputs_inter=np.load('inputs_inter.npy') 
+print(np.allclose(inputs_inter_tf, inputs_inter)) #True
+
+outputs_inter_tf=np.load('outputs_inter_tf.npy') 
+outputs_inter=np.load('outputs_inter.npy') 
+print(np.allclose(outputs_inter_tf, outputs_inter)) #False
+
+#inputs_inter_tf(1, 2, 128, 1, 1, 1)  inter_gather_ind_tf: (1, 2, 14, 64)
+outputs_tf = tf.gather(inputs_inter_tf, inter_gather_ind_tf, 2, batch_dims=2) #(1, 2, 14, 64, 1, 1, 1)
+print(np.allclose(outputs_inter_tf, outputs_tf)) #True
+
+gather_ind_nobatch = inter_gather_ind[0, 0] #ignore first two dimensions as batch (14, 64)
+outputs = np.take(inputs_inter, gather_ind_nobatch, axis=2) #(1, 2, 14, 64, 1, 1, 1)
+print(np.allclose(outputs_inter_tf, outputs)) #False
+print(np.allclose(outputs_tf, outputs)) #False
+
+h_hat_inter_tf=np.load('h_hat_inter_tf.npy') 
+h_hat_inter=np.load('h_hat_inter.npy') 
+print(np.allclose(h_hat_inter_tf, h_hat_inter)) #False
+
+
 h_hat=np.load('h_hat.npy') #(2, 1, 16, 1, 2, 14, 64)
 h_hat2=np.load('h_hat2.npy')
 h_hat_tf=np.load('h_hat_tf.npy')
@@ -11,6 +41,15 @@ plt.plot(np.imag(h_hat_tf[0,0,0,0,0,0,:]))
 plt.plot(np.real(h_hat2[0,0,0,0,0,0,:]), '--')
 plt.plot(np.imag(h_hat2[0,0,0,0,0,0,:]), '--')
 plt.title('h_hat(2, 1, 16, 1, 2, 14, 64)')
+print(np.allclose(h_hat2[0,0,0,0,0], h_hat_tf[0,0,0,0,0])) #True
+
+plt.figure()
+plt.plot(np.real(h_hat_tf[0,0,0,0,:,0,0]))
+plt.plot(np.imag(h_hat_tf[0,0,0,0,:,0,0]))
+plt.plot(np.real(h_hat2[0,0,0,0,:,0,0]), '--')
+plt.plot(np.imag(h_hat2[0,0,0,0,:,0,0]), '--')
+plt.title('h_hat(2, 1, 16, 1, 2, 14, 64)')
+print(np.allclose(h_hat2[0,0,0,0], h_hat_tf[0,0,0,0])) #False
 
 #mask (0,1 value) two squares
 mask_tf=np.load('mask_tf.npy') #(1, 2, 896)
@@ -48,6 +87,9 @@ y_pilots_tf=np.load('y_pilots_tf.npy') #(2, 1, 16, 1, 2, 128)
 pilot_ind=np.load('pilot_ind.npy') #(1, 2, 128)
 y_eff_flat=np.load('y_eff_flat.npy') #(2, 1, 16, 896)
 y_pilots=np.load('y_pilots.npy') #(2, 1, 16, 1, 2, 128)
+
+
+
 
 plt.figure()
 plt.plot(pilot_ind_tf[0,0,:])
