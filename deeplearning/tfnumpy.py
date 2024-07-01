@@ -2,6 +2,16 @@ import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
 
+h_hat=np.load('h_hat.npy') #(2, 1, 16, 1, 2, 14, 64)
+h_hat2=np.load('h_hat2.npy')
+h_hat_tf=np.load('h_hat_tf.npy')
+plt.figure()
+plt.plot(np.real(h_hat_tf[0,0,0,0,0,0,:]))
+plt.plot(np.imag(h_hat_tf[0,0,0,0,0,0,:]))
+plt.plot(np.real(h_hat2[0,0,0,0,0,0,:]), '--')
+plt.plot(np.imag(h_hat2[0,0,0,0,0,0,:]), '--')
+plt.title('h_hat(2, 1, 16, 1, 2, 14, 64)')
+
 #mask (0,1 value) two squares
 mask_tf=np.load('mask_tf.npy') #(1, 2, 896)
 mask=np.load('mask.npy') #(1, 2, 896)
@@ -18,13 +28,13 @@ print("pilot_ind", pilot_ind[0,0,:]) #return the index, two sqaures (128-191, 70
 pilot_ind_new = pilot_ind[...,:num_pilot_symbols] #only select index (128-191, 704-767) with 1s in mask
 print("pilot_ind_new", pilot_ind_new[0,0,:])
 
-print("mask:",mask[0,0,:])
-# pilot_ind_new2 = np.argsort(mask) #np.argsort is small to bigger, np.argsort(mask, axis=-1)#[..., ::-1] #(1, 2, 896) reverses the order of the indices along the last axis
+#print("mask:",mask[0,0,:])
+pilot_ind_new2 = np.argsort(mask, axis=-1)[..., ::-1] #np.argsort is small to bigger, np.argsort(mask, axis=-1)#[..., ::-1] #(1, 2, 896) reverses the order of the indices along the last axis
 # print("pilot_ind_new2", pilot_ind_new2[0,0,:])
-mask_array = np.array(mask)
-pilot_ind_new2 = np.where(mask_array == 1)[0]
-pilot_ind_new2 = pilot_ind_new2[...,:num_pilot_symbols] #(1, 2, 128)
 print("pilot_ind_new2b", pilot_ind_new2[0,0,:])
+pilot_ind_new2 = pilot_ind_new2[...,:num_pilot_symbols] #(1, 2, 128)
+pilot_ind_new2 = np.sort(pilot_ind_new2)
+print("pilot_ind_new2c", pilot_ind_new2[0,0,:])
 print(np.allclose(pilot_ind_new, pilot_ind_new2))
 plt.figure()
 plt.plot(pilot_ind_new[0,0,:])

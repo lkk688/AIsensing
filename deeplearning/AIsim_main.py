@@ -285,11 +285,15 @@ class MyLSChannelEstimatorNP():
         # Precompute indices to gather received pilot signals
         num_pilot_symbols = self._pilot_pattern.num_pilot_symbols #128
         mask = flatten_last_dims(self._pilot_pattern.mask) #(1, 2, 896)
-        np.save('mask.npy', mask)
+        #np.save('mask.npy', mask)
         #pilot_ind = tf.argsort(mask, axis=-1, direction="DESCENDING") #(1, 2, 896)
+        ##np.argsort is small to bigger (index of 0s first, index of 1s later), add [..., ::-1] to flip the results from bigger to small (index 1s first, index 0s later)
         pilot_ind = np.argsort(mask, axis=-1)[..., ::-1] #(1, 2, 896) reverses the order of the indices along the last axis
+        #select num_pilot_symbols, i.e., get all index of 1s in mask, due to the np.argsort(small to bigger), the order for these 1s index is not sorted
         self._pilot_ind = pilot_ind[...,:num_pilot_symbols] #(1, 2, 128)
-
+        #add sort again for these 1s index (small index to bigger)
+        #analysis in tfnumpy.py
+        self._pilot_ind = np.sort(self._pilot_ind)
         print(self._pilot_ind)
 
 
@@ -355,10 +359,10 @@ class MyLSChannelEstimatorNP():
         # Flatten the resource grid for pilot extraction
         # New shape: [...,num_ofdm_symbols*num_effective_subcarriers]
         y_eff_flat = flatten_last_dims(y_eff) #(2, 1, 16, 896)
-        plt.figure()
-        plt.plot(np.real(y_eff_flat[0,0,0,:]))
-        plt.plot(np.imag(y_eff_flat[0,0,0,:]))
-        plt.title('y_eff_flat')
+        # plt.figure()
+        # plt.plot(np.real(y_eff_flat[0,0,0,:]))
+        # plt.plot(np.imag(y_eff_flat[0,0,0,:]))
+        # plt.title('y_eff_flat')
 
         # Gather pilots along the last dimensions
         # Resulting shape: y_eff_flat.shape[:-1] + pilot_ind.shape, i.e.:
@@ -370,13 +374,13 @@ class MyLSChannelEstimatorNP():
         # Gather elements from y_eff_flat based on pilot_ind
         y_pilots = y_eff_flat[..., self._pilot_ind]
 
-        plt.figure()
-        plt.plot(np.real(y_pilots[0,0,0,0,0,:]))
-        plt.plot(np.imag(y_pilots[0,0,0,0,0,:]))
-        plt.title('y_pilots')
-        np.save('y_eff_flat.npy', y_eff_flat)
-        np.save('pilot_ind.npy', self._pilot_ind)
-        np.save('y_pilots.npy', y_pilots)
+        # plt.figure()
+        # plt.plot(np.real(y_pilots[0,0,0,0,0,:]))
+        # plt.plot(np.imag(y_pilots[0,0,0,0,0,:]))
+        # plt.title('y_pilots')
+        # np.save('y_eff_flat.npy', y_eff_flat)
+        # np.save('pilot_ind.npy', self._pilot_ind)
+        # np.save('y_pilots.npy', y_pilots)
 
         # Compute LS channel estimates
         # Note: Some might be Inf because pilots=0, but we do not care
@@ -580,7 +584,8 @@ class Transmitter():
         if self.pilot_pattern != "empty":
             self.remove_nulled_scs = RemoveNulledSubcarriers(self.RESOURCE_GRID)
             #ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
-            self.ls_est = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn")#"lin_time_avg")
+            #self.ls_est = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn")#"lin_time_avg")
+            self.ls_est = MyLSChannelEstimatorNP(self.RESOURCE_GRID, interpolation_type="nn")#"lin_time_avg")
             #lmmse_equ = LMMSEEqualizer(self.RESOURCE_GRID, self.STREAM_MANAGEMENT)
             self.lmmse_equ = MyLMMSEEqualizer(self.RESOURCE_GRID, self.STREAM_MANAGEMENT)
 
@@ -1085,37 +1090,38 @@ class Transmitter():
 
         #from sionna.ofdm import LSChannelEstimator #ResourceGrid, ResourceGridMapper, LSChannelEstimator, LMMSEEqualizer
         # The LS channel estimator will provide channel estimates and error variances
-        ls_est = MyLSChannelEstimator(rg, interpolation_type=None) #LSChannelEstimator(rg, interpolation_type="nn")
-        ls_est2 = MyLSChannelEstimatorNP(self.RESOURCE_GRID, interpolation_type=None)#"lin_time_avg")
+        ls_est = MyLSChannelEstimator(rg, interpolation_type="nn") #LSChannelEstimator(rg, interpolation_type="nn")
+        ls_est2 = MyLSChannelEstimatorNP(self.RESOURCE_GRID, interpolation_type="nn")#"lin_time_avg")
         #ls_est2 = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
 
         # We now compute the LS channel estimate from the pilots.
-        print(y[0,0,0,0,:])
+        #print(y[0,0,0,0,:])
         y = tf.convert_to_tensor(y, dtype=tf.complex64)
 
-        shape_a = (2, 1, 16, 1, 2, 128)
-        # Create an array 'no' with the same shape as 'a'
-        v = 1+1j  # Replace with your desired float value
-        y_pilots = np.full(shape_a, v, dtype=np.complex64)
-        h_hat, err_var = ls_est.estimate_at_pilot_locations(y_pilots, no) #y_pilots: (2, 1, 16, 1, 2, 128), h_hat:(2, 1, 16, 1, 2, 128)
-        h_hat2, err_var = ls_est2.estimate_at_pilot_locations(y_pilots, no) #y_pilots: (2, 1, 16, 1, 2, 128), h_hat:(2, 1, 16, 1, 2, 128)
-        plt.figure()
-        plt.plot(np.real(h_hat[0,0,0,0,0]))
-        plt.plot(np.imag(h_hat[0,0,0,0,0]))
-        plt.plot(np.real(h_hat2[0,0,0,0,0]), "--")
-        plt.plot(np.imag(h_hat2[0,0,0,0,0]), "--")
+        # shape_a = (2, 1, 16, 1, 2, 128)
+        # # Create an array 'no' with the same shape as 'a'
+        # v = 1+1j  # Replace with your desired float value
+        # y_pilots = np.full(shape_a, v, dtype=np.complex64)
+        # h_hat, err_var = ls_est.estimate_at_pilot_locations(y_pilots, no) #y_pilots: (2, 1, 16, 1, 2, 128), h_hat:(2, 1, 16, 1, 2, 128)
+        # h_hat2, err_var = ls_est2.estimate_at_pilot_locations(y_pilots, no) #y_pilots: (2, 1, 16, 1, 2, 128), h_hat:(2, 1, 16, 1, 2, 128)
+        # plt.figure()
+        # plt.plot(np.real(h_hat[0,0,0,0,0]))
+        # plt.plot(np.imag(h_hat[0,0,0,0,0]))
+        # plt.plot(np.real(h_hat2[0,0,0,0,0]), "--")
+        # plt.plot(np.imag(h_hat2[0,0,0,0,0]), "--")
 
         h_est, _ = ls_est([y, no]) #(64, 1, 16, 1, 2, 14, 64) [batch_size, num_rx, num_rx_ant, num_ofdm_symbols=14, sub-carriers=64]
         h_est2, _ = ls_est2([y, no]) #(64, 1, 16, 1, 2, 14, 64)
         #h_hat:(2, 1, 16, 1, 2, 128)
+        print(np.allclose(h_est.numpy(), h_est2))
 
-        h_est = h_est[0,0,0,0,0,:]
-        h_est2 = h_est2[0,0,0,0,0,:]
+        #h_est = h_est[0,0,0,0,0,:]
+        #h_est2 = h_est2[0,0,0,0,0,:]
 
-        #h_est = h_est[0,0,0,0,0,0]
-        #h_est2 = h_est2[0,0,0,0,0,0]
-        print(h_est)
-        print(h_est2)
+        h_est = h_est[0,0,0,0,0,0]
+        h_est2 = h_est2[0,0,0,0,0,0]
+        #print(h_est)
+        #print(h_est2)
 
         plt.figure()
         plt.plot(np.real(h_perf))
@@ -1149,22 +1155,28 @@ class Transmitter():
         
         if (not perfect_csi) or self.showfig:
             #ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn")
-            #ls_est = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
+            ls_est = MyLSChannelEstimatorNP(self.RESOURCE_GRID, interpolation_type="nn")
+            ls_est2 = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn") #"lin_time_avg"
 
-            h_hat, err_var = self.ls_est([y, no])
-            #h_hat, err_var = ls_est([y, no])
-            print("h_hat shape:", h_hat.shape) #(64, 1, 16, 1, 2, 14, 64)
-            print("err_var shape:", err_var.shape) #(1, 1, 1, 1, 2, 14, 64)
+            h_hat, err_var = ls_est([y, no]) #(2, 1, 16, 1, 2, 14, 64)
+            h_hat2, err_var2 = ls_est2([y, no])#tf.tensor
+            np.save('h_hat2.npy', h_hat)
+            np.save('h_hat_tf.npy', h_hat2.numpy())
+            # print("h_hat shape:", h_hat.shape) #(64, 1, 16, 1, 2, 14, 64)
+            # print("err_var shape:", err_var.shape) #(1, 1, 1, 1, 2, 14, 64)
         
         if self.showfig:
             # we assumed perfect CSI, i.e., h_perfect correpsond to the exact ideal channel frequency response.
             h_perf = h_perfect[0,0,0,0,0,0]
             h_est = h_hat[0,0,0,0,0,0]
+            h_est2 = h_hat2[0,0,0,0,0,0]
             plt.figure()
-            plt.plot(np.real(h_perf))
-            plt.plot(np.imag(h_perf))
+            # plt.plot(np.real(h_perf))
+            # plt.plot(np.imag(h_perf))
             plt.plot(np.real(h_est), "--")
             plt.plot(np.imag(h_est), "--")
+            plt.plot(np.real(h_est2), "r")
+            plt.plot(np.imag(h_est2), "b")
             plt.xlabel("Subcarrier index")
             plt.ylabel("Channel frequency response")
             plt.legend(["Ideal (real part)", "Ideal (imaginary part)", "Estimated (real part)", "Estimated (imaginary part)"]);
@@ -1173,7 +1185,7 @@ class Transmitter():
         if perfect_csi:
             return h_perfect, err_var
         else:
-            return h_hat, err_var
+            return h_hat, h_hat2, err_var, err_var2
 
     def receiver(self, y, no, x_rg, b=None, h_b=None, tau_b=None, h_out=None, perfect_csi= False):
         print(self.RESOURCE_GRID.pilot_pattern) #<__main__.EmptyPilotPattern object at 0x7f2659dfd9c0>
@@ -1198,19 +1210,32 @@ class Transmitter():
             if self.channeltype=='ofdm':
                 h_hat, err_var = self.ofdmchannel_estimation(y=y, no=no, h_out=h_out, perfect_csi=perfect_csi)
             else: #time channel
-                h_hat, err_var = self.timechannel_estimation(y=y, no=no, a=h_b, tau=tau_b, perfect_csi=perfect_csi)
-            #h_hat shape: (64, 1, 16, 1, 2, 14, 64)
+                h_hat, h_hat2, err_var, err_var2 = self.timechannel_estimation(y=y, no=no, a=h_b, tau=tau_b, perfect_csi=perfect_csi)
+                print(np.allclose(h_hat, h_hat2.numpy()))
+                h_hat=tf.convert_to_tensor(h_hat, dtype=tf.complex64) #(2, 1, 16, 1, 2, 14, 64)
+                err_var=tf.convert_to_tensor(err_var, dtype=tf.complex64) #(1, 1, 1, 1, 2, 14, 64)
+                
+            #h_hat shape: (64, 1, 16, 1, 2, 14, 64), err_var: (1, 1, 1, 1, 2, 14, 64)
             #input (y, h_hat, err_var, no)
             #Received OFDM resource grid after cyclic prefix removal and FFT y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], tf.complex
             #Channel estimates for all streams from all transmitters h_hat : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols, num_effective_subcarriers], tf.complex
-            x_hat, no_eff = self.lmmse_equ([y, h_hat, err_var, no]) #(64, 1, 1, 912), (64, 1, 1, 912)
+            x_hat, no_eff = self.lmmse_equ([y, h_hat, err_var, no]) 
+            x_hat2, no_eff2 = self.lmmse_equ([y, h_hat2, err_var2, no]) 
             #Estimated symbols x_hat : [batch_size, num_tx, num_streams, num_data_symbols], tf.complex
             #Effective noise variance for each estimated symbol no_eff : [batch_size, num_tx, num_streams, num_data_symbols], tf.float
-            x_hat=x_hat.numpy() #(64, 1, 2, 768)
-            no_eff=no_eff.numpy() #(64, 1, 2, 768)
+            x_hat=x_hat.numpy() #x_hat: (2, 1, 2, 768), no_eff: (2, 1, 2, 768)
+            no_eff=no_eff.numpy() 
             no_eff=np.mean(no_eff)
 
-            llr_est = self.mydemapper([x_hat, no_eff]) #(64, 1, 2, 3072)
+            x_hat2=x_hat2.numpy() #x_hat: (2, 1, 2, 768), no_eff: (2, 1, 2, 768)
+            no_eff2=no_eff2.numpy() 
+
+            print(np.allclose(x_hat, x_hat2))
+            print(np.allclose(no_eff, no_eff2))
+
+            llr_est = self.mydemapper([x_hat, no_eff]) #(2, 1, 2, 3072)
+            llr_est2 = self.mydemapper([x_hat2, no_eff2])
+            print(np.allclose(llr_est, llr_est2))
             #output: [batch size, num_rx, num_rx_ant, n * num_bits_per_symbol]
 
         #llr_est #(64, 1, 1, 4256)
@@ -1218,7 +1243,7 @@ class Transmitter():
             b_hat_tf = self.decoder(llr_est) #[64, 1, 1, 2128]
             b_hat = b_hat_tf.numpy()
         else:
-            b_hat = hard_decisions(llr_est, np.int32)  #(64, 1, 2, 3072)
+            b_hat = hard_decisions(llr_est, np.int32)  #(2, 1, 2, 3072)
         if b is not None:
             BER=calculate_BER(b, b_hat)
             print("BER Value:", BER)
@@ -1256,6 +1281,8 @@ def test_CDLchannel():
     transmit.test_timechannel_estimation(b=None, no=0.0)
     b_hat, BER = transmit(ebno_db = 25.0, perfect_csi=False)
     b_hat, BER = transmit(ebno_db = 25.0, perfect_csi=True)
+    
+    
 
     transmit = Transmitter(channeldataset='cdl', channeltype='ofdm', direction='uplink', \
                     batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
