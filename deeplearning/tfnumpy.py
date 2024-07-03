@@ -3,22 +3,52 @@ import tensorflow as tf
 import torch
 import matplotlib.pyplot as plt
 
-h_hat_pilot_tf=np.load('h_hat_pilot_tf.npy') 
-h_hat_pilot=np.load('h_hat_pilot.npy') 
+import numpy as np
+
+def gather_numpy(inputs, indices, batch_dims):
+    # Ensure the batch_dims is within the valid range
+    if batch_dims < 0 or batch_dims >= len(inputs.shape):
+        raise ValueError("Invalid batch_dims value")
+
+    # Initialize the result tensor
+    result = inputs.copy() #(1, 2, 128, 1, 1, 1)
+
+    # Gather along each dimension
+    # for dim in range(batch_dims, len(inputs.shape)): #2-6
+    #     result = np.take(result, indices, axis=dim)
+
+    gather_ind_nobatch = indices[0, 0] #ignore first two dimensions as batch (14, 64)
+    result = np.take(result, gather_ind_nobatch, axis=2) #(1, 2, 14, 64, 2, 1, 16)
+
+    return result
+
+# Example usage
+inputs_inter_np = np.random.rand(1, 2, 128, 1, 1, 1)
+inter_gather_ind_np = np.random.randint(0, 14, size=(1, 2, 14, 64))
+result = gather_numpy(inputs_inter_np, inter_gather_ind_np, batch_dims=2)
+
+print("Result shape:", result.shape)  # Should be (1, 2, 14, 64, 1, 1, 1)
+
+result_tf = tf.gather(inputs_inter_np, inter_gather_ind_np, 2, batch_dims=2) #(1, 2, 14, 64, 1, 1, 1)
+print(np.allclose(result, result_tf)) #True
+
+h_hat_pilot_tf=np.load('data/h_hat_pilot_tf.npy') #(2, 1, 16, 1, 2, 128)
+h_hat_pilot=np.load('data/h_hat_pilot.npy') 
 print(np.allclose(h_hat_pilot_tf, h_hat_pilot)) #True
 
-inter_gather_ind_tf=np.load('inter_gather_ind_tf.npy') 
-inter_gather_ind=np.load('inter_gather_ind.npy') 
+inter_gather_ind_tf=np.load('data/inter_gather_ind_tf.npy') #(1, 2, 14, 64)
+inter_gather_ind=np.load('data/inter_gather_ind.npy') 
 print(np.allclose(inter_gather_ind_tf, inter_gather_ind)) #True
 
-inputs_inter_tf=np.load('inputs_inter_tf.npy') 
-inputs_inter=np.load('inputs_inter.npy') 
+inputs_inter_tf=np.load('data/inputs_inter_tf.npy') #(1, 2, 128, 1, 1, 1)
+inputs_inter=np.load('data/inputs_inter.npy') #(1, 2, 128, 1, 1, 1)
 print(np.allclose(inputs_inter_tf, inputs_inter)) #True
 
-outputs_inter_tf=np.load('outputs_inter_tf.npy') 
-outputs_inter=np.load('outputs_inter.npy') 
+outputs_inter_tf=np.load('data/outputs_inter_tf.npy') #(1, 2, 14, 64, 1, 1, 1)
+outputs_inter=np.load('data/outputs_inter.npy') #(1, 2, 14, 64, 1, 1, 1)
 print(np.allclose(outputs_inter_tf, outputs_inter)) #False
 
+#tf.gather to extract specific indices from a single axis of a tensor.
 #inputs_inter_tf(1, 2, 128, 1, 1, 1)  inter_gather_ind_tf: (1, 2, 14, 64)
 outputs_tf = tf.gather(inputs_inter_tf, inter_gather_ind_tf, 2, batch_dims=2) #(1, 2, 14, 64, 1, 1, 1)
 print(np.allclose(outputs_inter_tf, outputs_tf)) #True
@@ -34,14 +64,14 @@ outputs = np.take(inputs_inter, gather_ind_nobatch, axis=2) #(1, 2, 14, 64, 1, 1
 print(np.allclose(outputs_inter_tf, outputs)) #False
 print(np.allclose(outputs_tf, outputs)) #False
 
-h_hat_inter_tf=np.load('h_hat_inter_tf.npy') 
-h_hat_inter=np.load('h_hat_inter.npy') 
+h_hat_inter_tf=np.load('data/h_hat_inter_tf.npy') 
+h_hat_inter=np.load('data/h_hat_inter.npy') 
 print(np.allclose(h_hat_inter_tf, h_hat_inter)) #False
 
 
-h_hat=np.load('h_hat.npy') #(2, 1, 16, 1, 2, 14, 64)
-h_hat2=np.load('h_hat2.npy')
-h_hat_tf=np.load('h_hat_tf.npy')
+h_hat=np.load('data/h_hat.npy') #(2, 1, 16, 1, 2, 14, 64)
+h_hat2=np.load('data/h_hat2.npy')
+h_hat_tf=np.load('data/h_hat_tf.npy')
 plt.figure()
 plt.plot(np.real(h_hat_tf[0,0,0,0,0,0,:]))
 plt.plot(np.imag(h_hat_tf[0,0,0,0,0,0,:]))
@@ -59,8 +89,8 @@ plt.title('h_hat(2, 1, 16, 1, 2, 14, 64)')
 print(np.allclose(h_hat2[0,0,0,0], h_hat_tf[0,0,0,0])) #False
 
 #mask (0,1 value) two squares
-mask_tf=np.load('mask_tf.npy') #(1, 2, 896)
-mask=np.load('mask.npy') #(1, 2, 896)
+mask_tf=np.load('data/mask_tf.npy') #(1, 2, 896)
+mask=np.load('data/mask.npy') #(1, 2, 896)
 plt.figure()
 plt.plot(mask_tf[0,0,:])
 plt.plot(mask[0,0,:], 'r-')
@@ -87,13 +117,13 @@ plt.plot(pilot_ind_new[0,0,:])
 plt.plot(pilot_ind_new2[0,0,:], 'r-')
 plt.title('pilot_ind_new(1, 2, 128)')
 
-pilot_ind_tf=np.load('pilot_ind_tf.npy') #(1, 2, 128)
-y_eff_flat_tf=np.load('y_eff_flat_tf.npy') #(2, 1, 16, 896)
-y_pilots_tf=np.load('y_pilots_tf.npy') #(2, 1, 16, 1, 2, 128)
+pilot_ind_tf=np.load('data/pilot_ind_tf.npy') #(1, 2, 128)
+y_eff_flat_tf=np.load('data/y_eff_flat_tf.npy') #(2, 1, 16, 896)
+y_pilots_tf=np.load('data/y_pilots_tf.npy') #(2, 1, 16, 1, 2, 128)
 
-pilot_ind=np.load('pilot_ind.npy') #(1, 2, 128)
-y_eff_flat=np.load('y_eff_flat.npy') #(2, 1, 16, 896)
-y_pilots=np.load('y_pilots.npy') #(2, 1, 16, 1, 2, 128)
+pilot_ind=np.load('data/pilot_ind.npy') #(1, 2, 128)
+y_eff_flat=np.load('data/y_eff_flat.npy') #(2, 1, 16, 896)
+y_pilots=np.load('data/y_pilots.npy') #(2, 1, 16, 1, 2, 128)
 
 
 

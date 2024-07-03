@@ -14,6 +14,7 @@ import tensorflow as tf
 from matplotlib import colors
 
 from deepMIMO5 import get_deepMIMOdata, DeepMIMODataset, flatten_last_dims, myexpand_to_rank
+from deepMIMO5 import count_errors, count_block_errors
 from deepMIMO5 import StreamManagement, MyResourceGrid, Mapper, MyResourceGridMapper, MyDemapper, BinarySource, ebnodb2no, hard_decisions, calculate_BER
 from deepMIMO5 import complex_normal, mygenerate_OFDMchannel, RemoveNulledSubcarriers, \
     MyApplyOFDMChannel, MyApplyTimeChannel
@@ -31,6 +32,148 @@ from ldpc.encoding import LDPC5GEncoder
 from ldpc.decoding import LDPC5GDecoder
 
 import scipy
+
+def ber_plot(ebno_dbs, bers, legend="", ylabel="BER", title="Bit Error Rate", ebno=True, xlim=None,
+             ylim=None, is_bler=False, savefigpath='./data/ber.jpg'):
+    if not isinstance(legend, list):
+        assert isinstance(legend, str)
+        legend = [legend]
+    
+    assert isinstance(title, str), "title must be str."
+
+    fig, ax = plt.subplots(figsize=(16,10))
+
+    plt.xticks(fontsize=18)
+    plt.yticks(fontsize=18)
+
+    if xlim is not None:
+        plt.xlim(xlim)
+    if ylim is not None:
+        plt.ylim(ylim)
+
+    plt.title(title, fontsize=25)
+    # return figure handle
+    if isinstance(bers, list):
+        for idx, b in enumerate(bers):
+            if is_bler:
+                line_style = "--"
+            else:
+                line_style = ""
+            plt.semilogy(ebno_dbs, b, line_style, linewidth=2)
+    else:
+        if is_bler:
+            line_style = "--"
+        else:
+            line_style = ""
+        plt.semilogy(ebno_dbs, bers, line_style, linewidth=2)
+
+    plt.grid(which="both")
+    if ebno:
+        plt.xlabel(r"$E_b/N_0$ (dB)", fontsize=25)
+    else:
+        plt.xlabel(r"$E_s/N_0$ (dB)", fontsize=25)
+    plt.ylabel(ylabel, fontsize=25)
+    plt.legend(legend, fontsize=20)
+    if savefigpath is not None:
+        plt.savefig(savefigpath)
+        plt.close(fig)
+    else:
+        #plt.close(fig)
+        pass
+    return fig, ax
+
+    
+
+def ber_plot_single(ebno_dbs, bers, title = "BER Simulation", savefigpath='./data/ber.jpg'):
+
+    fig, ax = plt.subplots(figsize=(16,10))
+
+    plt.xticks(fontsize=18)
+    plt.yticks(fontsize=18)
+
+    #A tuple of two floats defining x-axis limits.
+    # if xlim is not None:
+    #     plt.xlim(xlim)
+    # if ylim is not None:
+    #     plt.ylim(ylim)
+
+    is_bler= False
+    plt.title(title, fontsize=25)
+    # return figure handle
+    if is_bler:
+        line_style = "--"
+    else:
+        line_style = ""
+    plt.semilogy(ebno_dbs, bers, line_style, linewidth=2)
+
+    plt.grid(which="both")
+    ebno = True
+    if ebno:
+        plt.xlabel(r"$E_b/N_0$ (dB)", fontsize=25)
+    else:
+        plt.xlabel(r"$E_s/N_0$ (dB)", fontsize=25)
+    ylabel="BER"
+    plt.ylabel(ylabel, fontsize=25)
+    # legend=""
+    # plt.legend(legend, fontsize=20)
+    if savefigpath is not None:
+        plt.savefig(savefigpath)
+        plt.close(fig)
+
+def sim_ber(ebno_dbs, eval_transceiver, b, batch_size):
+    #num_points = 100  # Example value, replace with the actual value
+    ebno_dbs_np = np.array(ebno_dbs, dtype=np.float64)  # Cast to the desired data type
+    batch_size_np = np.array(batch_size, dtype=np.int32)  # Cast to the desired data type
+    num_points = ebno_dbs_np.shape[0] #20
+
+    bit_n = np.size(b) #272384
+    block_n = np.size(b[..., -1]) #128, b: (128, 1, 1, 2128)
+
+    bers = []
+    blers = []
+    BERs= []
+
+    for ebno_db in ebno_dbs:
+        #b_hat, BER = eval_transceiver(b=b, ebno_db = ebno_db, channeltype=channeltype)
+        b_hat, BER = eval_transceiver(b=b, ebno_db = ebno_db)
+        BERs.append(BER)
+        # count errors
+        bit_e = count_errors(b, b_hat)
+        block_e = count_block_errors(b, b_hat)
+
+        # Initialize NumPy arrays bit_errors, block_errors, nb_bits, and nb_blocks (if not already initialized)
+        nb_bits = np.zeros_like(bit_n, dtype=np.int64)
+        nb_blocks = np.zeros_like(block_n, dtype=np.int64)
+        #bit_errors = 0
+        #block_errors = 0
+        bit_errors = np.zeros_like(bit_e, dtype=np.int64)
+        block_errors = np.zeros_like(block_e, dtype=np.int64)
+
+        # Update variables
+        bit_errors = bit_errors + np.int64(bit_e)
+        block_errors = block_errors + np.int64(block_e)
+        nb_bits = nb_bits+ np.int64(bit_n)
+        nb_blocks = nb_blocks+ np.int64(block_n)
+
+        ber = np.divide(bit_errors.astype(np.float64), nb_bits.astype(np.float64))
+        bler = np.divide(block_errors.astype(np.float64), nb_blocks.astype(np.float64))
+
+        # Replace NaN values with zeros
+        ber = np.where(np.isnan(ber), np.zeros_like(ber), ber)
+        bler = np.where(np.isnan(bler), np.zeros_like(bler), bler)
+
+        bers.append(ber)
+        blers.append(bler)
+
+    return bers, blers, BERs
+
+def simulationloop(ebno_dbs, eval_transceiver, b=None):
+    bers = []
+    for ebno_db in ebno_dbs:
+        b_hat, BER = eval_transceiver(b=b, ebno_db = ebno_db)
+        bers.append(BER)
+    bers_np=np.array(bers)
+    return bers_np
 
 
 class NearestNeighborInterpolator:
@@ -122,6 +265,38 @@ class NearestNeighborInterpolator:
         self._gather_ind = np.reshape(gather_ind, mask_shape) #_gather_ind: (1, 2, 14, 64)
         np.save('inter_gather_ind.npy', self._gather_ind)
  
+    def mygather(self, inputs, method='np'):
+        # Interpolate through gather. Shape:
+        # [num_tx, num_streams_per_tx, num_ofdm_symbols,
+        #  ..., num_effective_subcarriers, k, l, m]
+        if method == 'tf':
+            outputs = tf.gather(inputs, self._gather_ind, 2, batch_dims=2)
+        #batch_dims: An optional parameter that specifies the number of batch dimensions. It controls how many leading dimensions are considered as batch dimensions.
+        elif method == 'np':
+            result = inputs.copy()
+            # Gather along each dimension
+            # for dim in range(batch_dims, len(inputs.shape)): #2-6
+            #     result = np.take(result, indices, axis=dim)
+
+            #gather_ind_nobatch = indices[0, 0] #ignore first two dimensions as batch (14, 64)
+            #result = np.take(result, gather_ind_nobatch, axis=2) #(1, 2, 14, 64, 2, 1, 16)
+            gather_ind_nobatch = self._gather_ind[0, 0] #ignore first two dimensions as batch (14, 64)
+            result1 = np.take(result, gather_ind_nobatch, axis=2) #(1, 2, 14, 64, 2, 1, 16)
+            gather_ind_nobatch = self._gather_ind[0, 1] #ignore first two dimensions as batch (14, 64)
+            outputs = np.take(result, gather_ind_nobatch, axis=2) #(1, 2, 14, 64, 2, 1, 16)
+            outputs[0,0,:,:,:,:,:]=result1[0,0,:,:,:,:,:]
+        else: #Wrong result
+            #outputs = np.take(inputs, self._gather_ind, axis=2, mode='wrap') #(1, 2, 1, 2, 14, 64, 2, 1, 16), _gather_ind: (1, 2, 14, 64)
+            #outputs: (1, 2, 14, 64, 2, 1, 16)
+            self._gather_ind_nobatch = self._gather_ind[0, 0] #ignore first two dimensions as batch (14, 64)
+            outputs = np.take(inputs, self._gather_ind_nobatch, axis=2) #(1, 2, 14, 64, 2, 1, 16)
+            np.save('outputs_inter.npy', outputs)
+            #outputs = inputs[:, :, self._gather_ind, :, :, :] #(1, 2, 1, 2, 14, 64, 2, 1, 16)
+            # Perform the gathe
+            # axis = 2
+            # batch_dims = 2
+            # outputs = np.take_along_axis(inputs, self._gather_ind, axis=axis, batch_dims=batch_dims)
+
     def _interpolate(self, inputs):
         # inputs has shape: (1, 2, 128, 2, 1, 16)
         # [k, l, m, num_tx, num_streams_per_tx, num_pilots]
@@ -133,24 +308,9 @@ class NearestNeighborInterpolator:
         perm = np.roll(np.arange(np.ndim(inputs)), -3, 0) # shift the dimensions. (2, 1, 16, 1, 2, 128)
         inputs = np.transpose(inputs, perm) #(1, 2, 128, 2, 1, 16)
 
-        np.save('inputs_inter.npy', inputs)
-
-        # Interpolate through gather. Shape:
-        # [num_tx, num_streams_per_tx, num_ofdm_symbols,
-        #  ..., num_effective_subcarriers, k, l, m]
-        #outputs = tf.gather(inputs, self._gather_ind, 2, batch_dims=2)
-        #batch_dims: An optional parameter that specifies the number of batch dimensions. It controls how many leading dimensions are considered as batch dimensions.
-
-        #outputs = np.take(inputs, self._gather_ind, axis=2, mode='wrap') #(1, 2, 1, 2, 14, 64, 2, 1, 16), _gather_ind: (1, 2, 14, 64)
-        #outputs: (1, 2, 14, 64, 2, 1, 16)
-        self._gather_ind_nobatch = self._gather_ind[0, 0] #ignore first two dimensions as batch (14, 64)
-        outputs = np.take(inputs, self._gather_ind_nobatch, axis=2) #(1, 2, 14, 64, 2, 1, 16)
-        np.save('outputs_inter.npy', outputs)
-        #outputs = inputs[:, :, self._gather_ind, :, :, :] #(1, 2, 1, 2, 14, 64, 2, 1, 16)
-        # Perform the gathe
-        # axis = 2
-        # batch_dims = 2
-        # outputs = np.take_along_axis(inputs, self._gather_ind, axis=axis, batch_dims=batch_dims)
+        #np.save('inputs_inter.npy', inputs)
+        outputs = self.mygather(inputs)
+        
 
         # Transpose outputs to bring batch_dims first again. New shape:
         # [k, l, m, num_tx, num_streams_per_tx,...
@@ -589,8 +749,8 @@ class Transmitter():
         if self.pilot_pattern != "empty":
             self.remove_nulled_scs = RemoveNulledSubcarriers(self.RESOURCE_GRID)
             #ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="lin_time_avg")
-            #self.ls_est = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn")#"lin_time_avg")
-            self.ls_est = MyLSChannelEstimatorNP(self.RESOURCE_GRID, interpolation_type="nn")#"lin_time_avg")
+            self.ls_est = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn")#"lin_time_avg")
+            #self.ls_est = MyLSChannelEstimatorNP(self.RESOURCE_GRID, interpolation_type="nn")#"lin_time_avg")
             #lmmse_equ = LMMSEEqualizer(self.RESOURCE_GRID, self.STREAM_MANAGEMENT)
             self.lmmse_equ = MyLMMSEEqualizer(self.RESOURCE_GRID, self.STREAM_MANAGEMENT)
 
@@ -1160,13 +1320,13 @@ class Transmitter():
         
         if (not perfect_csi) or self.showfig:
             #ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn")
-            ls_est = MyLSChannelEstimatorNP(self.RESOURCE_GRID, interpolation_type="nn")
-            ls_est2 = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn") #"lin_time_avg"
+            #ls_est = MyLSChannelEstimatorNP(self.RESOURCE_GRID, interpolation_type="nn")
+            #ls_est2 = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn") #"lin_time_avg"
 
-            h_hat, err_var = ls_est([y, no]) #(2, 1, 16, 1, 2, 14, 64)
-            h_hat2, err_var2 = ls_est2([y, no])#tf.tensor
-            np.save('h_hat2.npy', h_hat)
-            np.save('h_hat_tf.npy', h_hat2.numpy())
+            h_hat, err_var = self.ls_est([y, no]) #(2, 1, 16, 1, 2, 14, 64)
+            #h_hat2, err_var2 = ls_est2([y, no])#tf.tensor
+            #np.save('h_hat2.npy', h_hat)
+            #np.save('h_hat_tf.npy', h_hat2.numpy())
             # print("h_hat shape:", h_hat.shape) #(64, 1, 16, 1, 2, 14, 64)
             # print("err_var shape:", err_var.shape) #(1, 1, 1, 1, 2, 14, 64)
         
@@ -1174,14 +1334,14 @@ class Transmitter():
             # we assumed perfect CSI, i.e., h_perfect correpsond to the exact ideal channel frequency response.
             h_perf = h_perfect[0,0,0,0,0,0]
             h_est = h_hat[0,0,0,0,0,0]
-            h_est2 = h_hat2[0,0,0,0,0,0]
+            #h_est2 = h_hat2[0,0,0,0,0,0]
             plt.figure()
-            # plt.plot(np.real(h_perf))
-            # plt.plot(np.imag(h_perf))
+            plt.plot(np.real(h_perf))
+            plt.plot(np.imag(h_perf))
             plt.plot(np.real(h_est), "--")
             plt.plot(np.imag(h_est), "--")
-            plt.plot(np.real(h_est2), "r")
-            plt.plot(np.imag(h_est2), "b")
+            # plt.plot(np.real(h_est2), "r")
+            # plt.plot(np.imag(h_est2), "b")
             plt.xlabel("Subcarrier index")
             plt.ylabel("Channel frequency response")
             plt.legend(["Ideal (real part)", "Ideal (imaginary part)", "Estimated (real part)", "Estimated (imaginary part)"]);
@@ -1190,7 +1350,7 @@ class Transmitter():
         if perfect_csi:
             return h_perfect, err_var
         else:
-            return h_hat, h_hat2, err_var, err_var2
+            return h_hat, err_var
 
     def receiver(self, y, no, x_rg, b=None, h_b=None, tau_b=None, h_out=None, perfect_csi= False):
         print(self.RESOURCE_GRID.pilot_pattern) #<__main__.EmptyPilotPattern object at 0x7f2659dfd9c0>
@@ -1215,32 +1375,22 @@ class Transmitter():
             if self.channeltype=='ofdm':
                 h_hat, err_var = self.ofdmchannel_estimation(y=y, no=no, h_out=h_out, perfect_csi=perfect_csi)
             else: #time channel
-                h_hat, h_hat2, err_var, err_var2 = self.timechannel_estimation(y=y, no=no, a=h_b, tau=tau_b, perfect_csi=perfect_csi)
-                print(np.allclose(h_hat, h_hat2.numpy()))
+                h_hat, err_var = self.timechannel_estimation(y=y, no=no, a=h_b, tau=tau_b, perfect_csi=perfect_csi)
                 h_hat=tf.convert_to_tensor(h_hat, dtype=tf.complex64) #(2, 1, 16, 1, 2, 14, 64)
-                err_var=tf.convert_to_tensor(err_var, dtype=tf.complex64) #(1, 1, 1, 1, 2, 14, 64)
+                #err_var=tf.convert_to_tensor(err_var, dtype=tf.complex64) #(1, 1, 1, 1, 2, 14, 64)
                 
             #h_hat shape: (64, 1, 16, 1, 2, 14, 64), err_var: (1, 1, 1, 1, 2, 14, 64)
             #input (y, h_hat, err_var, no)
             #Received OFDM resource grid after cyclic prefix removal and FFT y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], tf.complex
             #Channel estimates for all streams from all transmitters h_hat : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols, num_effective_subcarriers], tf.complex
             x_hat, no_eff = self.lmmse_equ([y, h_hat, err_var, no]) 
-            x_hat2, no_eff2 = self.lmmse_equ([y, h_hat2, err_var2, no]) 
             #Estimated symbols x_hat : [batch_size, num_tx, num_streams, num_data_symbols], tf.complex
             #Effective noise variance for each estimated symbol no_eff : [batch_size, num_tx, num_streams, num_data_symbols], tf.float
             x_hat=x_hat.numpy() #x_hat: (2, 1, 2, 768), no_eff: (2, 1, 2, 768)
             no_eff=no_eff.numpy() 
             no_eff=np.mean(no_eff)
 
-            x_hat2=x_hat2.numpy() #x_hat: (2, 1, 2, 768), no_eff: (2, 1, 2, 768)
-            no_eff2=no_eff2.numpy() 
-
-            print(np.allclose(x_hat, x_hat2))
-            print(np.allclose(no_eff, no_eff2))
-
             llr_est = self.mydemapper([x_hat, no_eff]) #(2, 1, 2, 3072)
-            llr_est2 = self.mydemapper([x_hat2, no_eff2])
-            print(np.allclose(llr_est, llr_est2))
             #output: [batch size, num_rx, num_rx_ant, n * num_bits_per_symbol]
 
         #llr_est #(64, 1, 1, 4256)
@@ -1283,9 +1433,9 @@ def test_CDLchannel():
                     batch_size =2, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
                     subcarrier_spacing=60e3, \
                     USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=showfigure)
-    transmit.test_timechannel_estimation(b=None, no=0.0)
-    b_hat, BER = transmit(ebno_db = 25.0, perfect_csi=False)
-    b_hat, BER = transmit(ebno_db = 25.0, perfect_csi=True)
+    #transmit.test_timechannel_estimation(b=None, no=0.0)
+    b_hat, BER = transmit(ebno_db = 10.0, perfect_csi=False)
+    b_hat, BER = transmit(ebno_db = 10.0, perfect_csi=True)
     
     
 
@@ -1295,11 +1445,117 @@ def test_CDLchannel():
                     USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=showfigure) #"kronecker" "empty"
     #transmit.get_channelcir()
     #h_out=transmit.get_OFDMchannelresponse()
-    b_hat, BER = transmit(ebno_db = 15.0, perfect_csi=False)
-    b_hat, BER = transmit(ebno_db = 15.0, perfect_csi=True)
+    b_hat, BER = transmit(ebno_db = 10.0, perfect_csi=False)
+    b_hat, BER = transmit(ebno_db = 10.0, perfect_csi=True)
 
+def sim_bersingle(channeldataset='cdl', channeltype='time'):
+        # Bit per channel use
+    NUM_BITS_PER_SYMBOL = 2 # QPSK
 
+    # Minimum value of Eb/N0 [dB] for simulations
+    EBN0_DB_MIN = -3.0
+
+    # Maximum value of Eb/N0 [dB] for simulations
+    EBN0_DB_MAX = 25.0 #5.0
+
+    # How many examples are processed by Sionna in parallel
+    BATCH_SIZE = 2
+
+    # Define the number of UT and BS antennas
+    NUM_UT = 1
+    NUM_BS = 1
+    NUM_UT_ANT = 2
+    NUM_BS_ANT = 16
+
+    ebno_dbs=np.linspace(EBN0_DB_MIN, EBN0_DB_MAX, 20)
+
+    showfigure = False
+    eval_transceiver = Transmitter(channeldataset=channeldataset, channeltype=channeltype, direction='uplink', \
+                    batch_size =BATCH_SIZE, fft_size = 76, num_ut = NUM_UT, num_ut_ant=NUM_UT_ANT, num_bs = NUM_BS, num_bs_ant=NUM_BS_ANT, \
+                        num_ofdm_symbols=14, num_bits_per_symbol = NUM_BITS_PER_SYMBOL,  \
+                    subcarrier_spacing=60e3, \
+                    USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=showfigure)
+    #transmit.test_timechannel_estimation(b=None, no=0.0)
+    #b_hat, BER = eval_transceiver(ebno_db = 25.0, perfect_csi=False)
+    #b_hat, BER = eval_transceiver(ebno_db = 25.0, perfect_csi=True)
+
+        #channeltype="perfect", "awgn", "ofdm", "time"
+    #Number of information bits per codeword
+    k=eval_transceiver.k
+    binary_source = BinarySource()
+    NUM_STREAMS_PER_TX=eval_transceiver.num_streams_per_tx
+    # Start Transmitter self.k Number of information bits per codeword
+    b = binary_source([BATCH_SIZE, 1, NUM_STREAMS_PER_TX, k]) #[batch_size, num_tx, num_streams_per_tx, num_databits]
+
+    b_hat, BER = eval_transceiver(ebno_db = 25.0, perfect_csi=False)
     
+    bers, blers, BERs = sim_ber(ebno_dbs, eval_transceiver, b, BATCH_SIZE)
+    ber_plot_single(ebno_dbs, bers, title = "BER Simulation", savefigpath='./data/bernew.jpg')
+
+def sim_bermulti():
+            # Bit per channel use
+    NUM_BITS_PER_SYMBOL = 2 # QPSK
+
+    # Minimum value of Eb/N0 [dB] for simulations
+    EBN0_DB_MIN = -3.0
+
+    # Maximum value of Eb/N0 [dB] for simulations
+    EBN0_DB_MAX = 25.0 #5.0
+
+    # How many examples are processed by Sionna in parallel
+    BATCH_SIZE = 2
+
+    # Define the number of UT and BS antennas
+    NUM_UT = 1
+    NUM_BS = 1
+    NUM_UT_ANT = 2
+    NUM_BS_ANT = 16
+
+    ebno_dbs=np.linspace(EBN0_DB_MIN, EBN0_DB_MAX, 20)
+
+    showfigure = False
+    channeldataset='cdl'
+    channeltype='time'
+    eval_transceiver = Transmitter(channeldataset=channeldataset, channeltype=channeltype, direction='uplink', \
+                    batch_size =BATCH_SIZE, fft_size = 76, num_ut = NUM_UT, num_ut_ant=NUM_UT_ANT, num_bs = NUM_BS, num_bs_ant=NUM_BS_ANT, \
+                        num_ofdm_symbols=14, num_bits_per_symbol = NUM_BITS_PER_SYMBOL,  \
+                    subcarrier_spacing=60e3, \
+                    USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=showfigure)
+    #transmit.test_timechannel_estimation(b=None, no=0.0)
+    #b_hat, BER = eval_transceiver(ebno_db = 25.0, perfect_csi=False)
+    #b_hat, BER = eval_transceiver(ebno_db = 25.0, perfect_csi=True)
+
+        #channeltype="perfect", "awgn", "ofdm", "time"
+    #Number of information bits per codeword
+    k=eval_transceiver.k
+    binary_source = BinarySource()
+    NUM_STREAMS_PER_TX=eval_transceiver.num_streams_per_tx
+    # Start Transmitter self.k Number of information bits per codeword
+    b = binary_source([BATCH_SIZE, 1, NUM_STREAMS_PER_TX, k]) #[batch_size, num_tx, num_streams_per_tx, num_databits]
+
+    b_hat, BER = eval_transceiver(ebno_db = 25.0, perfect_csi=False)
+
+    #Multi-scenario testing
+    BER_list = []
+    legend=[]
+    
+    bers=simulationloop(ebno_dbs, eval_transceiver, b)
+    legend.append(f'Channeltype: {channeltype}')
+    BER_list.append(bers)
+
+    channeldataset='cdl'
+    channeltype='ofdm'
+    eval_transceiver = Transmitter(channeldataset=channeldataset, channeltype=channeltype, direction='uplink', \
+                    batch_size =BATCH_SIZE, fft_size = 76, num_ut = NUM_UT, num_ut_ant=NUM_UT_ANT, num_bs = NUM_BS, num_bs_ant=NUM_BS_ANT, \
+                        num_ofdm_symbols=14, num_bits_per_symbol = NUM_BITS_PER_SYMBOL,  \
+                    subcarrier_spacing=60e3, \
+                    USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=showfigure)
+    bers=simulationloop(ebno_dbs, eval_transceiver, b)
+    legend.append(f'Channeltype: {channeltype}')
+    BER_list.append(bers)
+
+    ber_plot(ebno_dbs, BER_list, legend=legend, ylabel="BER", title="Bit Error Rate", ebno=True, xlim=None,
+             ylim=None, is_bler=None, savefigpath='./data/berlistnew.jpg')
 
 if __name__ == '__main__':
 
@@ -1309,9 +1565,15 @@ if __name__ == '__main__':
     dataset_folder='data/DeepMIMO'
     #dataset_folder=r'D:\Dataset\CommunicationDataset\O1_60'
     ofdmtest = True
+    bertest = False
     showfigure = True
+    
+    
     if ofdmtest is True:
         test_CDLchannel()
+    if bertest is True:
+        sim_bersingle(channeldataset='cdl', channeltype='ofdm') #channeltype='time'
+        sim_bermulti()
     print("Finished")
 
 
