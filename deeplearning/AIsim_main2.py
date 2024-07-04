@@ -592,7 +592,7 @@ class Transmitter():
                  direction="uplink", num_ut = 1, num_ut_ant=2, num_bs = 1, num_bs_ant=16,\
                  batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
                  subcarrier_spacing=15e3, num_guard_carriers=None, pilot_ofdm_symbol_indices=None, \
-                USE_LDPC = True, pilot_pattern = "kronecker", guards = True, showfig = True) -> None:
+                USE_LDPC = True, pilot_pattern = "kronecker", guards = True, showfig = True, savedata=True) -> None:
                 #num_guard_carriers=[15,16]
         self.channeltype = channeltype
         self.channeldataset = channeldataset
@@ -601,6 +601,7 @@ class Transmitter():
         self.num_ofdm_symbols = num_ofdm_symbols
         self.num_bits_per_symbol = num_bits_per_symbol
         self.showfig = showfig
+        self.savedata = savedata
         self.pilot_pattern = pilot_pattern
         self.scenario = scenario
         self.dataset_folder = dataset_folder
@@ -1013,7 +1014,7 @@ class Transmitter():
             #y: [64, 1, 1, 14, 76]
         return y, h_out
 
-    def uplinktransmission(self, b=None, no=0, perfect_csi=False):
+    def uplinktransmission(self, b=None, h_out=None, no=0):
 
         if b is None:
             binary_source = BinarySource()
@@ -1026,14 +1027,6 @@ class Transmitter():
         x = self.mapper(c) #np.array[64,1,1,896] if empty np.array[64,1,1,1064] 1064*4=4256 [batch_size, num_tx, num_streams_per_tx, num_data_symbols]
         x_rg = self.rg_mapper(x) ##complex array[64,1,1,14,76] 14*76=1064
         #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76] (64, 1, 2, 14, 76)
-
-        #we generate random batches of CIR, transform them in the frequency domain and apply them to the resource grid in the frequency domain.
-        h_b, tau_b = self.get_channelcir()
-        if self.channeltype=='ofdm':
-            h_out = self.get_OFDMchannelresponse(h_b, tau_b)
-            print("h_freq shape:", h_out.shape) #(64, 1, 16, 1, 2, 14, 76)
-        elif self.channeltype=='time':
-            h_out = self.get_timechannelresponse(h_b, tau_b) #(64, 1, 16, 1, 2, 1174, 27)
         
         #apply channel
         if self.channeltype == 'ofdm':
@@ -1070,21 +1063,25 @@ class Transmitter():
         #x :  Channel inputs [batch size, num_tx, num_tx_ant, num_time_samples], tf.complex
         #h_time : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_samples + l_tot - 1, l_tot], tf.complex
         
-        return y, x_rg, b, h_b, tau_b, h_out
+        return y, x_rg, b
     
     def ofdmchannel_estimation(self, y, no, h_out=None, perfect_csi= False):
         #perform channel estimation via pilots
         print("Num of Pilots:", len(self.RESOURCE_GRID.pilot_pattern.pilots)) #1
         h_perfect = None
     
-        if perfect_csi:
+        if perfect_csi or self.savedata:
             # For perfect CSI, the receiver gets the channel frequency response as input
             # However, the channel estimator only computes estimates on the non-nulled
             # subcarriers. Therefore, we need to remove them here from `h_freq`.
             # This step can be skipped if no subcarriers are nulled. 
-            h_perfect, err_var = self.remove_nulled_scs(h_out), 0.
+            h_perfect, err_var_perfect = self.remove_nulled_scs(h_out), 0.
             print("h_out after remove nulled shape:", h_perfect.shape)
         else:
+            h_perfect = None
+            err_var_perfect = None
+
+        if (not perfect_csi) or self.showfig or self.savedata:
             #Observed resource grid y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols,fft_size], (64, 1, 1, 14, 76) complex
             #no : [batch_size, num_rx, num_rx_ant] 
             h_hat, err_var = self.ls_est([y, no]) #tf tensor (64, 1, 16, 1, 2, 14, 64), (1, 1, 1, 1, 2, 14, 64)
@@ -1106,10 +1103,11 @@ class Transmitter():
                 plt.legend(["Ideal (real part)", "Ideal (imaginary part)", "Estimated (real part)", "Estimated (imaginary part)"]);
                 plt.title("Comparison of channel frequency responses");
         
-        if perfect_csi:
-            return h_perfect, err_var
-        else:
-            return h_hat, err_var
+        # if perfect_csi:
+        #     return h_perfect, err_var_perfect
+        # else:
+        #     return h_hat, err_var
+        return h_hat, err_var, h_perfect, err_var_perfect
 
     def test_timechannel_estimation(self,b=None, no=0):
         #ebno_db = 30
@@ -1303,7 +1301,7 @@ class Transmitter():
 
     def timechannel_estimation(self, y, no, a=None, tau=None, perfect_csi= False):
 
-        if perfect_csi or self.showfig:
+        if perfect_csi or self.showfig or self.savedata:
             print("a shape:", a.shape) #(64, 1, 16, 1, 2, 23, 1174)
             print("tau shape:", tau.shape) #(64, 1, 1, 23)
             
@@ -1316,10 +1314,14 @@ class Transmitter():
             # Compute the channel frequency response
             h_freq = cir_to_ofdm_channel(self.frequencies, a_freq, tau, normalize=True)
             print("h_freq shape:", h_freq.shape) #(64, 1, 16, 1, 2, 14, 76)
-            h_perfect, err_var = self.remove_nulled_scs(h_freq), 0.
+            h_perfect, err_var_perfect = self.remove_nulled_scs(h_freq), 0.
             print("h_perfect shape:", h_perfect.shape) #(64, 1, 16, 1, 2, 14, 64)
+        else:
+            h_perfect = None
+            err_var_perfect = None
+
         
-        if (not perfect_csi) or self.showfig:
+        if (not perfect_csi) or self.showfig or self.savedata:
             #ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn")
             #ls_est = MyLSChannelEstimatorNP(self.RESOURCE_GRID, interpolation_type="nn")
             #ls_est2 = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn") #"lin_time_avg"
@@ -1348,10 +1350,47 @@ class Transmitter():
             plt.legend(["Ideal (real part)", "Ideal (imaginary part)", "Estimated (real part)", "Estimated (imaginary part)"]);
             plt.title("Comparison of channel frequency responses");
 
-        if perfect_csi:
-            return h_perfect, err_var
-        else:
-            return h_hat, err_var
+        # if perfect_csi:
+        #     return h_perfect, err_var_perfect
+        # else:
+        #     return h_hat, err_var
+        return h_hat, err_var, h_perfect, err_var_perfect
+    
+    def channelest_equ(self, y, no, h_b=None, tau_b=None, h_out=None, perfect_csi= False):
+        print(self.RESOURCE_GRID.pilot_pattern) #<__main__.EmptyPilotPattern object at 0x7f2659dfd9c0>
+        print("Num of Pilots:", len(self.RESOURCE_GRID.pilot_pattern.pilots))
+        h_hat = None
+        err_var = None 
+        h_perfect = None 
+        err_var_perfect = None
+        if self.pilot_pattern == "empty": # and perfect_csi == False: #"kronecker", "empty"
+            #no channel estimation
+            x_hat = y[:,:,0:self.num_streams_per_tx,:,:] #(64, 1, 2, 14, 76)
+            no_eff = no
+        else: # channel estimation or perfect_csi
+            #perform channel estimation via pilots
+            y=tf.convert_to_tensor(y, dtype=tf.complex64)
+            if self.channeltype=='ofdm':
+                h_hat, err_var, h_perfect, err_var_perfect  = self.ofdmchannel_estimation(y=y, no=no, h_out=h_out, perfect_csi=perfect_csi)
+            else: #time channel
+                h_hat, err_var, h_perfect, err_var_perfect = self.timechannel_estimation(y=y, no=no, a=h_b, tau=tau_b, perfect_csi=perfect_csi)
+                h_hat=tf.convert_to_tensor(h_hat, dtype=tf.complex64) #(2, 1, 16, 1, 2, 14, 64)
+                #err_var=tf.convert_to_tensor(err_var, dtype=tf.complex64) #(1, 1, 1, 1, 2, 14, 64)
+                
+            #h_hat shape: (64, 1, 16, 1, 2, 14, 64), err_var: (1, 1, 1, 1, 2, 14, 64)
+            #input (y, h_hat, err_var, no)
+            #Received OFDM resource grid after cyclic prefix removal and FFT y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], tf.complex
+            #Channel estimates for all streams from all transmitters h_hat : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols, num_effective_subcarriers], tf.complex
+            x_hat, no_eff = self.lmmse_equ([y, h_hat, err_var, no]) 
+            #Estimated symbols x_hat : [batch_size, num_tx, num_streams, num_data_symbols], tf.complex
+            #Effective noise variance for each estimated symbol no_eff : [batch_size, num_tx, num_streams, num_data_symbols], tf.float
+            x_hat=x_hat.numpy() #x_hat: (2, 1, 2, 768), no_eff: (2, 1, 2, 768)
+            no_eff=no_eff.numpy() 
+            no_eff=np.mean(no_eff)
+
+        return x_hat, no_eff, h_hat, err_var, h_perfect, err_var_perfect
+
+    def demapper_decision(self, x_hat, no)
 
     def receiver(self, y, no, x_rg, b=None, h_b=None, tau_b=None, h_out=None, perfect_csi= False):
         print(self.RESOURCE_GRID.pilot_pattern) #<__main__.EmptyPilotPattern object at 0x7f2659dfd9c0>
@@ -1374,9 +1413,9 @@ class Transmitter():
             #perform channel estimation via pilots
             y=tf.convert_to_tensor(y, dtype=tf.complex64)
             if self.channeltype=='ofdm':
-                h_hat, err_var = self.ofdmchannel_estimation(y=y, no=no, h_out=h_out, perfect_csi=perfect_csi)
+                h_hat, err_var, h_perfect, err_var_perfect  = self.ofdmchannel_estimation(y=y, no=no, h_out=h_out, perfect_csi=perfect_csi)
             else: #time channel
-                h_hat, err_var = self.timechannel_estimation(y=y, no=no, a=h_b, tau=tau_b, perfect_csi=perfect_csi)
+                h_hat, err_var, h_perfect, err_var_perfect = self.timechannel_estimation(y=y, no=no, a=h_b, tau=tau_b, perfect_csi=perfect_csi)
                 h_hat=tf.convert_to_tensor(h_hat, dtype=tf.complex64) #(2, 1, 16, 1, 2, 14, 64)
                 #err_var=tf.convert_to_tensor(err_var, dtype=tf.complex64) #(1, 1, 1, 1, 2, 14, 64)
                 
@@ -1414,11 +1453,22 @@ class Transmitter():
         # Convert it to a NumPy float
         no = np.float32(no) #0.0158
 
+        #we generate random batches of CIR, transform them in the frequency domain and apply them to the resource grid in the frequency domain.
+        h_b, tau_b = self.get_channelcir()
+        if self.channeltype=='ofdm':
+            h_out = self.get_OFDMchannelresponse(h_b, tau_b)
+            print("h_freq shape:", h_out.shape) #(64, 1, 16, 1, 2, 14, 76)
+        elif self.channeltype=='time':
+            h_out = self.get_timechannelresponse(h_b, tau_b) #(64, 1, 16, 1, 2, 1174, 27)
+
         # Transmitter
-        y, x_rg, b, h_b, tau_b, h_out = self.uplinktransmission(b=b, no=no, perfect_csi=perfect_csi)
+        y, x_rg, b= self.uplinktransmission(b=b, no=no, h_out=h_out)
         print("y shape:", y.shape) #(64, 1, 16, 14, 76) [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size]
 
+        #Option1:
         b_hat, BER = self.receiver(y, no, x_rg, b=b, h_b=h_b, tau_b=tau_b, h_out=h_out, perfect_csi= perfect_csi)
+        #Option2:
+        x_hat, no_eff, h_hat, err_var, h_perfect, err_var_perfect = self.channelest_equ(y, no, h_b=h_b, tau_b=tau_b, h_out=h_out, perfect_csi= perfect_csi)
         return b_hat, BER
 
 def test_CDLchannel():
