@@ -106,6 +106,14 @@ Install other python packages:
    pip install sionna DeepMIMO pyadi-iio
 ```
 
+Installation in Mac
+```bash
+(mypy310) (base) kaikailiu@Kaikais-MBP radarsensing % pip install tensorflow==2.14.0
+#Test tensorflow
+python3 -c "import tensorflow as tf; print(tf.reduce_sum(tf.random.normal([1000, 1000])))"
+pip install sionna
+```
+
 ## Test NVIDIA Sionna
 
 Install Nvidia sionna from [SionnaGithub](https://github.com/NVlabs/sionna/tree/main):

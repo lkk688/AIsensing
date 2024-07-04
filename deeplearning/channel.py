@@ -1377,7 +1377,7 @@ class NearestNeighborInterpolator(BaseChannelInterpolator):
         # [num_tx, num_streams_per_tx, num_ofdm_symbols,...
         #  ..., num_effective_subcarriers]
         self._gather_ind = tf.reshape(gather_ind, mask_shape) #(1, 2, 14, 64)
-        np.save('inter_gather_ind_tf.npy', self._gather_ind.numpy())
+        #np.save('inter_gather_ind_tf.npy', self._gather_ind.numpy())
 
     def _interpolate(self, inputs): #h_ls: (2, 1, 16, 1, 2, 128), err_var: (1, 1, 1, 1, 2, 128)
         # inputs has shape:
@@ -2157,7 +2157,7 @@ class MyLSChannelEstimator():
         pilot_ind = tf.argsort(mask, axis=-1, direction="DESCENDING") #(1, 2, 896)
         self._pilot_ind = pilot_ind[...,:num_pilot_symbols]
 
-        print(self._pilot_ind) #(1, 2, 128) int32
+        #print(self._pilot_ind) #(1, 2, 128) int32
 
 
     def estimate_at_pilot_locations(self, y_pilots, no):

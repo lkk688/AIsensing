@@ -372,6 +372,7 @@ def plotcomplex(y):
 # and (4 and 5) to the UEs.
 #
 class DeepMIMODataset(Dataset):
+    #ref: https://github.com/DeepMIMO/DeepMIMO-python/blob/master/src/DeepMIMOv3/sionna_adapter.py
     def __init__(self, DeepMIMO_dataset, bs_idx = None, ue_idx = None):
         self.dataset = DeepMIMO_dataset  
         # Set bs_idx based on given parameters
@@ -554,6 +555,8 @@ def get_deepMIMOdata(scenario='O1_60', dataset_folder=r'D:\Dataset\Communication
     #Basestation Location [x, y, z].
     print(DeepMIMO_dataset[active_bs_idx]['user']['location'][j])
     #The Euclidian location of the user in the form of [x, y, z].
+
+    #https://github.com/DeepMIMO/DeepMIMO-python/blob/master/src/DeepMIMOv3/sionna_adapter.py
 
     if showfig:
         plt.figure(figsize=(12,8))

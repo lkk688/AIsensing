@@ -4,6 +4,8 @@
 
 import DeepMIMO
 import numpy as np
+import matplotlib
+matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 from matplotlib import colors
 import torch
@@ -605,7 +607,7 @@ class Transmitter():
         self.pilot_pattern = pilot_pattern
         self.scenario = scenario
         self.dataset_folder = dataset_folder
-        
+        self.direction = direction
         self.num_ut = num_ut #num_rx #1
         self.num_bs = num_bs #num_tx #1
         self.num_ut_ant = num_ut_ant #num_rx #2 #4
@@ -655,6 +657,9 @@ class Transmitter():
             dc_null=False
             pilot_ofdm_symbol_indices=[0,0]
         #pilot_pattern = "kronecker" #"kronecker", "empty"
+        self.cyclic_prefix_length = cyclic_prefix_length
+        self.num_guard_carriers = num_guard_carriers
+        self.pilot_ofdm_symbol_indices = pilot_ofdm_symbol_indices
         #fft_size = 76
         #num_ofdm_symbols=14
         RESOURCE_GRID = MyResourceGrid( num_ofdm_symbols=num_ofdm_symbols,
@@ -692,11 +697,12 @@ class Transmitter():
         self.frequencies = subcarrier_frequencies(RESOURCE_GRID.fft_size, RESOURCE_GRID.subcarrier_spacing) #corresponding to the different subcarriers
         #76, 60k
 
-        print("subcarriers frequencies", self.frequencies) #-2280000. -2220000. -2160000...2100000.  2160000.  2220000
+        #print("subcarriers frequencies", self.frequencies) #-2280000. -2220000. -2160000...2100000.  2160000.  2220000
 
         #num_bits_per_symbol = 4
         # Codeword length
         n = int(RESOURCE_GRID.num_data_symbols * num_bits_per_symbol) #num_data_symbols: if empty 1064*4=4256, else, 768*4=3072
+        self.n = n
 
         #USE_LDPC = True
         if USE_LDPC:
@@ -771,20 +777,30 @@ class Transmitter():
         np.random.shuffle(ue_idx)
         # Reshape to fit the requested number of users
         ue_idx = np.reshape(ue_idx, [-1, num_rx]) # In the shape of (floor(18100/num_rx) x num_rx) (18100,1)
-        self.channeldataset = DeepMIMODataset(DeepMIMO_dataset=DeepMIMO_dataset, ue_idx=ue_idx)
-        h, tau = next(iter(self.channeldataset)) #h: (1, 1, 1, 16, 10, 1), tau:(1, 1, 10)
+        self.deepmimodataset = DeepMIMODataset(DeepMIMO_dataset=DeepMIMO_dataset, ue_idx=ue_idx)
+        h, tau = next(iter(self.deepmimodataset)) #h: (1, 1, 1, 16, 10, 1), tau:(1, 1, 10)
         #complex gains `h` and delays `tau` for each path
         #print(h.shape) #[num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]
         #print(tau.shape) #[num_rx, num_tx, num_paths]
 
         # torch dataloaders
-        self.data_loader = DataLoader(dataset=self.channeldataset, batch_size=self.batch_size, shuffle=True, pin_memory=True)
+        self.data_loader = DataLoader(dataset=self.deepmimodataset, batch_size=self.batch_size, shuffle=True, pin_memory=True)
         if self.showfig:
-            self.plotchimpulse()
+            #self.plotchimpulse()
+            h_b, tau_b = next(iter(self.data_loader)) #h_b: [64, 1, 1, 1, 16, 10, 1], tau_b=[64, 1, 1, 10]
+            #print(h_b.shape) #[batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]
+            #print(tau_b.shape) #[batch, num_rx, num_tx, num_paths]
+            tau_b=tau_b.numpy()#torch tensor to numpy
+            h_b=h_b.numpy()
+            plt.figure()
+            plt.title("Channel impulse response realization")
+            plt.stem(tau_b[0,0,0,:]/1e-9, np.abs(h_b)[0,0,0,0,0,:,0])#10 different pathes
+            plt.xlabel(r"$\tau$ [ns]")
+            plt.ylabel(r"$|a|$")
     
     def create_CDLchanneldataset(self):
         try:
-            from sionna.channel.tr38901 import AntennaArray, CDL, Antenna
+            from sionna.channel.tr38901 import AntennaArray, CDL
         except ImportError:
             pass
         # Define the number of UT and BS antennas.
@@ -836,7 +852,10 @@ class Transmitter():
 
     def get_channelcir(self,returnformat='numpy'):
         if self.channeldataset=='deepmimo':
+            #https://github.com/DeepMIMO/DeepMIMO-python/blob/master/src/DeepMIMOv3/sionna_adapter.py
             h_b, tau_b = next(iter(self.data_loader)) #h_b: [64, 1, 1, 1, 16, 10, 1], tau_b=[64, 1, 1, 10]
+            num_time_steps = self.deepmimodataset.num_time_steps #1
+            sampling_frequency=1/self.RESOURCE_GRID.ofdm_symbol_duration
         elif self.channeldataset=='cdl':
             if self.channeltype=='ofdm':
                 num_time_steps = self.RESOURCE_GRID.num_ofdm_symbols
@@ -886,11 +905,11 @@ class Transmitter():
         #h_b, tau_b = self.get_channelcir()
         #from sionna.channel import subcarrier_frequencies, cir_to_ofdm_channel, cir_to_time_channel, time_lag_discrete_time_channel
         #from sionna.channel import ApplyOFDMChannel, ApplyTimeChannel, OFDMChannel, TimeChannel
-
+        #from sionna.channel import cir_to_ofdm_channel
         #frequencies = subcarrier_frequencies(self.RESOURCE_GRID.fft_size, self.RESOURCE_GRID.subcarrier_spacing)
         h_freq = cir_to_ofdm_channel(self.frequencies, h_b, tau_b, normalize=True)
         #h_freq.shape #[batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm_symbols, num_subcarriers] (64, 1, 16, 1, 2, 14, 76)
-
+        #[batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, fft_size](2, 1, 1, 1, 16, 1, 76)
         if self.showfig:
             plt.figure()
             plt.title("Channel frequency response at given time")
@@ -905,7 +924,7 @@ class Transmitter():
         #h_b, tau_b = self.get_channelcir()
         #h_time = cir_to_time_channel(rg.bandwidth, a, tau, l_min=l_min, l_max=l_max, normalize=True)
         #[2, 1, 16, 1, 2, 1164, 17]
-        from sionna.channel import cir_to_time_channel
+        #from sionna.channel import cir_to_time_channel
         h_time = cir_to_time_channel(self.RESOURCE_GRID.bandwidth, h_b, tau_b, l_min=self.l_min, l_max=self.l_max, normalize=True) 
         #h_time: [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, l_max - l_min + 1]
         if self.showfig:
@@ -1390,7 +1409,23 @@ class Transmitter():
 
         return x_hat, no_eff, h_hat, err_var, h_perfect, err_var_perfect
 
-    def demapper_decision(self, x_hat, no)
+    def demapper_decision(self, x_hat, no_eff):
+        if self.pilot_pattern == "empty": # and perfect_csi == False: #"kronecker", "empty"
+            #no channel estimation
+            llr = self.mydemapper([x_hat, no_eff]) #[64, 1, 16, 14, 76]=>(64, 1, 16, 14, 304)
+            # Reshape the array by collapsing the last two dimensions
+            llr_est = llr.reshape(llr.shape[:-2] + (-1,)) #(64, 1, 16, 4256)
+        else:
+            llr_est = self.mydemapper([x_hat, no_eff]) #(2, 1, 2, 3072)
+            #output: [batch size, num_rx, num_rx_ant, n * num_bits_per_symbol]
+        
+        #llr_est #(64, 1, 1, 4256)
+        if self.USE_LDPC:
+            b_hat_tf = self.decoder(llr_est) #[64, 1, 1, 2128]
+            b_hat = b_hat_tf.numpy()
+        else:
+            b_hat = hard_decisions(llr_est, np.int32)  #(2, 1, 2, 3072)
+        return b_hat, llr_est
 
     def receiver(self, y, no, x_rg, b=None, h_b=None, tau_b=None, h_out=None, perfect_csi= False):
         print(self.RESOURCE_GRID.pilot_pattern) #<__main__.EmptyPilotPattern object at 0x7f2659dfd9c0>
@@ -1466,10 +1501,75 @@ class Transmitter():
         print("y shape:", y.shape) #(64, 1, 16, 14, 76) [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size]
 
         #Option1:
-        b_hat, BER = self.receiver(y, no, x_rg, b=b, h_b=h_b, tau_b=tau_b, h_out=h_out, perfect_csi= perfect_csi)
+        #b_hat, BER = self.receiver(y, no, x_rg, b=b, h_b=h_b, tau_b=tau_b, h_out=h_out, perfect_csi= perfect_csi)
         #Option2:
         x_hat, no_eff, h_hat, err_var, h_perfect, err_var_perfect = self.channelest_equ(y, no, h_b=h_b, tau_b=tau_b, h_out=h_out, perfect_csi= perfect_csi)
+        b_hat, llr_est = self.demapper_decision(x_hat=x_hat, no_eff=no_eff)
+        BER=calculate_BER(b, b_hat)
+        print("BER Value:", BER)
+
+        if self.savedata:
+            saved_data = self.save_parameters()
+            saved_data['no']= no
+            saved_data['h_b']=h_b
+            saved_data['tau_b']=tau_b
+            saved_data['h_out']=h_out
+            saved_data['y']=y
+            saved_data['x_rg']=x_rg
+            saved_data['b']=b
+            saved_data['x_hat']=x_hat
+            saved_data['no_eff']=no_eff
+            saved_data['h_hat']=h_hat
+            saved_data['err_var']=err_var
+            saved_data['h_perfect']=h_perfect
+            saved_data['err_var_perfect']=err_var_perfect
+            saved_data['b_hat']=b_hat
+            saved_data['llr_est']=llr_est
+            saved_data['BER']=BER
+            np.save("data/saved_data.npy", saved_data)
+            #np.load d2.item() to retrieve the actual dict object first:
         return b_hat, BER
+    
+    def save_parameters(self):
+        saved_data = {}
+        saved_data['channeltype'] = self.channeltype
+        saved_data['channeldataset'] = self.channeldataset
+        saved_data['fft_size'] = self.fft_size
+        saved_data['batch_size'] = self.batch_size
+        saved_data['num_ofdm_symbols'] = self.num_ofdm_symbols
+        saved_data['num_bits_per_symbol'] = self.num_bits_per_symbol
+        saved_data['pilot_pattern'] = self.pilot_pattern
+        saved_data['scenario'] = self.scenario
+        saved_data['dataset_folder'] = self.dataset_folder
+        saved_data['num_ut'] = self.num_ut
+        saved_data['num_bs'] = self.num_bs
+        saved_data['num_ut_ant'] = self.num_ut_ant
+        saved_data['num_bs_ant'] = self.num_bs_ant
+        saved_data['direction'] = self.direction
+        saved_data['num_streams_per_tx'] = self.num_streams_per_tx
+        saved_data['cyclic_prefix_length'] = self.cyclic_prefix_length
+        saved_data['num_guard_carriers'] = self.num_guard_carriers
+        saved_data['pilot_ofdm_symbol_indices'] = self.pilot_ofdm_symbol_indices
+        saved_data['frequencies'] = self.frequencies
+        saved_data['coderate'] = self.coderate
+        saved_data['k'] = self.k #num of information per codeword
+        saved_data['n'] = self.n  # Codeword length n = int(RESOURCE_GRID.num_data_symbols * num_bits_per_symbol) #num_data_symbols: if empty 1064*4=4256, else, 768*4=3072
+        return saved_data
+
+
+        
+
+        #[batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]
+
+
+def test_DeepMIMOchannel(scenario='O1_60', dataset_folder='data/DeepMIMO'):
+    transmit = Transmitter(channeldataset='deepmimo', channeltype='ofdm', scenario=scenario, dataset_folder=dataset_folder, direction='uplink', \
+                    batch_size =2, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
+                    subcarrier_spacing=60e3, \
+                    USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=showfigure)
+    b_hat, BER = transmit(ebno_db = 10.0, perfect_csi=False)
+    b_hat, BER = transmit(ebno_db = 10.0, perfect_csi=True)
+    
 
 def test_CDLchannel():
     # transmit = Transmitter(channeldataset='cdl', channeltype='ofdm', direction='uplink', \
@@ -1632,7 +1732,7 @@ if __name__ == '__main__':
     bertest = True
     showfigure = True
     
-    
+    test_DeepMIMOchannel()
     if cdltest is True:
         test_CDLchannel()
     if bertest is True:

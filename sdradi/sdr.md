@@ -227,6 +227,20 @@ $ ssh root@192.168.2.1
 $ python sdradi/pysdr.py
 ```
 
+### Mac OS Installation
+It is recommended that Mac OS users build libiio from the [build instructions](https://github.com/analogdevicesinc/libiio/blob/master/README_BUILD.md)
+```bash
+(mypy310) (base) kaikailiu@Kaikais-MBP radarsensing % pip install pylibiio
+(mypy310) (base) kaikailiu@Kaikais-MBP radarsensing % pip install pyadi-iio
+(mypy310) (base) kaikailiu@Kaikais-MBP radarsensing % iio_info -s
+Library version: 0.24 (git tag: v0.24)
+Compiled with backends: xml ip usb
+Unable to create Local IIO context : Function not implemented (78)
+Available contexts:
+        0: 0456:b673 (Analog Devices Inc. PlutoSDR (ADALM-PLUTO)), serial=10447376de0b000f00003000f0ba975eb8 [usb:1.7.5]
+```
+
+
 ## SSH Access to **POE** Device with Phaser and SDR
 The Radar is shown in this figure:
 ![Radar Device](../imgs/radardevice.png)
