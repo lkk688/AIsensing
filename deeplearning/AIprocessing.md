@@ -77,7 +77,7 @@ Create a Conda virtual environment with python 3.10 (`tensorrt==8.5.3.1` does no
    $ conda deactivate #To deactivate an active environment
 ```
 
-Install cuda, cudnn, tensorflow, and pytorch (Windows Native - Windows 7 or higher (64-bit) (no GPU support after TF 2.10))
+Windows Side: Install cuda, cudnn, tensorflow, and pytorch (Windows Native - Windows 7 or higher (64-bit) (no GPU support after TF 2.10))
 ```bash
    #install cuda under Conda
    conda install -y cuda -c nvidia/label/cuda-11.8.0 #new method from https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html#conda-installation
@@ -93,6 +93,16 @@ Install cuda, cudnn, tensorflow, and pytorch (Windows Native - Windows 7 or high
    python -c "import tensorflow as tf; print('tf version:', tf.__version__); print(tf.config.list_physical_devices('GPU'))"
    # Verify Pytorch installation
    python -c "import torch; print('Torch version:', torch.__version__); print(torch.cuda.is_available())"
+```
+
+In Linux:
+```bash
+(py310cu118) lkk@ThinkpadX1:~/MyRepo$ pip install tensorflow[and-cuda]==2.14.0
+Successfully installed absl-py-2.1.0 astunparse-1.6.3 cachetools-5.3.3 certifi-2024.7.4 charset-normalizer-3.3.2 flatbuffers-24.3.25 gast-0.6.0 google-auth-2.31.0 google-auth-oauthlib-1.0.0 google-pasta-0.2.0 grpcio-1.64.1 h5py-3.11.0 idna-3.7 keras-2.14.0 libclang-18.1.1 markdown-3.6 ml-dtypes-0.2.0 numpy-2.0.0 nvidia-cublas-cu11-11.11.3.6 nvidia-cuda-cupti-cu11-11.8.87 nvidia-cuda-nvcc-cu11-11.8.89 nvidia-cuda-runtime-cu11-11.8.89 nvidia-cudnn-cu11-8.7.0.84 nvidia-curand-cu11-10.3.0.86 nvidia-cusolver-cu11-11.4.1.48 nvidia-cusparse-cu11-11.7.5.86 nvidia-nccl-cu11-2.16.5 oauthlib-3.2.2 opt-einsum-3.3.0 packaging-24.1 pyasn1-0.6.0 pyasn1-modules-0.4.0 requests-2.32.3 requests-oauthlib-2.0.0 rsa-4.9 six-1.16.0 tensorboard-2.14.1 tensorboard-data-server-0.7.2 tensorflow-2.14.0 tensorflow-estimator-2.14.0 tensorflow-io-gcs-filesystem-0.37.1 tensorrt-8.5.3.1 termcolor-2.4.0 urllib3-2.2.2 wrapt-1.14.1
+
+$ cat /home/lkk/miniconda3/envs/py310cu118/lib/python3.10/site-packages/nvidia/cudnn/include/cudnn_version.h
+#define CUDNN_MAJOR 8
+#define CUDNN_MINOR 7
 ```
 
 Install other python packages:

@@ -612,6 +612,7 @@ class Transmitter():
         self.num_bs = num_bs #num_tx #1
         self.num_ut_ant = num_ut_ant #num_rx #2 #4
         self.num_bs_ant = num_bs_ant #8
+        self.num_time_steps = num_ofdm_symbols #???
         #[batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]
         if direction=="uplink": #the UT is transmitting.
             self.num_tx = self.num_ut
@@ -768,6 +769,10 @@ class Transmitter():
         #In this example, we use the O1 scenario with the carrier frequency set to 60 GHz (O1_60). 
         #Please download the "O1_60" data files [from this page](https://deepmimo.net/scenarios/o1-scenario/).
         #The downloaded zip file should be extracted into a folder, and the parameter `'dataset_folder` should be set to point to this folder
+        # if self.direction=='uplink':
+        #     DeepMIMO_dataset = get_deepMIMOdata(scenario=scenario, dataset_folder=dataset_folder, num_ue_antenna=self.num_bs_ant, num_bs_antenna=self.num_ut_ant, showfig=self.showfig)
+        # else:
+                #DeepMIMO_dataset = get_deepMIMOdata(scenario=scenario, dataset_folder=dataset_folder, num_ue_antenna=self.num_ut_ant, num_bs_antenna=self.num_bs_ant, showfig=self.showfig)
         DeepMIMO_dataset = get_deepMIMOdata(scenario=scenario, dataset_folder=dataset_folder, showfig=self.showfig)
         # The number of UE locations in the generated DeepMIMO dataset
         num_ue_locations = len(DeepMIMO_dataset[0]['user']['channel']) # 18100
@@ -777,7 +782,7 @@ class Transmitter():
         np.random.shuffle(ue_idx)
         # Reshape to fit the requested number of users
         ue_idx = np.reshape(ue_idx, [-1, num_rx]) # In the shape of (floor(18100/num_rx) x num_rx) (18100,1)
-        self.deepmimodataset = DeepMIMODataset(DeepMIMO_dataset=DeepMIMO_dataset, ue_idx=ue_idx)
+        self.deepmimodataset = DeepMIMODataset(DeepMIMO_dataset=DeepMIMO_dataset, ue_idx=ue_idx, num_time_steps=self.num_time_steps)
         h, tau = next(iter(self.deepmimodataset)) #h: (1, 1, 1, 16, 10, 1), tau:(1, 1, 10)
         #complex gains `h` and delays `tau` for each path
         #print(h.shape) #[num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]
@@ -1564,6 +1569,7 @@ class Transmitter():
 
 def test_DeepMIMOchannel(scenario='O1_60', dataset_folder='data/DeepMIMO'):
     transmit = Transmitter(channeldataset='deepmimo', channeltype='ofdm', scenario=scenario, dataset_folder=dataset_folder, direction='uplink', \
+                    num_ut = 1, num_ut_ant=1, num_bs = 1, num_bs_ant=16, \
                     batch_size =2, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
                     subcarrier_spacing=60e3, \
                     USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=showfigure)

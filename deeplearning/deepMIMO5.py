@@ -373,7 +373,7 @@ def plotcomplex(y):
 #
 class DeepMIMODataset(Dataset):
     #ref: https://github.com/DeepMIMO/DeepMIMO-python/blob/master/src/DeepMIMOv3/sionna_adapter.py
-    def __init__(self, DeepMIMO_dataset, bs_idx = None, ue_idx = None):
+    def __init__(self, DeepMIMO_dataset, bs_idx = None, ue_idx = None, num_time_steps = 1):
         self.dataset = DeepMIMO_dataset  
         # Set bs_idx based on given parameters
         # If no input is given, choose the first basestation
@@ -402,7 +402,7 @@ class DeepMIMODataset(Dataset):
         
         # Determine the number of available paths in the DeepMIMO dataset
         self.num_paths = DeepMIMO_dataset[0]['user']['channel'].shape[-1] #10
-        self.num_time_steps = 1 # Time step = 1 for static scenarios
+        self.num_time_steps = num_time_steps # Time step = 1 for static scenarios
         
         # The required path power shape
         self.ch_shape = (self.num_rx, 
@@ -465,10 +465,10 @@ class DeepMIMODataset(Dataset):
     def __len__(self):
         return self.num_samples
                 
-def get_deepMIMOdata(scenario='O1_60', dataset_folder=r'D:\Dataset\CommunicationDataset\O1_60', showfig=True):
+def get_deepMIMOdata(scenario='O1_60', dataset_folder=r'D:\Dataset\CommunicationDataset\O1_60', num_ue_antenna=1, num_bs_antenna=16, showfig=True):
     # Load the default parameters
     parameters = DeepMIMO.default_params()
-
+    #https://github.com/DeepMIMO/DeepMIMO-python/blob/master/src/DeepMIMOv3/params.py
     # Set scenario name
     parameters['scenario'] = scenario #https://deepmimo.net/scenarios/o1-scenario/
 
@@ -494,8 +494,8 @@ def get_deepMIMOdata(scenario='O1_60', dataset_folder=r'D:\Dataset\Communication
     parameters['user_row_last'] = 100 #450 # Last user row to be included in the dataset
     
     # Configuration of the antenna arrays
-    parameters['bs_antenna']['shape'] = np.array([16, 1, 1]) # BS antenna shape through [x, y, z] axes
-    parameters['ue_antenna']['shape'] = np.array([1, 1, 1]) # UE antenna shape through [x, y, z] axes, single antenna
+    parameters['bs_antenna']['shape'] = np.array([num_bs_antenna, 1, 1]) # BS antenna shape through [x, y, z] axes
+    parameters['ue_antenna']['shape'] = np.array([num_ue_antenna, 1, 1]) # UE antenna shape through [x, y, z] axes, single antenna
 
     # The OFDM_channels parameter allows choosing between the generation of channel impulse
     # responses (if set to 0) or frequency domain channels (if set to 1).
@@ -591,10 +591,10 @@ def get_deepMIMOdata(scenario='O1_60', dataset_folder=r'D:\Dataset\Communication
         # Import channel
         channel = dataset[bs_idx]['user']['channel'][ue_idx]
         # Take only the first antenna pair
-        plt.imshow(np.abs(np.squeeze(channel).T))
-        plt.title('Channel Magnitude Response')
-        plt.xlabel('TX Antennas')
-        plt.ylabel('Subcarriers')
+        # plt.imshow(np.abs(np.squeeze(channel).T))
+        # plt.title('Channel Magnitude Response')
+        # plt.xlabel('TX Antennas')
+        # plt.ylabel('Subcarriers')
 
         ## Visualization of the UE positions and path-losses
         loc_x = dataset[bs_idx]['user']['location'][:, 0] #(9231,)
@@ -3660,7 +3660,7 @@ class Transmitter():
         y, h_out = self.generateChannel(x_rg, no, channeltype=channeltype)
         # y is the symbol received after the channel and noise
         #Channel outputs y : [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], complex    
-        print(y.shape) #[64, 1, 1, 14, 76] dim (3,4 removed)
+        print(y.shape) #[64, 1, 1, 14, 76] dim (3,4 removed) h_out: (64, 1, 1, 1, 16, 1, 44)
         #print(y.real)
         #print(y.imag)
 

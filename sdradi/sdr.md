@@ -367,6 +367,27 @@ python
 0.0.17
 ```
 
+deepMIMO5:
+ebno_db=5
+h: (1, 1, 1, 16, 10, 1) tau: (1,1,10)
+num_streams_per_tx=1
+b: (64, 1, 1, 2288), k=2288
+x_rg: (64, 1, 1, 14, 76) [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size]
+print(y.shape) #[64, 1, 1, 14, 76] dim (3,4 removed) h_out: (64, 1, 1, 1, 16, 1, 44)
+h_hat: (64, 1, 1, 1, 1, 14, 44) [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols,fft_size]
+x_hat: (64, 1, 1, 572)  [batch_size, num_tx, num_streams, num_data_symbols]
+llr_est: (64, 1, 1, 2288) [batch size, num_rx, num_rx_ant, n * num_bits_per_symbol]
+b_hat: (64, 1, 1, 2288)
+BER Value: 0.2825
+
+AIsim_main2:
+h_b: (2, 1, 1, 1, 16, 10, 14), tau_b: (2, 1, 1, 10)
+h_out: (2, 1, 1, 1, 16, 14, 76)
+y shape: (2, 1, 1, 14, 76)
+x_hat: (2, 1, 1, 768)
+llr_est: (2, 1, 1, 3072)
+b_hat: (2, 1, 1, 3072)
+
 # Processing Code
 Install Pytorch and Tensorflow
 ```bash
