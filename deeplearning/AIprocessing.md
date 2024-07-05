@@ -356,7 +356,7 @@ llr_est: (64, 1, 1, 2288) [batch size, num_rx, num_rx_ant, n * num_bits_per_symb
 b_hat: (64, 1, 1, 2288)
 BER Value: 0.2825
 
-AIsim_main2:
+`AIsim_main2.py`:
 self.num_time_steps = 1 #num_ofdm_symbols
 ebno_db=5
 h_b: (2, 1, 1, 1, 16, 10, 14), tau_b: (2, 1, 1, 10)
@@ -375,11 +375,16 @@ ApplyOFDMChannel error: (64, 1, 1, 1, 16, 1, 76)
 #h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm_symbols, num_subcarriers], complex Channel frequency responses
 #h_freq: (64, 1, 1, 1, 16, 1, 76)
 ValueError: operands could not be broadcast together with shapes (64,1,1,1,16,1,76) (64,1,1,1,2,14,76) 
+operands could not be broadcast together with shapes (64,1,1,1,16,1,76) (64,1,1,1,2,14,76) 
 
 h:(64, 1, 1, 1, 16, 1, 76), x: (64, 1, 1, 1, 2, 14, 76)
 (64, 1, 1, 1, 16, 1, 76), x: (64, 1, 1, 1, 2, 14, 76)
 
 h_b: (64, 1, 1, 1, 16, 10, 1), tau_b: (64, 1, 1, 10) (64, 1, 1, 1, 16, 1, 76)
+
+
+it_init_thread_state(): the LLVM backend is inactive because the LLVM shared library ("libLLVM.so") could not be found! Set the DRJIT_LIBLLVM_PATH environment variable to specify its path.
+
 
 ### discrete-time impulse response (time-domain)
 In the same way as we have created the frequency channel impulse response from the continuous-time response, we can use the latter to compute a discrete-time impulse response. This can then be used to model the channel in the time-domain through discrete convolution with an input signal. Time-domain channel modeling is necessary whenever we want to deviate from the perfect OFDM scenario, e.g., OFDM without cyclic prefix, inter-subcarrier interference due to carrier-frequency offsets, phase noise, or very high Doppler spread scenarios, as well as other single or multicarrier waveforms (OTFS, FBMC, UFMC, etc).

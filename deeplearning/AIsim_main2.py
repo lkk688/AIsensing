@@ -1745,7 +1745,7 @@ def sim_bersingle_deepmimo(channeldataset='deepmimo', channeltype='ofdm'):
     # Define the number of UT and BS antennas
     NUM_UT = 1
     NUM_BS = 1
-    NUM_UT_ANT = 2
+    NUM_UT_ANT = 1 #2
     NUM_BS_ANT = 16
 
     ebno_dbs=np.linspace(EBN0_DB_MIN, EBN0_DB_MAX, 20)
