@@ -97,12 +97,19 @@ Windows Side: Install cuda, cudnn, tensorflow, and pytorch (Windows Native - Win
 
 In Linux:
 ```bash
+(py310cu118) lkk@ThinkpadX1:~/MyRepo$ python3 -m pip install nvidia-cudnn-cu11==8.7.0.84
 (py310cu118) lkk@ThinkpadX1:~/MyRepo$ pip install tensorflow[and-cuda]==2.14.0
 Successfully installed absl-py-2.1.0 astunparse-1.6.3 cachetools-5.3.3 certifi-2024.7.4 charset-normalizer-3.3.2 flatbuffers-24.3.25 gast-0.6.0 google-auth-2.31.0 google-auth-oauthlib-1.0.0 google-pasta-0.2.0 grpcio-1.64.1 h5py-3.11.0 idna-3.7 keras-2.14.0 libclang-18.1.1 markdown-3.6 ml-dtypes-0.2.0 numpy-2.0.0 nvidia-cublas-cu11-11.11.3.6 nvidia-cuda-cupti-cu11-11.8.87 nvidia-cuda-nvcc-cu11-11.8.89 nvidia-cuda-runtime-cu11-11.8.89 nvidia-cudnn-cu11-8.7.0.84 nvidia-curand-cu11-10.3.0.86 nvidia-cusolver-cu11-11.4.1.48 nvidia-cusparse-cu11-11.7.5.86 nvidia-nccl-cu11-2.16.5 oauthlib-3.2.2 opt-einsum-3.3.0 packaging-24.1 pyasn1-0.6.0 pyasn1-modules-0.4.0 requests-2.32.3 requests-oauthlib-2.0.0 rsa-4.9 six-1.16.0 tensorboard-2.14.1 tensorboard-data-server-0.7.2 tensorflow-2.14.0 tensorflow-estimator-2.14.0 tensorflow-io-gcs-filesystem-0.37.1 tensorrt-8.5.3.1 termcolor-2.4.0 urllib3-2.2.2 wrapt-1.14.1
-
+(py310cu118) lkk@ThinkpadX1:~/MyRepo$ mkdir -p $CONDA_PREFIX/etc/conda/activate.d
+(py310cu118) lkk@ThinkpadX1:~/MyRepo$ echo 'CUDNN_PATH=$(dirname $(python -c "import nvidia.cudnn;print(nvidia.cudnn.__file__)"))' >> $CONDA_PREFIX/etc/conda/activate.d/env_vars.sh
+(py310cu118) lkk@ThinkpadX1:~/MyRepo$ echo 'export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CONDA_PREFIX/lib/:$CUDNN_PATH/lib' >> $CONDA_PREFIX/etc/conda/activate.d/env_vars.sh
+(py310cu118) lkk@ThinkpadX1:~/MyRepo$ source $CONDA_PREFIX/etc/conda/activate.d/env_vars.sh
 $ cat /home/lkk/miniconda3/envs/py310cu118/lib/python3.10/site-packages/nvidia/cudnn/include/cudnn_version.h
 #define CUDNN_MAJOR 8
 #define CUDNN_MINOR 7
+(py310cu118) lkk@ThinkpadX1:~/MyRepo$ python3 -c "import tensorflow as tf; print('tf version:', tf.__version__); print(tf.config.list_physical_devices('GPU'))"
+pip uninstall numpy
+pip install numpy==1.26.4
 ```
 
 Install other python packages:
