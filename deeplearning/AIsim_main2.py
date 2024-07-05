@@ -612,7 +612,7 @@ class Transmitter():
         self.num_bs = num_bs #num_tx #1
         self.num_ut_ant = num_ut_ant #num_rx #2 #4
         self.num_bs_ant = num_bs_ant #8
-        self.num_time_steps = num_ofdm_symbols #???
+        self.num_time_steps = 1 #num_ofdm_symbols #??? 
         #[batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]
         if direction=="uplink": #the UT is transmitting.
             self.num_tx = self.num_ut
@@ -769,10 +769,12 @@ class Transmitter():
         #In this example, we use the O1 scenario with the carrier frequency set to 60 GHz (O1_60). 
         #Please download the "O1_60" data files [from this page](https://deepmimo.net/scenarios/o1-scenario/).
         #The downloaded zip file should be extracted into a folder, and the parameter `'dataset_folder` should be set to point to this folder
-        # if self.direction=='uplink':
-        #     DeepMIMO_dataset = get_deepMIMOdata(scenario=scenario, dataset_folder=dataset_folder, num_ue_antenna=self.num_bs_ant, num_bs_antenna=self.num_ut_ant, showfig=self.showfig)
-        # else:
-                #DeepMIMO_dataset = get_deepMIMOdata(scenario=scenario, dataset_folder=dataset_folder, num_ue_antenna=self.num_ut_ant, num_bs_antenna=self.num_bs_ant, showfig=self.showfig)
+        if self.direction=='uplink':
+            DeepMIMO_dataset = get_deepMIMOdata(scenario=scenario, dataset_folder=dataset_folder, num_ue_antenna=self.num_ut_ant, num_bs_antenna=self.num_bs_ant, showfig=self.showfig)
+            #DeepMIMO_dataset = get_deepMIMOdata(scenario=scenario, dataset_folder=dataset_folder, num_ue_antenna=self.num_bs_ant, num_bs_antenna=self.num_ut_ant, showfig=self.showfig)
+        else:
+            DeepMIMO_dataset = get_deepMIMOdata(scenario=scenario, dataset_folder=dataset_folder, num_ue_antenna=self.num_bs_ant, num_bs_antenna=self.num_ut_ant, showfig=self.showfig)
+            #DeepMIMO_dataset = get_deepMIMOdata(scenario=scenario, dataset_folder=dataset_folder, num_ue_antenna=self.num_ut_ant, num_bs_antenna=self.num_bs_ant, showfig=self.showfig)
         DeepMIMO_dataset = get_deepMIMOdata(scenario=scenario, dataset_folder=dataset_folder, showfig=self.showfig)
         # The number of UE locations in the generated DeepMIMO dataset
         num_ue_locations = len(DeepMIMO_dataset[0]['user']['channel']) # 18100
@@ -1573,8 +1575,8 @@ def test_DeepMIMOchannel(scenario='O1_60', dataset_folder='data/DeepMIMO'):
                     batch_size =2, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
                     subcarrier_spacing=60e3, \
                     USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=showfigure)
-    b_hat, BER = transmit(ebno_db = 10.0, perfect_csi=False)
-    b_hat, BER = transmit(ebno_db = 10.0, perfect_csi=True)
+    b_hat, BER = transmit(ebno_db = 5.0, perfect_csi=False)
+    b_hat, BER = transmit(ebno_db = 5.0, perfect_csi=True)
     
 
 def test_CDLchannel():
@@ -1727,6 +1729,49 @@ def sim_bermulti():
     ber_plot(ebno_dbs, BER_list, legend=legend, ylabel="BER", title="Bit Error Rate", ebno=True, xlim=None,
              ylim=None, is_bler=None, savefigpath='./data/berlistnew.jpg')
 
+def sim_bersingle_deepmimo(channeldataset='deepmimo', channeltype='ofdm'):
+        # Bit per channel use
+    NUM_BITS_PER_SYMBOL = 2 # QPSK
+
+    # Minimum value of Eb/N0 [dB] for simulations
+    EBN0_DB_MIN = -3.0
+
+    # Maximum value of Eb/N0 [dB] for simulations
+    EBN0_DB_MAX = 25.0 #5.0
+
+    # How many examples are processed by Sionna in parallel
+    BATCH_SIZE = 64
+
+    # Define the number of UT and BS antennas
+    NUM_UT = 1
+    NUM_BS = 1
+    NUM_UT_ANT = 2
+    NUM_BS_ANT = 16
+
+    ebno_dbs=np.linspace(EBN0_DB_MIN, EBN0_DB_MAX, 20)
+
+    showfigure = False
+    eval_transceiver = Transmitter(channeldataset='deepmimo', channeltype='ofdm', scenario=scenario, dataset_folder=dataset_folder, direction='uplink', \
+                    num_ut = NUM_UT, num_ut_ant=NUM_UT_ANT, num_bs = NUM_BS, num_bs_ant=NUM_BS_ANT, \
+                    batch_size =BATCH_SIZE, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = NUM_BITS_PER_SYMBOL,  \
+                    subcarrier_spacing=60e3, \
+                    USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=showfigure)
+    b_hat, BER = eval_transceiver(ebno_db = 5.0, perfect_csi=False)
+
+    #channeltype="perfect", "awgn", "ofdm", "time"
+    #Number of information bits per codeword
+    k=eval_transceiver.k
+    binary_source = BinarySource()
+    NUM_STREAMS_PER_TX=eval_transceiver.num_streams_per_tx
+    # Start Transmitter self.k Number of information bits per codeword
+    b = binary_source([BATCH_SIZE, 1, NUM_STREAMS_PER_TX, k]) #[batch_size, num_tx, num_streams_per_tx, num_databits]
+
+    b_hat, BER = eval_transceiver(ebno_db = 25.0, perfect_csi=False)
+    
+    bers, blers, BERs = sim_ber(ebno_dbs, eval_transceiver, b, BATCH_SIZE)
+    ber_plot_single(ebno_dbs, bers, title = "BER Simulation", savefigpath='./data/bernew.jpg')
+
+
 if __name__ == '__main__':
 
     #testOFDMModulatorDemodulator()
@@ -1738,7 +1783,8 @@ if __name__ == '__main__':
     bertest = True
     showfigure = True
     
-    test_DeepMIMOchannel()
+    #test_DeepMIMOchannel()
+    sim_bersingle_deepmimo()
     if cdltest is True:
         test_CDLchannel()
     if bertest is True:
