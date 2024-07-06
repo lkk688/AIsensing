@@ -22,7 +22,7 @@ from deepMIMO5 import complex_normal, mygenerate_OFDMchannel, RemoveNulledSubcar
     MyApplyOFDMChannel, MyApplyTimeChannel
 from deepMIMO5 import time_lag_discrete_time_channel, cir_to_time_channel, cir_to_ofdm_channel, subcarrier_frequencies
 #from sionna.channel import subcarrier_frequencies, cir_to_ofdm_channel, cir_to_time_channel, time_lag_discrete_time_channel
-        #from sionna.channel import ApplyOFDMChannel, ApplyTimeChannel, OFDMChannel, TimeChannel
+from sionna.channel import ApplyOFDMChannel#, ApplyTimeChannel, OFDMChannel, TimeChannel
 
 from sionna_tf import MyLMMSEEqualizer, LMMSEEqualizer, SymbolLogits2LLRs#, OFDMDemodulator #ZFPrecoder, OFDMModulator, KroneckerPilotPattern, Demapper, RemoveNulledSubcarriers, 
 
@@ -121,6 +121,46 @@ def ber_plot_single(ebno_dbs, bers, title = "BER Simulation", savefigpath='./dat
     if savefigpath is not None:
         plt.savefig(savefigpath)
         plt.close(fig)
+
+def ber_plot_single2(ebno_dbs, bers, is_bler= False, title = "BER Simulation", savefigpath='./data/ber.jpg'):
+
+    fig, ax = plt.subplots(figsize=(16,10))
+
+    plt.xticks(fontsize=18)
+    plt.yticks(fontsize=18)
+
+    #A tuple of two floats defining x-axis limits.
+    # if xlim is not None:
+    #     plt.xlim(xlim)
+    # if ylim is not None:
+    #     plt.ylim(ylim)
+
+    plt.title(title, fontsize=25)
+    # return figure handle
+    if is_bler:
+        line_style = "--"
+    else:
+        line_style = ""
+    plt.semilogy(ebno_dbs, bers, line_style, linewidth=2)
+
+    plt.grid(which="both")
+    ebno = True
+    if ebno:
+        plt.xlabel(r"$E_b/N_0$ (dB)", fontsize=25)
+    else:
+        plt.xlabel(r"$E_s/N_0$ (dB)", fontsize=25)
+    if is_bler:
+        ylabel="BLER"
+    else:
+        ylabel="BER"
+    
+    plt.ylabel(ylabel, fontsize=25)
+    # legend=""
+    # plt.legend(legend, fontsize=20)
+    if savefigpath is not None:
+        plt.savefig(savefigpath)
+        plt.close(fig)
+
 
 def sim_ber(ebno_dbs, eval_transceiver, b, batch_size):
     #num_points = 100  # Example value, replace with the actual value
@@ -740,6 +780,7 @@ class Transmitter():
             #channel_freq = ApplyOFDMChannel(add_awgn=True)
             # Generate the OFDM channel
             self.applychannel = MyApplyOFDMChannel(add_awgn=True)
+            #self.applychannel = ApplyOFDMChannel(add_awgn=True)
             #h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, fft_size]
             #(64, 1, 1, 1, 16, 1, 76)
         elif self.channeltype=='time': #time channel:
@@ -1489,7 +1530,7 @@ class Transmitter():
             return b_hat, None
 
 
-    def __call__(self, b=None, ebno_db = 15.0, perfect_csi=False):
+    def __call__(self, b=None, ebno_db = 15.0, perfect_csi=False, datapath="data/saved_data.npy"):
         #Compute the noise power for a given Eb/No value. This takes not only the coderate but also the overheads related pilot transmissions and nulled carriers
         no = ebnodb2no(ebno_db, self.num_bits_per_symbol, self.coderate)
         # Convert it to a NumPy float
@@ -1498,13 +1539,13 @@ class Transmitter():
         #we generate random batches of CIR, transform them in the frequency domain and apply them to the resource grid in the frequency domain.
         h_b, tau_b = self.get_channelcir()
         if self.channeltype=='ofdm':
-            h_out = self.get_OFDMchannelresponse(h_b, tau_b)
+            h_out = self.get_OFDMchannelresponse(h_b, tau_b) #cir_to_ofdm_channel
             print("h_freq shape:", h_out.shape) #(64, 1, 16, 1, 2, 14, 76)
         elif self.channeltype=='time':
             h_out = self.get_timechannelresponse(h_b, tau_b) #(64, 1, 16, 1, 2, 1174, 27)
 
         # Transmitter
-        y, x_rg, b= self.uplinktransmission(b=b, no=no, h_out=h_out)
+        y, x_rg, b= self.uplinktransmission(b=b, no=no, h_out=h_out) #y = self.applychannel([x_rg, h_out, no])
         print("y shape:", y.shape) #(64, 1, 16, 14, 76) [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size]
 
         #Option1:
@@ -1533,7 +1574,7 @@ class Transmitter():
             saved_data['b_hat']=b_hat
             saved_data['llr_est']=llr_est
             saved_data['BER']=BER
-            np.save("data/saved_data.npy", saved_data)
+            np.save(datapath, saved_data)
             #np.load d2.item() to retrieve the actual dict object first:
         return b_hat, BER
     
@@ -1591,10 +1632,10 @@ def test_CDLchannel():
     transmit = Transmitter(channeldataset='cdl', channeltype='time', direction='uplink', \
                     batch_size =2, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
                     subcarrier_spacing=60e3, \
-                    USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=showfigure)
-    transmit.test_timechannel_estimation(b=None, no=0.025)
-    b_hat, BER = transmit(ebno_db = 10.0, perfect_csi=False)
-    b_hat, BER = transmit(ebno_db = 10.0, perfect_csi=True)
+                    USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=showfigure, savedata=True)
+    #transmit.test_timechannel_estimation(b=None, no=0.025)
+    b_hat, BER = transmit(ebno_db = 5.0, perfect_csi=False, datapath="data/cdl_time_saved_ebno5.npy")
+    b_hat, BER = transmit(ebno_db = 5.0, perfect_csi=True, datapath="data/cdl_time_saved_ebno5perfectcsi.npy")
     
     
 
@@ -1604,8 +1645,8 @@ def test_CDLchannel():
                     USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=showfigure) #"kronecker" "empty"
     #transmit.get_channelcir()
     #h_out=transmit.get_OFDMchannelresponse()
-    b_hat, BER = transmit(ebno_db = 10.0, perfect_csi=False)
-    b_hat, BER = transmit(ebno_db = 10.0, perfect_csi=True)
+    b_hat, BER = transmit(ebno_db = 5.0, perfect_csi=False, datapath="data/cdl_ofdm_saved_ebno5.npy")
+    b_hat, BER = transmit(ebno_db = 5.0, perfect_csi=True, datapath="data/cdl_ofdm_saved_ebno5perfectcsi.npy")
 
 def sim_bersingle(channeldataset='cdl', channeltype='time'):
         # Bit per channel use
@@ -1703,16 +1744,16 @@ def sim_bermulti():
     BER_list.append(bers)
 
     #Case2
-    channeldataset='cdl'
-    channeltype='time' #'ofdm'
-    eval_transceiver = Transmitter(channeldataset=channeldataset, channeltype=channeltype, direction='uplink', \
-                    batch_size =BATCH_SIZE, fft_size = 76, num_ut = NUM_UT, num_ut_ant=NUM_UT_ANT, num_bs = NUM_BS, num_bs_ant=NUM_BS_ANT, \
-                        num_ofdm_symbols=14, num_bits_per_symbol = NUM_BITS_PER_SYMBOL,  \
-                    subcarrier_spacing=60e3, \
-                    USE_LDPC = True, pilot_pattern = "kronecker", guards=True, showfig=showfigure)
-    bers=simulationloop(ebno_dbs, eval_transceiver, b)
-    legend.append(f'Channeltype: {channeltype}, use LDPC')
-    BER_list.append(bers)
+    # channeldataset='cdl'
+    # channeltype='time' #'ofdm'
+    # eval_transceiver = Transmitter(channeldataset=channeldataset, channeltype=channeltype, direction='uplink', \
+    #                 batch_size =BATCH_SIZE, fft_size = 76, num_ut = NUM_UT, num_ut_ant=NUM_UT_ANT, num_bs = NUM_BS, num_bs_ant=NUM_BS_ANT, \
+    #                     num_ofdm_symbols=14, num_bits_per_symbol = NUM_BITS_PER_SYMBOL,  \
+    #                 subcarrier_spacing=60e3, \
+    #                 USE_LDPC = True, pilot_pattern = "kronecker", guards=True, showfig=showfigure)
+    # bers=simulationloop(ebno_dbs, eval_transceiver, b)
+    # legend.append(f'Channeltype: {channeltype}, use LDPC')
+    # BER_list.append(bers)
 
     #Case3
     channeldataset='cdl'
@@ -1745,7 +1786,7 @@ def sim_bersingle_deepmimo(channeldataset='deepmimo', channeltype='ofdm'):
     # Define the number of UT and BS antennas
     NUM_UT = 1
     NUM_BS = 1
-    NUM_UT_ANT = 1 #2
+    NUM_UT_ANT = 1 #2 is not working
     NUM_BS_ANT = 16
 
     ebno_dbs=np.linspace(EBN0_DB_MIN, EBN0_DB_MAX, 20)
@@ -1755,8 +1796,8 @@ def sim_bersingle_deepmimo(channeldataset='deepmimo', channeltype='ofdm'):
                     num_ut = NUM_UT, num_ut_ant=NUM_UT_ANT, num_bs = NUM_BS, num_bs_ant=NUM_BS_ANT, \
                     batch_size =BATCH_SIZE, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = NUM_BITS_PER_SYMBOL,  \
                     subcarrier_spacing=60e3, \
-                    USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=showfigure)
-    b_hat, BER = eval_transceiver(ebno_db = 5.0, perfect_csi=False)
+                    USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=showfigure, savedata=True)
+    b_hat, BER = eval_transceiver(ebno_db = 5.0, perfect_csi=False, datapath="data/deepmimo_ofdm_saved_ebno5.npy")
 
     #channeltype="perfect", "awgn", "ofdm", "time"
     #Number of information bits per codeword
@@ -1766,10 +1807,12 @@ def sim_bersingle_deepmimo(channeldataset='deepmimo', channeltype='ofdm'):
     # Start Transmitter self.k Number of information bits per codeword
     b = binary_source([BATCH_SIZE, 1, NUM_STREAMS_PER_TX, k]) #[batch_size, num_tx, num_streams_per_tx, num_databits]
 
-    b_hat, BER = eval_transceiver(ebno_db = 25.0, perfect_csi=False)
+    b_hat, BER = eval_transceiver(ebno_db = 25.0, perfect_csi=False, datapath="data/deepmimo_ofdm_saved_ebno5.npy")
     
     bers, blers, BERs = sim_ber(ebno_dbs, eval_transceiver, b, BATCH_SIZE)
-    ber_plot_single(ebno_dbs, bers, title = "BER Simulation", savefigpath='./data/bernew.jpg')
+    #ber_plot_single(ebno_dbs, bers, title = "BER Simulation", savefigpath='./data/bernew.jpg')
+    ber_plot_single2(ebno_dbs, bers, is_bler= False, title = "BER Simulation", savefigpath='./data/ber.jpg')
+    ber_plot_single2(ebno_dbs, blers, is_bler=True, title = "BLER Simulation", savefigpath='./data/blers.jpg')
 
 
 if __name__ == '__main__':
