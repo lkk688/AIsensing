@@ -912,6 +912,8 @@ class Transmitter():
                 num_time_steps = self.RESOURCE_GRID.num_time_samples+self.l_tot-1
                 sampling_frequency=self.RESOURCE_GRID.bandwidth
             h_b, tau_b = self.cdl(batch_size=self.batch_size, num_time_steps=num_time_steps, sampling_frequency=sampling_frequency)
+        self.num_time_steps = num_time_steps
+        self.sampling_frequency = sampling_frequency
         # In CDL, Direction = "uplink" the UT is transmitting.
         # num_bs_ant = 16 = num_rx_ant
         # num_ut_ant = 2 = num_tx_ant
@@ -1602,6 +1604,9 @@ class Transmitter():
         saved_data['coderate'] = self.coderate
         saved_data['k'] = self.k #num of information per codeword
         saved_data['n'] = self.n  # Codeword length n = int(RESOURCE_GRID.num_data_symbols * num_bits_per_symbol) #num_data_symbols: if empty 1064*4=4256, else, 768*4=3072
+        saved_data['num_time_steps'] = self.num_time_steps
+        saved_data['sampling_frequency'] = self.sampling_frequency
+
         return saved_data
 
 
@@ -1833,8 +1838,10 @@ if __name__ == '__main__':
     showfigure = True
     
     #test_DeepMIMOchannel()
+    bers, blers, BERs = sim_bersingle2(channeldataset='cdl', channeltype='ofdm', NUM_BITS_PER_SYMBOL = 2, EBN0_DB_MIN = -5.0, EBN0_DB_MAX = 25.0, \
+                   BATCH_SIZE = 128, NUM_UT = 1, NUM_BS = 1, NUM_UT_ANT = 2, NUM_BS_ANT = 16, showfigure = False, datapathbase='data/')
     bers, blers, BERs = sim_bersingle2(channeldataset='deepmimo', channeltype='ofdm')
-    bers, blers, BERs = sim_bersingle2(channeldataset='cdl', channeltype='ofdm')
+    
     if cdltest is True:
         test_CDLchannel()
     if bertest is True:
