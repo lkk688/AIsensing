@@ -1132,7 +1132,7 @@ class Transmitter():
         #x :  Channel inputs [batch size, num_tx, num_tx_ant, num_time_samples], tf.complex
         #h_time : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_samples + l_tot - 1, l_tot], tf.complex
         
-        return y, x_rg, b
+        return y, x_rg, x, b
     
     def ofdmchannel_estimation(self, y, no, h_out=None, perfect_csi= False):
         #perform channel estimation via pilots
@@ -1547,7 +1547,7 @@ class Transmitter():
             h_out = self.get_timechannelresponse(h_b, tau_b) #(64, 1, 16, 1, 2, 1174, 27)
 
         # Transmitter
-        y, x_rg, b= self.uplinktransmission(b=b, no=no, h_out=h_out) #y = self.applychannel([x_rg, h_out, no])
+        y, x_rg, x, b= self.uplinktransmission(b=b, no=no, h_out=h_out) #y = self.applychannel([x_rg, h_out, no])
         print("y shape:", y.shape) #(64, 1, 16, 14, 76) [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size]
 
         #Option1:
@@ -1566,11 +1566,12 @@ class Transmitter():
             saved_data['h_out']=h_out
             saved_data['y']=y
             saved_data['x_rg']=x_rg
+            saved_data['x']=x
             saved_data['b']=b
             saved_data['x_hat']=x_hat
             saved_data['no_eff']=no_eff
-            saved_data['h_hat']=h_hat
-            saved_data['err_var']=err_var
+            saved_data['h_hat']=to_numpy(h_hat)
+            saved_data['err_var']=to_numpy(err_var)
             saved_data['h_perfect']=h_perfect
             saved_data['err_var_perfect']=err_var_perfect
             saved_data['b_hat']=b_hat
@@ -1840,7 +1841,8 @@ if __name__ == '__main__':
     #test_DeepMIMOchannel()
     bers, blers, BERs = sim_bersingle2(channeldataset='cdl', channeltype='ofdm', NUM_BITS_PER_SYMBOL = 2, EBN0_DB_MIN = -5.0, EBN0_DB_MAX = 25.0, \
                    BATCH_SIZE = 128, NUM_UT = 1, NUM_BS = 1, NUM_UT_ANT = 2, NUM_BS_ANT = 16, showfigure = False, datapathbase='data/')
-    bers, blers, BERs = sim_bersingle2(channeldataset='deepmimo', channeltype='ofdm')
+    bers, blers, BERs = sim_bersingle2(channeldataset='deepmimo', channeltype='ofdm', NUM_BITS_PER_SYMBOL = 2, EBN0_DB_MIN = -5.0, EBN0_DB_MAX = 25.0, \
+                   BATCH_SIZE = 128, NUM_UT = 1, NUM_BS = 1, NUM_UT_ANT = 1, NUM_BS_ANT = 16, showfigure = False, datapathbase='data/')
     
     if cdltest is True:
         test_CDLchannel()
