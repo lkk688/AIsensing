@@ -36,6 +36,8 @@ Our new AI processing framework aims to overcome these limitations. It offers th
    - Our open environment encourages Computer Science and Software Engineering students to innovate. Students can develop software and deep learning models using a specified general-purpose dataset format, without requiring deep domain-specific knowledge in wireless communication. 
    - Our AI processing framework bridges the gap between theory and practice, empowering researchers and students alike. As we refine our implementation, we anticipate further breakthroughs in wireless communication and radar sensing. By fostering collaboration and creativity, we build upon the solid foundation we've established.
 
+The overall system architecture is shown here:
+
 <img width="1066" alt="image" src="https://github.com/lkk688/AIsensing/assets/6676586/7817a076-66cd-49a3-aeba-c960fde4ef86">
 
 
