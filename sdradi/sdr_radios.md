@@ -89,21 +89,21 @@ Upgrade the firmware: https://wiki.analog.com/university/tools/pluto/users/firmw
 
 
 After the driver installation, the pluto device can be connected and tested via ADI IIO:
-![plutoiio](imgs/plutoiio.png)
+![plutoiio](../imgs/plutoiio.png)
 
 Install IIO_oscilloscope: https://wiki.analog.com/resources/tools-software/linux-software/iio_oscilloscope
 
 The spectrum diagram from IIO:
-![plutoiiospectrum](imgs/plutoiiospectrum.png)
+![plutoiiospectrum](../imgs/plutoiiospectrum.png)
 
 The pluto device is also connected via terminal (tera term):
-(imgs/plutoterminal.png)
+(../imgs/plutoterminal.png)
 
 ### Radio setup in MATLAB 
 Connect the radio device to MATLAB and perform connect test:
-![Testconnection](imgs/testplutoconnection.png)
+![Testconnection](../imgs/testplutoconnection.png)
 
-![Testconnection2](imgs/testplutoconnection2.png)
+![Testconnection2](../imgs/testplutoconnection2.png)
 
 Write the radio test code for RX and TX: [sdrmatlab/plutoradio.mlx], [sdrmatlab/radioreceive.mlx], [sdrmatlab/radiotransmit.mlx]
 
@@ -113,10 +113,10 @@ Use the radio to perform spectrum test via code [spectrumanalysis](sdrmatlab/spe
 We also tested the transmission of OFDM waveform in Radar mode and analyze the spectrum: [sdrmatlab/OFDMRadar.m], the spectrum result is shown here.
 
 When antenna is not attached:
-![OFDMtransmitreceive-noantenna](imgs/OFDMtransmitreceive-noantenna.png)
+![OFDMtransmitreceive-noantenna](../imgs/OFDMtransmitreceive-noantenna.png)
 
 When antenna is attached, we can see the received signal spectrum:
-![OFDMtransmitreceive](imgs/OFDMtransmitreceive.png)
+![OFDMtransmitreceive](../imgs/OFDMtransmitreceive.png)
 
 ### Python interface
 PyADI-IIO: https://wiki.analog.com/resources/tools-software/linux-software/pyadi-iio
