@@ -105,10 +105,10 @@ Connect the radio device to MATLAB and perform connect test:
 
 ![Testconnection2](../imgs/testplutoconnection2.png)
 
-Write the radio test code for RX and TX: [sdrmatlab/plutoradio.mlx], [sdrmatlab/radioreceive.mlx], [sdrmatlab/radiotransmit.mlx]
+Write the radio test code for RX and TX: [../sdrmatlab/plutoradio.mlx], [../sdrmatlab/radioreceive.mlx], [../sdrmatlab/radiotransmit.mlx]
 
-Use the radio to perform spectrum test via code [spectrumanalysis](sdrmatlab/spectrumanalysis.mlx)
-![SpectrumTest](imgs/spectrumtest.png)
+Use the radio to perform spectrum test via code [spectrumanalysis](../sdrmatlab/spectrumanalysis.mlx)
+![SpectrumTest](../imgs/spectrumtest.png)
 
 We also tested the transmission of OFDM waveform in Radar mode and analyze the spectrum: [sdrmatlab/OFDMRadar.m], the spectrum result is shown here.
 
