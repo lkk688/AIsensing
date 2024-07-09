@@ -139,6 +139,10 @@ $ pip install sionna
 (mycondapy310) (base) lkk@lkk-intel12:~/Developer$ git clone https://github.com/NVlabs/sionna.git
 ```
 
+Nvidia sionna requires Tensorflow (2.10 - 2.14). Latest version of Tensorflow (e.g., 2.16) may not support due to the `complex` data type for tf layers. Sionna also requires Tensorflow with cuda backend. If cuda is not available, LLVM backend is required. If your tensorflow cannot detect the GPU and you do not have the LLVM backend, it may show the following error: `it_init_thread_state(): the LLVM backend is inactive because the LLVM shared library ("libLLVM.so") could not be found! Set the DRJIT_LIBLLVM_PATH environment variable to specify its path.`
+
+Run `deeplearning/MIMO_OFDM_Transmissions_over_CDL.ipynb` to test the Nvidia sionna.
+
 ## DeepMIMO
 [DeepMIMO](https://deepmimo.net/) is a generic dataset that enables a wide range of machine/deep learning applications for MIMO systems. It takes as input a set of parameters (such as antenna array configurations and time-domain/OFDM parameters) and generates MIMO channel realizations, corresponding locations, angles of arrival/departure, etc., based on these parameters and on a ray-tracing scenario selected from those available in DeepMIMO.
 
@@ -342,49 +346,6 @@ y = channel_freq([x_rg, h_freq, no]) #h_freq is array
 The figure of the channel frequency response is shown here:
 ![Channel Frequency Response](../imgs/ofdmchannelfreq.png)
 
-### DeepMIMO BER Evaluation
-`deepMIMO5.py`:
-ebno_db=5
-h: (1, 1, 1, 16, 10, 1) tau: (1,1,10)
-num_streams_per_tx=1
-b: (64, 1, 1, 2288), k=2288
-x_rg: (64, 1, 1, 14, 76) [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size]
-print(y.shape) #[64, 1, 1, 14, 76] dim (3,4 removed) h_out: (64, 1, 1, 1, 16, 1, 44)
-h_hat: (64, 1, 1, 1, 1, 14, 44) [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols,fft_size]
-x_hat: (64, 1, 1, 572)  [batch_size, num_tx, num_streams, num_data_symbols]
-llr_est: (64, 1, 1, 2288) [batch size, num_rx, num_rx_ant, n * num_bits_per_symbol]
-b_hat: (64, 1, 1, 2288)
-BER Value: 0.2825
-
-`AIsim_main2.py`:
-self.num_time_steps = 1 #num_ofdm_symbols
-ebno_db=5
-h_b: (2, 1, 1, 1, 16, 10, 14), tau_b: (2, 1, 1, 10)
-h_out: (2, 1, 1, 1, 16, 14, 76)
-b: (2, 1, 1, 3072) k=3072, 768*4=3072 RESOURCE_GRID.num_data_symbols * num_bits_per_symbol
-x_rg: (2, 1, 1, 14, 76) [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size]
-y shape: (2, 1, 1, 14, 76) [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size]
-x_hat: (2, 1, 1, 768) 
-llr_est: (2, 1, 1, 3072)
-b_hat: (2, 1, 1, 3072)
-BER Value: 0.2317
-Perfect_csi: BER Value: 0.08251953125
-
-ApplyOFDMChannel error: (64, 1, 1, 1, 16, 1, 76)
-#inputs x :  [batch size, num_tx, num_tx_ant, num_ofdm_symbols, fft_size], complex
-#h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm_symbols, num_subcarriers], complex Channel frequency responses
-#h_freq: (64, 1, 1, 1, 16, 1, 76)
-ValueError: operands could not be broadcast together with shapes (64,1,1,1,16,1,76) (64,1,1,1,2,14,76) 
-operands could not be broadcast together with shapes (64,1,1,1,16,1,76) (64,1,1,1,2,14,76) 
-
-h:(64, 1, 1, 1, 16, 1, 76), x: (64, 1, 1, 1, 2, 14, 76)
-(64, 1, 1, 1, 16, 1, 76), x: (64, 1, 1, 1, 2, 14, 76)
-
-h_b: (64, 1, 1, 1, 16, 10, 1), tau_b: (64, 1, 1, 10) (64, 1, 1, 1, 16, 1, 76)
-
-
-it_init_thread_state(): the LLVM backend is inactive because the LLVM shared library ("libLLVM.so") could not be found! Set the DRJIT_LIBLLVM_PATH environment variable to specify its path.
-
 
 ### discrete-time impulse response (time-domain)
 In the same way as we have created the frequency channel impulse response from the continuous-time response, we can use the latter to compute a discrete-time impulse response. This can then be used to model the channel in the time-domain through discrete convolution with an input signal. Time-domain channel modeling is necessary whenever we want to deviate from the perfect OFDM scenario, e.g., OFDM without cyclic prefix, inter-subcarrier interference due to carrier-frequency offsets, phase noise, or very high Doppler spread scenarios, as well as other single or multicarrier waveforms (OTFS, FBMC, UFMC, etc).
@@ -508,4 +469,70 @@ The function of `cir_to_time_channel` assumes that a sinc filter is used for pul
 for $`\ell`$ ranging from $l_{min}$ to $l_{max}$, and where $W$ is the $bandwidth$. Each tap ($\bar{h}_{b, \ell}$) represents the combined effect of all paths at a specific time lag ($\ell$). The sinc function accounts for the time delay and phase shift due to each path. Input $a$ is Path coefficients: `[batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps], complex`, e.g., `(64, 1, 1, 1, 16, 10, 1)`. $tau$ is Path delays [s]: `[batch size, num_rx, num_tx, num_paths], float`, e.g., `(64, 1, 1, 10)`. Output $hm$ is Channel taps coefficients: `[batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, l_max - l_min + 1], complex`, e.g., `[64, 1, 1, 1, 16, 1, 27]`.
 The generated `h` is shown in this figure:
 ![Discrete Time CIR](../imgs/ofdm_discretetimeCIR.png)
-        
+
+## OFDM Transmission Code
+### CDL and DeepMIMO Ttesting
+`deeplearning/AIsim_main2.py` is created to perform complete OFDM transmission over CDL or DeepMIMO channel dataset. The major class is `class Transmitter()` with the following initialization parameters.
+
+`def test_CDLchannel()` inside the `deeplearning/AIsim_main2.py` is used to test the OFDM transmission over the CDL OFDM channel (`channeldataset='cdl'`), `channeltype='time'` and `channeltype='ofdm'` with `perfect_csi=False` and `perfect_csi=True` are tested inside this function. The dictionary data obtained after OFDM transmission is saved in `data/cdl_time_saved_ebno5.npy`, `data/cdl_time_saved_ebno5perfectcsi.npy`, `data/cdl_ofdm_saved_ebno5.npy`, and `data/cdl_ofdm_saved_ebno5perfectcsi.npy`.
+
+`test_DeepMIMOchannel()` inside the `deeplearning/AIsim_main2.py` is used to test the OFDM transmission over the DeepMIMO OFDM channel (`channeldataset='deepmimo'`)
+
+
+### BER Evaluation
+`def sim_bersingle2` performs BER test for `channeldataset='deepmimo'` and `channeldataset='cdl'`, `channeltype='ofdm'` or `channeltype='time'`, and draws a single BER and BLER curve for one scenario. The following cases are tested with BER curves.
+```bash
+    bers, blers, BERs = sim_bersingle2(channeldataset='cdl', channeltype='time', NUM_BITS_PER_SYMBOL = 2, EBN0_DB_MIN = -5.0, EBN0_DB_MAX = 25.0, \
+                   BATCH_SIZE = 32, NUM_UT = 1, NUM_BS = 1, NUM_UT_ANT = 2, NUM_BS_ANT = 16, showfigure = False, datapathbase='data/')
+    bers, blers, BERs = sim_bersingle2(channeldataset='deepmimo', channeltype='time', NUM_BITS_PER_SYMBOL = 2, EBN0_DB_MIN = -5.0, EBN0_DB_MAX = 25.0, \
+                   BATCH_SIZE = 32, NUM_UT = 1, NUM_BS = 1, NUM_UT_ANT = 1, NUM_BS_ANT = 16, showfigure = False, datapathbase='data/')
+    bers, blers, BERs = sim_bersingle2(channeldataset='cdl', channeltype='ofdm', NUM_BITS_PER_SYMBOL = 2, EBN0_DB_MIN = -5.0, EBN0_DB_MAX = 25.0, \
+                   BATCH_SIZE = 128, NUM_UT = 1, NUM_BS = 1, NUM_UT_ANT = 2, NUM_BS_ANT = 16, showfigure = False, datapathbase='data/')
+    bers, blers, BERs = sim_bersingle2(channeldataset='deepmimo', channeltype='ofdm', NUM_BITS_PER_SYMBOL = 2, EBN0_DB_MIN = -5.0, EBN0_DB_MAX = 25.0, \
+                   BATCH_SIZE = 128, NUM_UT = 1, NUM_BS = 1, NUM_UT_ANT = 1, NUM_BS_ANT = 16, showfigure = False, datapathbase='data/')
+```
+
+`sim_bermulti()` contains multiple BER testing cases and put many figures into one BER comparison graph.
+
+### deepMIMO5 and AIsim Main2 comparison (for debug)
+`deepMIMO5.py`:
+ebno_db=5
+h: (1, 1, 1, 16, 10, 1) tau: (1,1,10)
+num_streams_per_tx=1
+b: (64, 1, 1, 2288), k=2288
+x_rg: (64, 1, 1, 14, 76) [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size]
+print(y.shape) #[64, 1, 1, 14, 76] dim (3,4 removed) h_out: (64, 1, 1, 1, 16, 1, 44)
+h_hat: (64, 1, 1, 1, 1, 14, 44) [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols,fft_size]
+x_hat: (64, 1, 1, 572)  [batch_size, num_tx, num_streams, num_data_symbols]
+llr_est: (64, 1, 1, 2288) [batch size, num_rx, num_rx_ant, n * num_bits_per_symbol]
+b_hat: (64, 1, 1, 2288)
+BER Value: 0.2825
+
+`AIsim_main2.py`:
+self.num_time_steps = 1 #num_ofdm_symbols
+ebno_db=5
+h_b: (2, 1, 1, 1, 16, 10, 14), tau_b: (2, 1, 1, 10)
+h_out: (2, 1, 1, 1, 16, 14, 76)
+b: (2, 1, 1, 3072) k=3072, 768*4=3072 RESOURCE_GRID.num_data_symbols * num_bits_per_symbol
+x_rg: (2, 1, 1, 14, 76) [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size]
+y shape: (2, 1, 1, 14, 76) [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size]
+x_hat: (2, 1, 1, 768) 
+llr_est: (2, 1, 1, 3072)
+b_hat: (2, 1, 1, 3072)
+BER Value: 0.2317
+Perfect_csi: BER Value: 0.08251953125
+
+ApplyOFDMChannel error: (64, 1, 1, 1, 16, 1, 76)
+#inputs x :  [batch size, num_tx, num_tx_ant, num_ofdm_symbols, fft_size], complex
+#h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm_symbols, num_subcarriers], complex Channel frequency responses
+#h_freq: (64, 1, 1, 1, 16, 1, 76)
+ValueError: operands could not be broadcast together with shapes (64,1,1,1,16,1,76) (64,1,1,1,2,14,76) 
+operands could not be broadcast together with shapes (64,1,1,1,16,1,76) (64,1,1,1,2,14,76) 
+
+h:(64, 1, 1, 1, 16, 1, 76), x: (64, 1, 1, 1, 2, 14, 76)
+(64, 1, 1, 1, 16, 1, 76), x: (64, 1, 1, 1, 2, 14, 76)
+
+h_b: (64, 1, 1, 1, 16, 10, 1), tau_b: (64, 1, 1, 10) (64, 1, 1, 1, 16, 1, 76)
+
+
+
