@@ -1,32 +1,70 @@
-# AIsensing for Radar and Communication
+# Deep Learning-Based AI Processing Framework for Wireless Communication and Radar Sensing
 
-[AIprocessing](deeplearning/AIprocessing.md) contains the details of the AI processing framework based on Numpy, Pytorch and Transformers.
+## Introduction
 
-[MATLAB](matlab/matlabsim.md) contains the details of the MATLAB Interface to the SDR Device and Communication Simulation.
+Deep learning has revolutionized various application scenarios by significantly improving performance across domains. In the context of wireless communication, researchers have explored the potential of deep learning techniques to enhance system efficiency and reliability. In this work, we present our novel AI backend processing framework, designed to address critical challenges in wireless communication and radar sensing.
 
-[SDR Radios](sdradi/sdr_radios.md) contains the details of the interface to SDR Radio Devices.
+## Existing Solutions and Their Limitations
+One notable solution in this field is [NVIDIA SIONNA](https://developer.nvidia.com/sionna), which is open sourced at [sionna](https://github.com/NVlabs/sionna). SIONNA leverages the power of Tensorflow to accelerate AI physical-layer research. However, it has limitations:
 
-[Joint Communication and Radar Hardware Systems](sdradi/sdr.md) contains the implementation details and software framework to the software-defined radio devices for communication and radar sensing.
+1. **Simulation-Only Approach:** SIONNA operates solely on simulation data, lacking a real radio interface. This restricts its applicability to practical scenarios.
 
-# Deep Learning with DeepMIMO Dataset
-Install Pytorch and TensorFlow (some package needs Tensorflow). Following [Tensorflow Pip](https://www.tensorflow.org/install/pip) page to install Tensorflow:
-```bash
-(mypy310) lkk@Alienware-LKKi7G8:~/Developer/AIsensing$ python3 -m pip install tensorflow[and-cuda]
-# Verify the installation:
-python3 -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))"
-```
+2. **Tensorflow Dependency:** SIONNA relies exclusively on the Tensorflow framework, limiting flexibility for researchers who prefer other deep learning libraries. Sionna also does not support for Tensorflow versions `>2.14` due to the stopped support of the `complex` data type in Tensorflow Layers.
 
-Download [DeepMIMO](https://www.deepmimo.net/) dataset.
+3. **Basic Neural Networks:** While effective, SIONNA's neural network architecture remains basic, missing out on advanced transformer models.
 
-Follow [link](https://www.deepmimo.net/versions/v2-python/), install DeepMIMO python package:
-```bash
-pip install DeepMIMO
-```
+## Our Proposed AI Backend Processing Framework
 
-Select and download a scenario from the scenarios [page](https://www.deepmimo.net/scenarios/), for example, select Outdoor scenario1 (O1). Download 'O1_60' and 'O1_3p5' to the 'data' folder.
+Our new AI processing framework aims to overcome these limitations. It offers the following features:
 
-Run the DeepMIMO simulation and obtain the BER curve for various configurations:
-```bash
-python deeplearning/deepMIMO5_sim.py
-```
-[BER Curve](imgs/berlist.jpg)
+
+1. **Hybrid Data Sources: Real Hardware Radio and Simulation Data**
+   - Our framework interfaces seamlessly with both real hardware radio systems (support Linux Industry IO and Analog's tranceiver chips) and simulation data (e.g., 5G CDL Channel dataset and DeepMIMO dataset). Researchers can seamlessly interface our framework with physical software-defined radio (SDR) hardware. This dual approach ensures robustness and practical relevance. We also integrate with the DeepMIMO raytracing dataset, enabling comprehensive performance evaluation.
+
+2. **Flexible Libraries: Numpy, Pytorch, and Huggingface Transformers**
+   - We leverage Numpy for efficient data preprocessing and simulation data preparation.
+   - Pytorch serves as our primary deep learning framework, allowing researchers to build complex neural architectures.
+   - Huggingface Transformers enhance our capabilities with advanced transformer models.
+
+3. **Dual Capability: Communication and Radar Sensing**
+   - Our framework provides AI processing capabilities for both communication tasks (e.g., OFDM symbol detection, demodulation, channel estimation) and radar sensing (target detection and tracking).
+   - By combining these functionalities, we create a unified solution for diverse wireless applications.
+
+4. **Empowering Students via Pythonic Architecture**
+   - Our backend processing framework is designed in Python, promoting readability, extensibility, and collaboration.
+   - It offers a clear modular distinction between domain-specific components (e.g., OFDM communication, signal processing) and general-purpose deep learning models.
+   - Our open environment encourages Computer Science and Software Engineering students to innovate. Students can develop software and deep learning models using a specified general-purpose dataset format, without requiring deep domain-specific knowledge in wireless communication. 
+   - Our AI processing framework bridges the gap between theory and practice, empowering researchers and students alike. As we refine our implementation, we anticipate further breakthroughs in wireless communication and radar sensing. By fostering collaboration and creativity, we build upon the solid foundation we've established.
+
+
+## Detailed Documents for AIsensing
+
+1. [AIprocessing](deeplearning/AIprocessing.md) contains the setup and implementation details of the AI processing framework for Radar and Communication based on Numpy, Pytorch and Transformers.
+   - [AIsim_main2.py](deeplearning/AIsim_main2.py) is the created main code to perform complete OFDM transmission over CDL or DeepMIMO channel dataset.
+   - [deepMIMO5.py](deeplearning/deepMIMO5.py) contains the major code related to OFDM basic modules and DeepMIMO Channel dataset
+   - [ofdmtrain_pytorch2.py](deeplearning/ofdmtrain_pytorch2.py) contains the training code of Pytorch models for OFDM communication simulation
+   - [ofdmeval_pytorch.py](deeplearning/ofdmeval_pytorch.py) contains the inference and evaluation code of Pytorch models for OFDM communication simulation
+   - [wave2vec_ofdm.py](deeplearning/wave2vec_ofdm.py) contains the Wave2Vec transformer models for OFDM communication
+
+2. [MATLAB](matlab/matlabsim.md) contains the details of the MATLAB Interface to the SDR Device and Communication Simulation.
+   - [simpleQAM](matlab/simpleQAM.mlx): test the basic QAM modulation, draw the Constellation Diagram
+   - [simpleofdm](matlab/simpleofdm.mlx): simulates basic ofdm connection, test the BER
+   - [80211ofdm](matlab/ofdm_communication.mlx): simulate the IEEE802.11 OFDM communication
+   - [dfts_ofdm](matlab/dfts_ofdm.mlx): simulate the DFT-S OFDM to minimize PAPR in UL via DFT
+   - [DFT-spread-OFDM Radar](matlab/periodogram_radar_dfts_one.mlx): Periodogram-based OFDM Radar with DFT-spread Single Target
+   - [DFT-spread-OFDM Radar](matlab/periodogram_radar.mlx): DFT-spread-OFDM Radar simulation (two targets)
+
+
+3. [SDR Radios](sdradi/sdr_radios.md) contains the details of the interface to SDR Radio Devices.
+   - [myad9361.py](sdradi/myad9361.py) Test and run the AD9361 transceiver
+   - [myad9361class.py](sdradi/myad9361class.py) Put all ADI transeiver related code into one class
+   - [myadiclass.py](sdradi/myadiclass.py) extends the `myad9361class.py`
+   - [myofdm.py](sdradi/myofdm.py) OFDM related code in one library (subset of `deepMIMO5.py`), used for radio device
+   - [myofdmwithsdr.py](sdradi/myofdmwithsdr.py) Integrated OFDM MIMO transmission with SDR radio
+
+4. [Joint Communication and Radar Hardware Systems](sdradi/sdr.md) contains the implementation details and software framework to the software-defined radio devices for communication and radar sensing.
+   - [myradar3.py](sdradi/myradar3.py) Radar device control related code
+   - [radar_fmcw3.py](sdradi/radar_fmcw3.py) Implements FMCW Radar
+   - [radarappwdevice3.py](sdradi/radarappwdevice3.py) Latest main entrance file for Radar device
+
+
