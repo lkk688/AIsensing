@@ -24,7 +24,7 @@ from deepMIMO5 import time_lag_discrete_time_channel, cir_to_time_channel, cir_t
 #from sionna.channel import subcarrier_frequencies, cir_to_ofdm_channel, cir_to_time_channel, time_lag_discrete_time_channel
 #from sionna.channel import ApplyOFDMChannel#, ApplyTimeChannel, OFDMChannel, TimeChannel
 
-from sionna_tf import MyLMMSEEqualizer, LMMSEEqualizer, SymbolLogits2LLRs#, OFDMDemodulator #ZFPrecoder, OFDMModulator, KroneckerPilotPattern, Demapper, RemoveNulledSubcarriers, 
+from sionna_tf import MyLMMSEEqualizer #, LMMSEEqualizer, SymbolLogits2LLRs#, OFDMDemodulator #ZFPrecoder, OFDMModulator, KroneckerPilotPattern, Demapper, RemoveNulledSubcarriers, 
 
 from deepMIMO5 import OFDMModulator, OFDMDemodulator
 #from sionna.ofdm import OFDMModulator, OFDMDemodulator
