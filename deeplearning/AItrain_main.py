@@ -82,7 +82,7 @@ class OFDMDataset(Dataset):
         self.check_channel()
 
         
-    def check_channel(self):
+    def check_channel(self, compare=True):
         from deepMIMO5 import time_lag_discrete_time_channel, cir_to_time_channel, cir_to_ofdm_channel, subcarrier_frequencies
         if self.drawfig:
              #eval_transceiver.RESOURCE_GRID.num_ofdm_symbols
@@ -104,13 +104,16 @@ class OFDMDataset(Dataset):
             plt.ylabel(r"$a$");
         h_freq_np = cir_to_ofdm_channel(self.frequencies, self.h_b, self.tau_b, normalize=True)
         #(128, 1, 16, 1, 2, 14, 76)
-        print(np.allclose(h_freq_np, self.h_out)) #False
+        print(np.allclose(h_freq_np, self.h_out)) #True False
         print(np.allclose(h_freq_np[:,:,:,0,0,:,:], self.h_out[:,:,:,0,0,:,:])) #True
         print(np.allclose(h_freq_np[:,0,0,0,0,:,:], self.h_out[:,0,0,0,0,:,:])) #True
-        h_freq_np2 = cir_to_ofdm_channel(self.frequencies, self.h_b, self.tau_b, normalize=True)
-        print(np.allclose(h_freq_np, h_freq_np2)) #True
 
+        if compare == True:
+            from sionna.channel import subcarrier_frequencies, cir_to_ofdm_channel
+            h_freq_tf = cir_to_ofdm_channel(self.frequencies, self.h_b, self.tau_b, normalize=True)
+            print(np.allclose(h_freq_np, h_freq_tf.numpy())) #True
 
+    def check_channelestimation(self):
         if self.drawfig:
             h_perfect = self.h_perfect[0,0,0,0,0,0]
             h_hat = self.h_hat[0,0,0,0,0,0]
@@ -124,6 +127,7 @@ class OFDMDataset(Dataset):
             plt.legend(["Ideal (real part)", "Ideal (imaginary part)", "Estimated (real part)", "Estimated (imaginary part)"]);
             plt.title("Comparison of channel frequency responses");
 
+    
     def __len__(self):
         return self.maxdatalen
     
