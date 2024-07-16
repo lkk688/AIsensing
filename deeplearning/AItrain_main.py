@@ -79,9 +79,42 @@ class OFDMDataset(Dataset):
         self.num_time_steps = saved_data['num_time_steps']
         self.sampling_frequency = saved_data['sampling_frequency']
         
+        self.check_uplinktransmission()
         self.check_channel()
 
-        
+    def check_uplinktransmission(self, compare=True):
+        c = self.b
+        x = self.x
+        x_rg = self.x_rg
+
+        if compare:
+            from sionna.mapping import Mapper, Demapper
+            from sionna.ofdm import ResourceGrid, ResourceGridMapper
+            # The mapper maps blocks of information bits to constellation symbols
+            mapper = Mapper("qam", self.num_bits_per_symbol)
+
+            rg = ResourceGrid(num_ofdm_symbols=self.num_ofdm_symbols,
+                  fft_size=self.fft_size,
+                  subcarrier_spacing=60e3, #15e3,
+                  num_tx=1,
+                  num_streams_per_tx=self.num_streams_per_tx,
+                  cyclic_prefix_length=6,
+                  num_guard_carriers=[5,6],
+                  dc_null=True,
+                  pilot_pattern="kronecker",
+                  pilot_ofdm_symbol_indices=[2,11])
+            rg.show();
+
+            # The resource grid mapper maps symbols onto an OFDM resource grid
+            rg_mapper = ResourceGridMapper(rg)
+
+            x_tf = mapper(c) #np.array[64,1,1,896] if empty np.array[64,1,1,1064] 1064*4=4256 [batch_size, num_tx, num_streams_per_tx, num_data_symbols]
+            x_rg_tf = rg_mapper(x_tf) ##complex array[64,1,1,14,76] 14*76=1064
+            #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76] (64, 1, 2, 14, 76)
+
+            print(np.allclose(x, x_tf.numpy())) #True
+            print(np.allclose(x_rg, x_rg_tf.numpy())) #False
+
     def check_channel(self, compare=True):
         from deepMIMO5 import time_lag_discrete_time_channel, cir_to_time_channel, cir_to_ofdm_channel, subcarrier_frequencies
         if self.drawfig:
@@ -104,14 +137,25 @@ class OFDMDataset(Dataset):
             plt.ylabel(r"$a$");
         h_freq_np = cir_to_ofdm_channel(self.frequencies, self.h_b, self.tau_b, normalize=True)
         #(128, 1, 16, 1, 2, 14, 76)
-        print(np.allclose(h_freq_np, self.h_out)) #True False
+        print(np.allclose(h_freq_np, self.h_out)) #True
         print(np.allclose(h_freq_np[:,:,:,0,0,:,:], self.h_out[:,:,:,0,0,:,:])) #True
         print(np.allclose(h_freq_np[:,0,0,0,0,:,:], self.h_out[:,0,0,0,0,:,:])) #True
 
         if compare == True:
             from sionna.channel import subcarrier_frequencies, cir_to_ofdm_channel
             h_freq_tf = cir_to_ofdm_channel(self.frequencies, self.h_b, self.tau_b, normalize=True)
-            print(np.allclose(h_freq_np, h_freq_tf.numpy())) #True
+            h_freq_tfnp = h_freq_tf.numpy()
+            print(np.allclose(h_freq_np, h_freq_tfnp)) #False
+            print(np.allclose(h_freq_np[:,:,:,0,0,:,:], h_freq_tfnp[:,:,:,0,0,:,:])) #False
+            print(np.allclose(h_freq_np[:,0,0,0,0,:,:], h_freq_tfnp[:,0,0,0,0,:,:])) #False
+            print(np.allclose(h_freq_np[0,0,0,0,0,:,:], h_freq_tfnp[0,0,0,0,0,:,:])) #True
+            print(np.allclose(h_freq_np[0,0,0,0,0,0,:], h_freq_tfnp[0,0,0,0,0,0,:])) #True
+            if self.drawfig:
+                plt.figure()
+                plt.plot(np.real(h_freq_tfnp[0,0,0,0,0,0]))
+                plt.plot(np.imag(h_freq_tfnp[0,0,0,0,0,0]))
+                plt.plot(np.real(h_freq_np[0,0,0,0,0,0]), "--")
+                plt.plot(np.imag(h_freq_np[0,0,0,0,0,0]), "--")
 
     def check_channelestimation(self):
         if self.drawfig:
