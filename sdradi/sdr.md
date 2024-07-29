@@ -283,6 +283,13 @@ sudo apt-get install usbip #To list all local USB-emulated network devices using
 analog@phaser:~ $ sudo usbip list -local
 ```
 
+Upgrade:
+```bash
+ssh root@192.168.1.67 #analog@192.168.1.69 #password: analog
+root@phaser:~# sudo apt update
+root@phaser:~# sudo apt full-upgrade
+```
+
 To view all TCP or UDP ports that are being listened on, along with the associated services and socket status (you can see the port `50901` is for iiod): 
 ```bash
 sudo netstat -tunlp
@@ -402,7 +409,7 @@ pip install tensorflow[and-cuda]==2.14.0 #https://www.tensorflow.org/install/sou
 #install nvidia_cudnn_cu11-8.7.0.84, nvidia_cuda_nvcc_cu11-11.8.89, tensorrt-8.5.3.1-cp310
 ```
 ## SDR Device
-Run the test code for SDR:
+Run the test code `.\sdradi\pysdr.py` for SDR (revise the IP for the device):
 ```bash
 (mycondapy310) PS D:\Developer\radarsensing> python .\sdradi\pysdr.py #transmitting a QPSK signal in the 915 MHz band, receiving it, and plotting the PSD
 python sdradi/myad9361.py #perform transmit and plot the spectrum
