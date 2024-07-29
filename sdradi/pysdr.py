@@ -1,7 +1,12 @@
 import numpy as np
-#import adi
+import adi
+import matplotlib
+import platform
+if platform.system() == 'Darwin':
+    #matplotlib.use('MacOSX')
+    matplotlib.use("TkAgg") #need to add this in Mac, otherwise, matplotlib figure stuck in debugger mode
 import matplotlib.pyplot as plt
-from myadi.ad936x import ad9361
+#from myadi.ad936x import ad9361
 # transmitting a QPSK signal in the 915 MHz band, receiving it, and plotting the PSD
 
 Rx_CHANNEL =1
@@ -12,11 +17,11 @@ num_samps = 100000 # number of samples per call to rx()
 
 #sdr = adi.Pluto("ip:192.168.2.1")
 #sdr = adi.ad9361(uri="ip:phaser:50901")
-sdr = ad9361(uri="ip:192.168.1.69:50901")
-#sdr = adi.ad9361(uri="ip:192.168.1.69:50901")
+#sdr = ad9361(uri="ip:192.168.1.69:50901")
+sdr = adi.ad9361(uri="ip:192.168.1.69:50901")
 #sdr = adi.ad9361(uri="ip:pluto.local")
 # Read back properties from hardware
-print(sdr.tx_rf_bandwidth) #18,000,000
+#print(sdr.tx_rf_bandwidth) #18,000,000
 sdr.sample_rate = int(sample_rate) #1Mhz
 
 # Config Tx

@@ -1,7 +1,7 @@
 
 # Implementation and Setup of the AI Framework
 
-## Setup Python Environment
+## Setup Conda Environment in Linux
 
 ```bash
    curl https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o Miniconda3-latest-Linux-x86_64.sh
@@ -19,6 +19,30 @@ You can also install conda in silent mode, but you need to run additional comman
 ```
 ".bashrc" has been updated, and close and re-open your current shell to make changes effective.
 
+## Setup Conda Environment in Mac OS
+Download miniconda from [link](https://docs.anaconda.com/miniconda/)
+
+```bash
+% curl https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-x86_64.sh -o Miniconda3-latest-MacOSX-x86_64.sh
+% bash Miniconda3-latest-MacOSX-x86_64.sh -b -u
+lkk@kaikais-mbp2019 Developers % source ~/miniconda3/bin/activate
+(base) lkk@kaikais-mbp2019 Developers % conda init bash
+#remove existing environment
+conda remove -n ENV_NAME --all
+% conda create --name py310 python=3.10
+% conda activate py310
+% conda install -c conda-forge pylibiio
+% pip install pyadi-iio
+% pip install numpy matplotlib
+```
+
+In Mac, if you face `md5sum: command not found` problem, install it via `brew`
+```bash
+brew update
+brew upgrade
+brew install md5sha1sum
+```
+## Conda Virtual Environment
 Create a Conda virtual environment with python 3.10 (`tensorrt==8.5.3.1` does not support python3.11):
 
 ```bash
@@ -77,6 +101,7 @@ Install other python packages:
 
 Installation in Mac
 ```bash
+% pip install pyadi-iio
 (mypy310) (base) kaikailiu@Kaikais-MBP radarsensing % pip install tensorflow==2.14.0
 #Test tensorflow
 python3 -c "import tensorflow as tf; print(tf.reduce_sum(tf.random.normal([1000, 1000])))"
