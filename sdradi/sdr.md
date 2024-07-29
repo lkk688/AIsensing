@@ -24,6 +24,26 @@ Due to the limited 56 MHz bandwidth, which is insufficient for radar sensing, we
 
 # SDR Devices
 
+## Linux Kernel
+The Linux kernel in this [repository](https://github.com/analogdevicesinc/linux) is the Linux kernel from Xilinx together with drivers & patches applied from Analog Devices. [Build the ADI Linux Kernel](https://wiki.analog.com/resources/tools-software/linux-drivers-all#building_the_adi_linux_kernel).
+
+The Analog Devices kernel can be built to run on the Raspberry PI boards. Ref: [Linux Kernel for Raspberry Pi](https://wiki.analog.com/resources/tools-software/linux-build/generic/raspberrypi). For example, the kernel version of Raspberry Pi is 5.10 so that the correspondent latest rpi branch is rpi-5.10.y.
+
+[Raspberry Pi Linux Kernel page](https://www.raspberrypi.com/documentation/computers/linux_kernel.html)
+
+```bash
+$ sudo apt install git
+$ sudo apt install bc bison flex libssl-dev make
+git clone https://github.com/analogdevicesinc/linux
+cd linux
+$ KERNEL=kernel7l
+/linux $ ARCH=arm make adi_bcm2711_defconfig
+#
+# configuration written to .config
+#
+/linux $ ARCH=arm make #this takes a long time
+```
+
 ## USB Access to ADI SDR devices
 
 ADALM-PLUTO is based on Analog Devices AD9363--Highly Integrated RF Agile Transceiver and Xilinx® Zynq Z-7010 FPGA
