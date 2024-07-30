@@ -433,7 +433,7 @@ class SDR:
         #rx_samples = np.ones(SAMPLES.shape[0] + add_td_samples, dtype=np.complex64)
         while success == 0 and fails < timeout:       
             # RX samples 
-            rx_samples = self.SDR_RX_receive(combinerule='drop', normalize=False)
+            rx_samples = self.SDR_RX_receive(combinerule='drop', normalize=True)
 
             #the use of tx_SAMPLES is for adjust_stdev and perform correlation
             #rx_samples_normalized, rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR = detect_signaloffset(rx_samples, tx_samples=SAMPLES, num_samples=num_samples, leadingzeros=leadingzeros, add_td_samples=add_td_samples)
