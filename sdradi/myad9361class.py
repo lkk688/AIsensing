@@ -436,9 +436,9 @@ class SDR:
             rx_samples = self.SDR_RX_receive(combinerule='drop', normalize=False)
 
             #the use of tx_SAMPLES is for adjust_stdev and perform correlation
-            # rx_samples_normalized, rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR = detect_signaloffset(rx_samples, tx_SAMPLES=SAMPLES, num_samples=num_samples, leadingzeros=leadingzeros, add_td_samples=add_td_samples)
+            #rx_samples_normalized, rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR = detect_signaloffset(rx_samples, tx_samples=SAMPLES, num_samples=num_samples, leadingzeros=leadingzeros, add_td_samples=add_td_samples)
 
-            rx_samples_normalized, rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR = detect_signaloffsetv2(rx_samples, tx_SAMPLES=SAMPLES, num_samples=num_samples, leadingzeros=leadingzeros, add_td_samples=add_td_samples)
+            rx_samples_normalized, rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR = detect_signaloffsetv2(rx_samples, tx_samples=SAMPLES, num_samples=num_samples, leadingzeros=leadingzeros, add_td_samples=add_td_samples)
 
             if make_plot:
                 plot_noisesignalPSD(rx_samples, rx_samples_normalized, tx_SAMPLES=SAMPLES, \
@@ -706,8 +706,8 @@ def main():
     #testlibiioaccess(urladdress)
     #sdr_test(urladdress, signal_type=signal_type, Rx_CHANNEL=Rx_CHANNEL, plot_flag = plot_flag)
 
-    #test_SDRclass(urladdress)
-    test_SDRTDD(urladdress)
+    test_SDRclass(urladdress)
+    #test_SDRTDD(urladdress)
     fs=1000000
     #test_ofdm_SDR(urladdress=urladdress, SampleRate=fs)
     #test_ofdmmimo_SDR(urladdress=urladdress)
@@ -792,8 +792,8 @@ def updatefigure(axs, t, data0, data1, specf,specp):
 #PoE: "ip:192.168.1.67:50901"
 import argparse
 parser = argparse.ArgumentParser(description='MyAD9361')
-parser.add_argument('--urladdress', default="ip:192.168.2.1", type=str,
-                    help='urladdress of the device, e.g., ip:pluto.local') 
+parser.add_argument('--urladdress', default="ip:192.168.1.67:50901", type=str,
+                    help='urladdress of the device, e.g., ip:pluto.local, ip:192.168.2.1') 
 parser.add_argument('--rxch', default=1, type=int, 
                     help='number of rx channels')
 parser.add_argument('--signal', default="dds", type=str,

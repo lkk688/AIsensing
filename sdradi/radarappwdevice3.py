@@ -75,10 +75,10 @@ num_chirps = 1 #128 for TDD mode
 # output_freq = 12.145e9
 # int(output_freq 10e9 + signal_freq 100e3 + center_freq 2.1e9)
 
-baseip = 'ip:phaser'
+baseip = 'ip:192.168.1.67' #'ip:phaser'
 UseRadarDevice = True
 tddmode =False # Use TDD mode or not
-signaltype='OFDM'#'sinusoid' #'OFDM'
+signaltype='sinusoid'#'sinusoid' #'OFDM'
 if UseRadarDevice == True:
     sdrurl = baseip+":50901"  # "ip:pluto.local" #ip:phaser.local:50901
     phaserurl = baseip  # "ip:phaser.local"

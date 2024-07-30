@@ -378,6 +378,21 @@ $ exit
 ```
 There is another `device_reboot` option in [link](https://wiki.analog.com/university/tools/pluto/devs/reboot)
 
+When multiple SDR devices available
+```bash
+lkk@lkk-intel12:~$ iio_attr -a -C fw_version 
+Multiple contexts found. Please select one using --uri:
+	0: 192.168.2.1 (Analog Devices PlutoSDR Rev.C (Z7010-AD9361)), serial=10447376de0b000f00003000f0ba975eb8 [ip:pluto.local]
+	1: 0456:b673 (Analog Devices Inc. PlutoSDR (ADALM-PLUTO)), serial=10447376de0b000f00003000f0ba975eb8 [usb:1.10.5]
+$ iio_attr -C fw_version  --uri usb:1.10.5
+fw_version: v0.38
+$ iio_attr -C fw_version --uri ip:pluto.local
+fw_version: v0.38
+$ iio_info -u ip:pluto.local
+$ iio_info -u usb:1.10.5
+$ iio_info -u ip:192.168.2.1
+```
+
 ## TDD Engine
 The latest version of `pyadi-iio' from pip is `0.016` and does not contain the tddn. Need to install the pyadi-iio from source.
 ```bash
@@ -438,7 +453,12 @@ This code contains several test cases:
 
 3) `test_ofdm_SDR`, which performs correction for the received sample and detect the starting point. 
 
-Integrate the `myofdm.py` with `myad9361class.py` to transmit the simple OFDM signal. The `test_ofdm_SDR` mainly tests the `SDR_RXTX_offset` function. The output format is `[IQ, SINR, SDR_TX_GAIN, SDR_RX_GAIN, fails + 1, corr, sdr_time]` where
+### OFDM with SDR
+`sdradi/myofdm.py` contains OFDM related code. `myad9361class.py` integrates the `myofdm.py` to transmit the OFDM signals. 
+  * The `test_ofdm_SDR` function mainly tests the `SDR_RXTX_offset` function with basic OFDM signal. 
+  * The `test_ofdmmimo_SDR` function integrates the OFDM MIMO signal.
+
+The output format is `[IQ, SINR, SDR_TX_GAIN, SDR_RX_GAIN, fails + 1, corr, sdr_time]` where
   * IQ is the IQ data in format expected by demodulator
   * SINR is the measured SINR based on noise power measurement during the unmodulated symbols, and the mean power of the received and synchronised signal.
   * SDR_RX_GAIN similar to above, the actual RX setting
@@ -446,7 +466,7 @@ Integrate the `myofdm.py` with `myad9361class.py` to transmit the simple OFDM si
   * corr os the Pearson correlation of the tx and rx signals
   * sdr_time is the measured time from start of the SDR process to finishing it. When debug is enabled, it takes about 1.4sec and without it takes 25ms in authors computer.
 
-The result figure (plotted by `plot_noisesignalPSD` in `processing.py`) for Pulto SDR is shown as:
+The result figure of `test_ofdm_SDR` (plotted by `plot_noisesignalPSD` in `processing.py`) for Pulto SDR is shown as:
 
 ![correctionresults](../imgs/correctionresults.png "Receiver Correction results")
 
