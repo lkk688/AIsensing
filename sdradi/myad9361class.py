@@ -178,7 +178,7 @@ class SDR:
         # Set the hardware gain for both TX and RX
         if tx1_gain is not None:
             self.sdr.tx_hardwaregain_chan0 = tx1_gain  # TX gain
-        elif self.Tx_CHANNEL==2 and tx2_gain is not None:
+        if self.Tx_CHANNEL==2 and tx2_gain is not None:
             self.sdr.tx_hardwaregain_chan1 = tx2_gain
         #self.sdr.rx_hardwaregain_chan0 = self.SDR_RX_GAIN  # RX gain -30
 
@@ -652,8 +652,8 @@ def test_SDRclass(urladdress, signal_type='dds'):
     bandwidth = 4000000 #4MHz
     mysdr = SDR(SDR_IP=urladdress, SDR_FC=fc, SDR_SAMPLERATE=fs, SDR_BANDWIDTH=bandwidth)
     mysdr.SDR_TX_stop()
-    mysdr.SDR_TX_setup()
-    mysdr.SDR_RX_setup(n_SAMPLES=10000)
+    mysdr.SDR_TX_setup(tx1_gain=-10, tx2_gain=-10)
+    mysdr.SDR_RX_setup(n_SAMPLES=10000, rx1_gain=10, rx2_gain=10)
     
     time.sleep(0.3)  # Wait for settings to take effect
 
@@ -706,8 +706,8 @@ def main():
     #testlibiioaccess(urladdress)
     #sdr_test(urladdress, signal_type=signal_type, Rx_CHANNEL=Rx_CHANNEL, plot_flag = plot_flag)
 
-    test_SDRclass(urladdress)
-    #test_SDRTDD(urladdress)
+    #test_SDRclass(urladdress)
+    test_SDRTDD(urladdress)
     fs=1000000
     #test_ofdm_SDR(urladdress=urladdress, SampleRate=fs)
     #test_ofdmmimo_SDR(urladdress=urladdress)
@@ -742,7 +742,7 @@ def plotfigure(ts, data0):
     axs[0].grid(True)
     axs[1].cla()  
     axs[1].semilogy(f/1e6, Pxx_den)
-    axs[1].set_ylim([1e-7, 1e2])
+    axs[1].set_ylim([1e-8, 1e2])
     axs[1].set_xlabel("frequency [MHz]") #-3e^6 3e^6
     axs[1].set_ylabel("PSD [V**2/Hz]")
     axs[1].set_title("Spectrum")

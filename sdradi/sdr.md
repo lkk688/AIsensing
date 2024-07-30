@@ -409,17 +409,34 @@ pip install tensorflow[and-cuda]==2.14.0 #https://www.tensorflow.org/install/sou
 #install nvidia_cudnn_cu11-8.7.0.84, nvidia_cuda_nvcc_cu11-11.8.89, tensorrt-8.5.3.1-cp310
 ```
 ## SDR Device
+
+### Communication Test code
 Run the test code `.\sdradi\pysdr.py` for SDR (revise the IP for the device):
 ```bash
-(mycondapy310) PS D:\Developer\radarsensing> python .\sdradi\pysdr.py #transmitting a QPSK signal in the 915 MHz band, receiving it, and plotting the PSD
-python sdradi/myad9361.py #perform transmit and plot the spectrum
+python sdradi/pysdr.py #transmitting a QPSK signal in the 915 MHz band, receiving it, and plotting the PSD
+
 ```
 
+Perform transmit test, detect peak frequency, and plot the spectrum:
+```bash
+python sdradi/myad9361.py
+```
+The result figure is 
+![Peak Spectrum](../imgs/peakspectrum.png)
+
+### Communication class
 Newly added `myad9361class.py` that put all sdr related code into one class. Run the following code to test the SDR class and perform signal detection
 ```bash
 python sdradi/myad9361class.py
 ```
-This code contains two test cases: 1) `test_SDRclass`, which performs continuous data transmission and receive; and 2) `test_ofdm_SDR`, which performs correction for the received sample and detect the starting point. 
+This code contains several test cases: 
+
+1) `test_SDRclass`, which performs continuous data transmission and receive. The result figure is
+![txrxcontinous](../imgs/txrxcontinous.png)
+
+2) `test_SDRTDD`, which performs TDD test for communication.
+
+3) `test_ofdm_SDR`, which performs correction for the received sample and detect the starting point. 
 
 Integrate the `myofdm.py` with `myad9361class.py` to transmit the simple OFDM signal. The `test_ofdm_SDR` mainly tests the `SDR_RXTX_offset` function. The output format is `[IQ, SINR, SDR_TX_GAIN, SDR_RX_GAIN, fails + 1, corr, sdr_time]` where
   * IQ is the IQ data in format expected by demodulator
