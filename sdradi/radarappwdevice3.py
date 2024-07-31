@@ -3,7 +3,10 @@ import pyqtgraph as pg  # pip install pyqtgraph
 from pyqtgraph.Qt import QtCore, QtGui
 import sys
 import numpy as np
-Runtime = "QT6"
+#In Mac: % pip uninstall pyqt5, pip uninstall pyqt6, only use Side6
+#See qt debug information: export QT_DEBUG_PLUGINS=1
+
+Runtime = "Side6" #"Side6"
 if Runtime == "QT5":
     # from PyQt5.QtWidgets import QApplication, QWidget, QLabel
     from PyQt5.QtCore import Qt
@@ -31,8 +34,9 @@ elif Runtime == "QT6":
         QToolBar, QStatusBar, QSlider, QGridLayout, QLineEdit, QPushButton
     )
 elif Runtime == "Side6":
-    from PySide6 import QtCore, QtGui, QtWidgets
+    from PySide6.QtCore import Qt
     # from PySide6.QtWidgets import QApplication, QWidget, QLabel
+    from PySide6 import QtCore, QtGui, QtWidgets
     from PySide6.QtWidgets import (
         QMainWindow,
         QApplication,
@@ -85,10 +89,11 @@ if UseRadarDevice == True:
     radar = RadarDevice(sdrurl=sdrurl, phaserurl=phaserurl, sample_rate=fs, center_freq=center_freq,
                         rxbuffersize=rxbuffersize, sdr_bandwidth=sample_rate*5, rx_gain=20, Rx_CHANNEL=2, Tx_CHANNEL=2,
                         signal_freq=signal_freq, chirp_bandwidth=default_chirp_bw, \
-                            output_freq=output_freq, ramp_time = ramp_time, num_chirps=num_chirps, tddmode=tddmode)
+                            output_freq=output_freq, ramp_time = ramp_time, num_chirps=num_chirps, tddmode=tddmode\
+                                savedata=True)
     #radar.transceiversetup(signaltype='sinusoid') #signaltype=='OFDM'
     radar.transceiversetup(signaltype=signaltype)
-    radar.transmit()
+    radar.transmit() 
 else:
     datapath = './data/radardata.npy'
     radar = RadarData(datapath=datapath, samplerate=sample_rate,
@@ -113,8 +118,6 @@ plot_freq = 100e3    # x-axis freq range to plot
 img_array = np.ones((num_slices, fft_size))*(-100)
 plot_dist = False #plot distance instead of frequency, distance show km?
 plot_velocity = False #did not show much difference
-save_data = False   # saves data for later processing
-f = "phaserRadarData.npy"
 
 class Window(QMainWindow):
     def __init__(self):
