@@ -204,19 +204,35 @@ def setupalldevices(sdrurl, phaserurl, Rx_CHANNEL, Tx_CHANNEL, fs, center_freq, 
     return sdr, my_phaser, BW, num_steps, ramp_time_s
 
 class RadarData:
-    def __init__(self, datapath='./data/radardata5s-1101fast3move.npy', samplerate=0.6e6, rxbuffersize=1024*16):
+    # def __init__(self, datapath='./data/radardata5s-1101fast3move.npy', samplerate=0.6e6, rxbuffersize=1024*16):
+    #     with open(datapath, 'rb') as f:
+    #         self.alldata = np.load(f)
+    #     print(len(self.alldata))
+    #     self.samplerate = samplerate
+    #     self.rxbuffersize=rxbuffersize
+    #     self.totallen=len(self.alldata)
+    #     self.Ntotalframe=int(self.totallen/rxbuffersize)-1
+    #     self.signal_freq = 100e3 #100K
+    #     self.BW = 500e6
+    #     self.ramp_time = 1e3  # us
+    #     self.ramp_time_s = self.ramp_time / 1e6
+    #     self.num_steps = 1000
+    
+    def __init__(self, datapath='output/Radarsaveddata_2024_07_31.npy'):
         with open(datapath, 'rb') as f:
-            self.alldata = np.load(f)
-        print(len(self.alldata))
-        self.samplerate = samplerate
-        self.rxbuffersize=rxbuffersize
+            alldata = np.load(f, allow_pickle=True)
+        datadict=alldata.item() #get the dict
+        print(datadict['allrxdata'].shape) #8192*100
+        self.alldata = datadict['allrxdata']
         self.totallen=len(self.alldata)
-        self.Ntotalframe=int(self.totallen/rxbuffersize)-1
-        self.signal_freq = 100e3 #100K
-        self.BW = 500e6
-        self.ramp_time = 1e3  # us
-        self.ramp_time_s = self.ramp_time / 1e6
-        self.num_steps = 1000
+        self.rxbuffersize=datadict['rxbuffersize']
+        self.Ntotalframe=int(self.totallen/self.rxbuffersize)-1
+        self.samplerate=datadict['sample_rate']
+        self.signal_freq = datadict['signal_freq']
+        self.BW = datadict['bandwidth']
+        self.ramp_time_s = datadict['ramp_time_s']
+        self.num_steps = datadict['num_steps']
+        self.fft_size = datadict['fft_size']
         
     def returnparameters(self):
         c = 3e8
@@ -243,6 +259,35 @@ class RadarData:
         timedelta=rxt-start
         self.currentindex= self.currentindex+1
         return currentdata, len(currentdata), self.currentindex
+    
+    def plotfigure(self, subset=10):
+        fs= int(self.samplerate)
+        ts = 1/float(fs)
+        num_samps = self.fft_size*subset
+        data0 = self.alldata.real[0:num_samps*2]
+        #plotfigure(ts, datadict['allrxdata'].real[0:num_samps*2])
+        Nperiod=int(2*fs/num_samps)
+
+        f, Pxx_den = signal.periodogram(data0, int(1/ts))
+        Npoints=len(data0)
+        t = (ts*1000)*np.arange(Npoints) #second to ms
+        fig, axs = plt.subplots(2, 1, layout='constrained', figsize=(12,6))
+        axs[0].cla()  
+        axs[0].plot(t, data0.real, marker="o", ms=2, color="red")  # Only plot real part
+        #axs[0].plot(t, data1.real, marker="o", ms=2, color="blue")
+        #axs[0].set_xlim(0, 2)
+        axs[0].set_xlabel('Time (ms)')
+        axs[0].set_ylabel('data0')
+        axs[0].set_title("Time Domain Dual Ch Data")
+        axs[0].grid(True)
+        axs[1].cla()  
+        axs[1].semilogy(f/1e6, Pxx_den)
+        axs[1].set_ylim([1e-7, 1e2])
+        axs[1].set_xlabel("frequency [MHz]") #-3e^6 3e^6
+        axs[1].set_ylabel("PSD [V**2/Hz]")
+        axs[1].set_title("Spectrum")
+        plt.show()
+        plt.savefig('radardata.pdf')
 
 
 class PhaserDevice:
@@ -364,6 +409,17 @@ class RadarDevice:
             self.saveddatadict={}
             self.saveddatadict['rx_num']=[]
             self.saveddatadict['timedelta']=[]
+            self.saveddatadict['starttime']=datetime.today().strftime('%Y-%m-%d %H:%M:%S')
+            self.saveddatadict['sample_rate'] = sample_rate
+            self.saveddatadict['center_freq'] = center_freq
+            self.saveddatadict['sdr_bandwidth'] = sdr_bandwidth
+            self.saveddatadict['rx_gain'] = rx_gain
+            self.saveddatadict['Rx_CHANNEL'] = Rx_CHANNEL
+            self.saveddatadict['Tx_CHANNEL'] = Tx_CHANNEL
+            self.saveddatadict['signal_freq'] = signal_freq
+            self.saveddatadict['chirp_bandwidth'] = chirp_bandwidth
+            self.saveddatadict['output_freq'] = output_freq
+
             self.allrxdata = np.empty(0, dtype=np.complex_) #Default is numpy.float64.
             self.savefolder = savefolder
             if savefilename is not None:
@@ -461,7 +517,6 @@ class RadarDevice:
             )
         )
         if self.savedata:
-            self.saveddatadict['starttime']=datetime.today().strftime('%Y-%m-%d %H:%M:%S')
             self.saveddatadict['c']=c
             self.saveddatadict['bandwidth']=self.bandwidth
             self.saveddatadict['num_steps']=self.num_steps
@@ -603,7 +658,7 @@ class RadarDevice:
 
         dist = (freq - self.signal_freq) * self.c / (2 * slope)
         self.myphaser.set_freqdevrange(bw=new_bw)
-        if savedata:
+        if self.savedata:
             self.saveddatadict['setrangerestime']=datetime.today().strftime('%Y-%m-%d %H:%M:%S')
             self.saveddatadict['new_bw'] = new_bw
             self.saveddatadict['new_slope'] = slope
@@ -852,5 +907,10 @@ def main():
 # parser.add_argument('--plot', default=False, type=bool,
 #                     help='plot figure')
 
+def test_radardata():
+    radardata = RadarData(datapath='output/Radarsaveddata_2024_07_31.npy')
+    radardata.plotfigure()
+
 if __name__ == '__main__':
+    test_radardata()
     main()

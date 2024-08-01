@@ -89,7 +89,7 @@ if UseRadarDevice == True:
     radar = RadarDevice(sdrurl=sdrurl, phaserurl=phaserurl, sample_rate=fs, center_freq=center_freq,
                         rxbuffersize=rxbuffersize, sdr_bandwidth=sample_rate*5, rx_gain=20, Rx_CHANNEL=2, Tx_CHANNEL=2,
                         signal_freq=signal_freq, chirp_bandwidth=default_chirp_bw, \
-                            output_freq=output_freq, ramp_time = ramp_time, num_chirps=num_chirps, tddmode=tddmode\
+                            output_freq=output_freq, ramp_time = ramp_time, num_chirps=num_chirps, tddmode=tddmode,\
                                 savedata=True)
     #radar.transceiversetup(signaltype='sinusoid') #signaltype=='OFDM'
     radar.transceiversetup(signaltype=signaltype)
