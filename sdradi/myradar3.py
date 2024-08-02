@@ -871,7 +871,7 @@ def radardata_collect_old(phaserurladdress, ad9361urladdress, Rx_CHANNEL, Tx_CHA
     #     np.save(f, alldata0)
     print(len(alldata0)) #1196032
 
-def main(UseRadarDevice = True, UsePhaserDevice = False, tddmode =False, signaltype='dds'):
+def main(UseRadarDevice = True, UsePhaserDevice = False, tddmode =False, signaltype='dds', savefilename=None):
     # args = parser.parse_args()
     # phaserurladdress = args.phaserurladdress #urladdress #"ip:pluto.local"
     # ad9361urladdress = args.ad9361urladdress
@@ -910,12 +910,14 @@ def main(UseRadarDevice = True, UsePhaserDevice = False, tddmode =False, signalt
     # output_freq = 12.145e9
     # int(output_freq 10e9 + signal_freq 100e3 + center_freq 2.1e9)
     #ramp_mode can be:  "disabled", "continuous_sawtooth", "continuous_triangular", "single_sawtooth_burst", "single_ramp_burst"
-    ramp_mode = "disabled"
+    ramp_mode = "continuous_sawtooth" #"continuous_triangular" #"disabled" #"continuous_sawtooth" #
+    if savefilename is None:
+        savefilename = f"Radarsaveddata_{datetime.today().strftime('%Y_%m_%d')}_{ramp_mode}.npy"
     radar = RadarDevice(sdrurl=sdrurl, phaserurl=phaserurl, sample_rate=fs, center_freq=center_freq,
                         rxbuffersize=rxbuffersize, sdr_bandwidth=sample_rate*5, rx_gain=20, Rx_CHANNEL=2, Tx_CHANNEL=2,
                         signal_freq=signal_freq, chirp_bandwidth=default_chirp_bw, \
                             output_freq=output_freq, ramp_time = ramp_time, ramp_mode=ramp_mode, num_chirps=num_chirps, tddmode=tddmode,\
-                                savedata=True)
+                                savedata=True, savefilename=savefilename)
     
     option1=False
     if option1==True:
@@ -954,9 +956,10 @@ def main(UseRadarDevice = True, UsePhaserDevice = False, tddmode =False, signalt
 #                     help='plot figure')
 
 def test_radardata():
-    radardata = RadarData(datapath='output/Radarsaveddata_2024_08_01.npy')
+    radardata = RadarData(datapath='output/Radarsaveddata_2024_08_01_continuous_sawtooth.npy')
     radardata.plotfigure()
 
 if __name__ == '__main__':
-    test_radardata()
+    
     main(UseRadarDevice = True, UsePhaserDevice = True, tddmode =False, signaltype='dds')
+    test_radardata()
