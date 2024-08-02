@@ -289,7 +289,7 @@ class RadarData:
         axs[1].set_ylabel("PSD [V**2/Hz]")
         axs[1].set_title("Spectrum")
         plt.show()
-        plt.savefig('radardata.pdf')
+        plt.savefig('output/radardata.png')
 
 
 class PhaserDevice:
@@ -360,6 +360,7 @@ class PhaserDevice:
         my_phaser.sing_ful_tri = (
             0  # full triangle enable/disable -- this is used with the single_ramp_burst mode
         )
+        sleep(1)
         my_phaser.enable = 0  # 0 = PLL enable.  Write this last to update all the registers
 
     def set_freqdevrange(self, bw):
@@ -437,7 +438,7 @@ class RadarDevice:
                             Rx_CHANNEL=Rx_CHANNEL, Tx_CHANNEL=Tx_CHANNEL)
         self.mysdr.SDR_TX_stop()
         # must set cyclic buffer to true for the tdd burst mode.  Otherwise Tx will turn on and off randomly
-        self.mysdr.SDR_TX_setup(cyclic_buffer=True, tx1_gain=-88, tx2_gain=0)
+        self.mysdr.SDR_TX_setup(cyclic_buffer=True, tx1_gain=-88, tx2_gain=0) #-88, 0
         self.mysdr.SDR_RX_setup(n_SAMPLES=rxbuffersize, controlmode='manual', rx1_gain=rx_gain, rx2_gain=rx_gain) ## set the RX buffer size to 3 times the number of samples
         #self.mysdr.SDR_gain_set(tx_gain=0, rx_gain=30)
         sleep(1)
@@ -489,6 +490,7 @@ class RadarDevice:
                 = self.tdd_rampparameters()
         
         #self.showconfig()
+        sleep(2)
 
     def returnparameters(self):
         #Read parameters from device
@@ -602,15 +604,17 @@ class RadarDevice:
             #self.sdr.tx([self.iq * 0.5, self.iq])  # only send data to the 2nd channel (that's all we need)
             self.mysdr.SDR_TX_send(SAMPLES=self.iq * 0.5, SAMPLES2=self.iq, leadingzeros=leadingzeros, cyclic=cyclic)
     
-    def sdronly_txrx(self, signal_type='dds'):
+    def sdronly_txrx(self, signal_type='dds', T_len = 0.2, leadingzeros=0, trailingzeros=0, normalize=False):
         c, BW, num_steps, ramp_time_s, slope, N_c, N_s, \
         freq, dist, range_resolution, signal_freq, range_x, \
         fft_size, rxbuffersize = self.returnparameters()
 
-        f_signal = self.signal_freq #1MHz
-        N = int(self.fft_size)#sdr.rx_buffer_size) #data length, only needed for sin
-        self.mysdr.SDR_TX_signalgen(signal_type=signal_type, f_signal=f_signal, N=N, cyclic=True)
-        alldata0, processtime = self.mysdr.SDR_RX_receive_continuous(T_len = 0.2, spectrum=False, plot_flag = False)
+        f_signal = self.signal_freq #0.1MHz
+        N = int(self.fft_size)#8192 sdr.rx_buffer_size) #data length, only needed for sin
+        self.mysdr.SDR_TX_signalgen(signal_type=signal_type, f_signal=f_signal, N=N, leadingzeros=leadingzeros, trailingzeros=trailingzeros, cyclic=True)
+        #T_len is the lendth in seconds
+        time.sleep(5)
+        alldata0, processtime = self.mysdr.SDR_RX_receive_continuous(T_len = T_len, spectrum=False, normalize=normalize, plot_flag = False)
         if self.savedata:
             self.allrxdata = alldata0
 
@@ -902,7 +906,7 @@ def main(UseRadarDevice = True, UsePhaserDevice = False, tddmode =False, signalt
     signal_freq = 100e3
     sample_rate = 0.6e6*5  # 0.6M
     fs = int(sample_rate)  # 0.6MHz
-    rxbuffersize = 1024 * 8  # 1024 * 16 * 15 #fft_size
+    rxbuffersize = 1024 * 8 *5  # 1024 * 16 * 15 #fft_size
     center_freq = 2.1e9
     output_freq = 10e9  # 10GHz
     ramp_time = 500  # us 0.5e3
@@ -910,9 +914,9 @@ def main(UseRadarDevice = True, UsePhaserDevice = False, tddmode =False, signalt
     # output_freq = 12.145e9
     # int(output_freq 10e9 + signal_freq 100e3 + center_freq 2.1e9)
     #ramp_mode can be:  "disabled", "continuous_sawtooth", "continuous_triangular", "single_sawtooth_burst", "single_ramp_burst"
-    ramp_mode = "continuous_sawtooth" #"continuous_triangular" #"disabled" #"continuous_sawtooth" #
-    if savefilename is None:
-        savefilename = f"Radarsaveddata_{datetime.today().strftime('%Y_%m_%d')}_{ramp_mode}.npy"
+    ramp_mode = "disabled" #"continuous_triangular" #"disabled" #"continuous_sawtooth" #
+    #if savefilename is None:
+    savefilename = f"Radarsaveddata_{datetime.today().strftime('%Y_%m_%d')}_{ramp_mode}_{savefilename}.npy"
     radar = RadarDevice(sdrurl=sdrurl, phaserurl=phaserurl, sample_rate=fs, center_freq=center_freq,
                         rxbuffersize=rxbuffersize, sdr_bandwidth=sample_rate*5, rx_gain=20, Rx_CHANNEL=2, Tx_CHANNEL=2,
                         signal_freq=signal_freq, chirp_bandwidth=default_chirp_bw, \
@@ -931,7 +935,7 @@ def main(UseRadarDevice = True, UsePhaserDevice = False, tddmode =False, signalt
             #x = sdr.rx() #1024 size array of complex
             data, datalen = radar.receive()
     else:
-        radar.sdronly_txrx(signal_type=signaltype)
+        radar.sdronly_txrx(signal_type=signaltype, T_len=5)
         
     radar.stop_device()
 
@@ -956,10 +960,11 @@ def main(UseRadarDevice = True, UsePhaserDevice = False, tddmode =False, signalt
 #                     help='plot figure')
 
 def test_radardata():
-    radardata = RadarData(datapath='output/Radarsaveddata_2024_08_01_continuous_sawtooth.npy')
+    radardata = RadarData(datapath='output/Radarsaveddata_2024_08_02_disabled.npy')
     radardata.plotfigure()
+    print("Done")
 
 if __name__ == '__main__':
     
-    main(UseRadarDevice = True, UsePhaserDevice = True, tddmode =False, signaltype='dds')
+    main(UseRadarDevice = True, UsePhaserDevice = True, tddmode =False, signaltype='sinusoid', savefilename="moving_nozeros") #'dds' 'sinusoid'
     test_radardata()

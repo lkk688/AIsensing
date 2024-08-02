@@ -1,7 +1,6 @@
 #0604/2024 modified based on myad9361.py, add SDR class
 #ref: https://ez.analog.com/ez-blogs/b/engineerzone-spotlight/posts/using-python-to-control-the-pluto-radio-and-plot-data
 import time
-
 import adi
 # from adi import ad9361
 # from adi import ad9364
@@ -273,7 +272,7 @@ class SDR:
         #return torch.tensor(a, dtype=torch.complex64)
         return a
     
-    def SDR_RX_receive_continuous(self, T_len = 2, spectrum=False, delay=0.5, plot_flag = False):
+    def SDR_RX_receive_continuous(self, T_len = 2, spectrum=False, delay=0.5, normalize=True, plot_flag = False):
         #T_len = 2  #2second
         # Collect data
         #alldata0 = np.empty(0) #Default is numpy.float64.
@@ -291,7 +290,7 @@ class SDR:
         
         for r in range(Nperiod):
             start = timer()
-            data0 = self.SDR_RX_receive()
+            data0 = self.SDR_RX_receive(normalize=normalize)
             rxt = timer()
             timedelta=rxt-start
             rxtime.append(timedelta)
@@ -382,24 +381,33 @@ class SDR:
         else:
             self.sdr.tx([SAMPLES, SAMPLES])
 
-    def SDR_TX_signalgen(self, signal_type='sinusoid', f_signal=int(1000000), N=1024, leadingzeros=0, cyclic=True):
+    def SDR_TX_signalgen(self, signal_type='sinusoid', f_signal=int(1000000), N=1024, leadingzeros=0, trailingzeros=0, cyclic=True):
         self.sdr.tx_destroy_buffer()  # Clear any existing buffer
 
         #get SDR sample rate
         fs = int(self.sdr.sample_rate) #6MHz
     
-        if signal_type == 'sinusoid': # Create a sinewave waveform
-            tx_samples = createcomplexsinusoid(fs, f_signal, N)
+        if signal_type == 'dds':
+            ddstone(self.sdr, dualtune=False, dds_freq_hz = f_signal, dds_scale = 0.9)
+            time.sleep(2)
+        else:
+            if signal_type == 'sinusoid': # Create a sinewave waveform
+                tx_samples = createcomplexsinusoid(fs, f_signal, N)
+            
             if leadingzeros >0:
                 leading_zeroes = np.zeros(leadingzeros, dtype=np.complex64)  # Leading 500 zeroes for noise floor measurement
                 tx_samples = np.concatenate([leading_zeroes, tx_samples], axis=0)  # Add the quiet for noise measurements
+            if trailingzeros >0:
+                trailing_zeroes = np.zeros(trailingzeros, dtype=np.complex64)
+                tx_samples = np.concatenate([tx_samples, trailing_zeroes], axis=0)
             # Send data
             # Since sdr.tx_cyclic_buffer was set to True, this data will just keep repeating.  There’s no need to send it again.   
             # Set cyclic buffer mode if required
             self.sdr.tx_cyclic_buffer = cyclic
-            self.sdr.tx(tx_samples)
-        elif signal_type == 'dds':
-            ddstone(self.sdr, dualtune=False, dds_freq_hz = f_signal, dds_scale = 0.9)
+            if self.Tx_CHANNEL==2:
+                self.sdr.tx([tx_samples,tx_samples])
+            else:
+                self.sdr.tx(tx_samples)
     
     def SDR_RXTX_offset(self, SAMPLES, leadingzeros=500, add_td_samples=16, make_plot=True):
         #add_td_samples: number of additional symbols to cater fordelay spread
