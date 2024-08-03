@@ -610,3 +610,9 @@ def cfar(X_k, num_guard_cells, num_ref_cells, bias=1, cfar_method='average',
     else:
         return cfar_values, targets_only
     
+
+def calculateDoppler(vr=1, fc=100000):
+    c = 3e8
+    lambda_wave = c/fc
+    fd=2*vr/lambda_wave
+    return fd
