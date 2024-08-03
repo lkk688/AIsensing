@@ -3,6 +3,7 @@ import pyqtgraph as pg  # pip install pyqtgraph
 from pyqtgraph.Qt import QtCore, QtGui
 import sys
 import numpy as np
+from datetime import datetime
 #In Mac: % pip uninstall pyqt5, pip uninstall pyqt6, only use Side6
 #See qt debug information: export QT_DEBUG_PLUGINS=1
 
@@ -69,7 +70,7 @@ elif Runtime == "Side6":
 '''Key Parameters'''
 default_chirp_bw = 500e6
 signal_freq = 100e3
-sample_rate = 0.6e6  # 0.6M
+sample_rate = 0.6e6*5  # 0.6M
 fs = int(sample_rate)  # 0.6MHz
 rxbuffersize = 1024 * 8  # 1024 * 16 * 15 #fft_size
 center_freq = 2.1e9
@@ -80,24 +81,27 @@ num_chirps = 1 #128 for TDD mode
 # int(output_freq 10e9 + signal_freq 100e3 + center_freq 2.1e9)
 
 baseip = 'ip:192.168.1.67' #'ip:phaser'
-UseRadarDevice = True
+UseRadarDevice = False
 tddmode =False # Use TDD mode or not
 signaltype='sinusoid'#'sinusoid' #'OFDM'
+ramp_mode = "disabled" ## ramp_mode can be:  "disabled", "continuous_sawtooth", "continuous_triangular", "single_sawtooth_burst", "single_ramp_burst"
+tagname = "static"
+savefilename = f"Radarsaveddata_{datetime.today().strftime('%Y_%m_%d')}_{ramp_mode}_{tagname}.npy"
 if UseRadarDevice == True:
     sdrurl = baseip+":50901"  # "ip:pluto.local" #ip:phaser.local:50901
     phaserurl = baseip  # "ip:phaser.local"
     radar = RadarDevice(sdrurl=sdrurl, phaserurl=phaserurl, sample_rate=fs, center_freq=center_freq,
-                        rxbuffersize=rxbuffersize, sdr_bandwidth=sample_rate*5, rx_gain=20, Rx_CHANNEL=2, Tx_CHANNEL=2,
+                        rxbuffersize=rxbuffersize, sdr_bandwidth=sample_rate, rx_gain=20, Rx_CHANNEL=2, Tx_CHANNEL=2,
                         signal_freq=signal_freq, chirp_bandwidth=default_chirp_bw, \
-                            output_freq=output_freq, ramp_time = ramp_time, num_chirps=num_chirps, tddmode=tddmode,\
-                                savedata=True)
+                            output_freq=output_freq, ramp_time = ramp_time, ramp_mode=ramp_mode, num_chirps=num_chirps, tddmode=tddmode,\
+                                savedata=True, savefilename=savefilename)
     #radar.transceiversetup(signaltype='sinusoid') #signaltype=='OFDM'
     radar.transceiversetup(signaltype=signaltype)
     radar.transmit() 
 else:
-    datapath = './data/radardata.npy'
-    radar = RadarData(datapath=datapath, samplerate=sample_rate,
-                      rxbuffersize=rxbuffersize)
+    datapath = 'output/Radarsaveddata_2024_08_02_disabled_static_nozeros.npy'
+    radar = RadarData(datapath=datapath)
+    #radardata.plotfigure()
 
 c, BW, num_steps, ramp_time_s, slope, N_c, N_s, \
     freq, dist, range_resolution, signal_freq, range_x, \
@@ -107,7 +111,7 @@ c, BW, num_steps, ramp_time_s, slope, N_c, N_s, \
 N = rxbuffersize  # 2048#int(my_sdr.rx_buffer_size)
 num_slices = 50     # this sets how much time will be displayed on the waterfall plot
 N_frame = fft_size
-plot_freq = 100e3    # x-axis freq range to plot
+#plot_freq = 100e3    # x-axis freq range to plot
 range_res = c / (2 * BW)
 
 plot_threshold = False
@@ -504,25 +508,10 @@ def update():
     global index, plot_threshold, freq, dist
     global plot_dist, ramp_time_s, sample_rate
     label_style = {"color": "#FFF", "font-size": "14pt"}
-    print('Do updates')
+    #print('Do updates')
     radar.tdd_burst()
     # data, datalen, index = radar.receive(index=index)
     s_dbfs = radar.get_spectrum()
-
-
-    #CFAR
-    bias = win.cfar_bias.value()
-    num_guard_cells = win.cfar_guard.value()
-    num_ref_cells = win.cfar_ref.value()
-    s_dbfs_cfar, s_dbfs_threshold = radar.cfar(
-        s_dbfs, num_guard_cells, num_ref_cells, bias, cfar_method='average')
-
-    #fft_threshold
-    win.fft_threshold.setData(freq, s_dbfs_threshold)
-    if plot_threshold:
-        win.fft_threshold.setVisible(True)
-    else:
-        win.fft_threshold.setVisible(False)
 
     #fft_plot, fft_curve is fft_plot draw
     if plot_dist: #plot distance
@@ -539,14 +528,28 @@ def update():
 
     #waterfall figure (img_array)
     win.img_array = np.roll(win.img_array, 1, axis=0)
-    if cfar_toggle:
+    if cfar_toggle: #enable CFAR
+        #CFAR
+        bias = win.cfar_bias.value()
+        num_guard_cells = win.cfar_guard.value()
+        num_ref_cells = win.cfar_ref.value()
+        s_dbfs_cfar, s_dbfs_threshold = radar.cfar(
+            s_dbfs, num_guard_cells, num_ref_cells, bias, cfar_method='average')
+
+        #fft_threshold
+        win.fft_threshold.setData(freq, s_dbfs_threshold)
+        if plot_threshold:
+            win.fft_threshold.setVisible(True)
+        else:
+            win.fft_threshold.setVisible(False)
+            
         win.fft_curve.setData(freq, s_dbfs_cfar)
         win.img_array[0] = s_dbfs_cfar
     else:
         win.fft_curve.setData(freq, s_dbfs)
         win.img_array[0] = s_dbfs
     win.imageitem.setLevels([win.low_slider.value(), win.high_slider.value()])
-    win.imageitem.setImage(win.img_array, autoLevels=False)
+    win.imageitem.setImage(win.img_array, autoLevels=True)
 
     if index == 1:
         win.fft_plot.enableAutoRange("xy", False)
