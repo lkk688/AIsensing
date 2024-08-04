@@ -14,7 +14,7 @@ from matplotlib import colors
 
 # custom dataset
 class OFDMDataset(Dataset):
-    def __init__(self, datapath='data/AISimData/cdl_ofdm_ebno25.npy', ch_SINR_min=25, ch_SINR_max=50, maxdatalen=10000, training=False, drawfig=True):
+    def __init__(self, datapath='data/AISimData/cdl_ofdm_ebno25.npy', ch_SINR_min=25, ch_SINR_max=50, maxdatalen=10000, training=False, drawfig=True, compare=False):
         self.maxdatalen = maxdatalen
         self.training = training
         self.drawfig = drawfig
@@ -44,10 +44,14 @@ class OFDMDataset(Dataset):
         self.n = saved_data['n'] #1536
         self.b = saved_data['b'] # b's shape: (128, 1, 2, 1536) [self.batch_size, 1, self.num_streams_per_tx, self.k]
         # After mapper ([batch_size, num_tx, num_streams_per_tx, num_data_symbols]) 
-        self.x = saved_data['x'] #x's shape: (128, 1, 2, 768)
+        self.x = saved_data['x'] #x's shape: (128, 1, 2, 768) data_symbols 1536/2=768
         #after rg_mapper
         self.x_rg = saved_data['x_rg']
         #x_rg's shape: (128, 1, 2, 14, 76) [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size]
+        #RESOURCE_GRID.num_data_symbols=14(OFDM symbol)*76(subcarrier) array=1064
+        #among 76 subcarriers, 5 and 6 are guard carriers, effective subcarrier is 76-6-5-1(DC carrier)=64
+        #among 14 symbols, 2,11 is the pilot, effective symbol is 12
+        #1064 grids contains the data, DC and pilot, effective grid=12*64=768
 
         #Channel IR get_channelcir
         self.h_b = saved_data['h_b'] #h_b's shape: [batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps] (128, 1, 16, 1, 2, 23, 14)
@@ -75,21 +79,29 @@ class OFDMDataset(Dataset):
         self.b_hat = saved_data['b_hat'] #(128, 1, 2, 1536)
         self.llr_est = saved_data['llr_est'] #(128, 1, 2, 1536)
         self.BER = saved_data['BER']  
-        self.frequencies = saved_data['frequencies']
-        self.num_time_steps = saved_data['num_time_steps']
-        self.sampling_frequency = saved_data['sampling_frequency']
+        self.frequencies = saved_data['frequencies'] #(76,)
+        self.num_time_steps = saved_data['num_time_steps'] #(14,)
+        self.sampling_frequency = saved_data['sampling_frequency'] #55609
         
-        self.check_uplinktransmission()
-        self.check_channel()
+        from deepMIMO5 import MyDemapper
+        self.mydemapper = MyDemapper("app", constellation_type="qam", num_bits_per_symbol=self.num_bits_per_symbol)
+        self.receive()
+        self.check_uplinktransmission(compare=compare)
+        self.check_channel(compare=compare)
 
     def check_uplinktransmission(self, compare=True):
         c = self.b
         x = self.x
         x_rg = self.x_rg
+        #x_rg's shape: (128, 1, 2, 14, 76) 
+        # [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size]
 
         if compare:
-            from sionna.mapping import Mapper, Demapper
-            from sionna.ofdm import ResourceGrid, ResourceGridMapper
+            #from sionna.mapping import Mapper, Demapper
+            #from sionna.ofdm import ResourceGrid, ResourceGridMapper
+            from sionna_tf import Mapper, ResourceGrid, ResourceGridMapper
+            from deepMIMO5 import MyResourceGrid, MyResourceGridMapper #StreamManagement, MyResourceGrid, Mapper, MyResourceGridMapper, MyDemapper
+
             # The mapper maps blocks of information bits to constellation symbols
             mapper = Mapper("qam", self.num_bits_per_symbol)
 
@@ -111,9 +123,32 @@ class OFDMDataset(Dataset):
             x_tf = mapper(c) #np.array[64,1,1,896] if empty np.array[64,1,1,1064] 1064*4=4256 [batch_size, num_tx, num_streams_per_tx, num_data_symbols]
             x_rg_tf = rg_mapper(x_tf) ##complex array[64,1,1,14,76] 14*76=1064
             #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76] (64, 1, 2, 14, 76)
+            
+            myrg = MyResourceGrid(num_ofdm_symbols=self.num_ofdm_symbols,
+                  fft_size=self.fft_size,
+                  subcarrier_spacing=60e3, #15e3,
+                  num_tx=1,
+                  num_streams_per_tx=self.num_streams_per_tx,
+                  cyclic_prefix_length=6,
+                  num_guard_carriers=[5,6],
+                  dc_null=True,
+                  pilot_pattern="kronecker",
+                  pilot_ofdm_symbol_indices=[2,11])
+            myrg_mapper = MyResourceGridMapper(myrg)
+            myx_rg = myrg_mapper(x)
+            myx_rg_np = myrg_mapper(x_tf.numpy())
+
+            print(np.allclose(myx_rg_np, x_rg_tf.numpy())) #False
 
             print(np.allclose(x, x_tf.numpy())) #True
-            print(np.allclose(x_rg, x_rg_tf.numpy())) #False
+            x_rg_tfnp=x_rg_tf.numpy()
+            print(np.allclose(x_rg, x_rg_tfnp)) #False
+            print(np.allclose(x_rg[0,:,:,:,:], x_rg_tfnp[0,:,:,:,:])) #False
+            print(np.allclose(x_rg[0,0,:,:,:], x_rg_tfnp[0,0,:,:,:])) #False
+            print(np.allclose(x_rg[0,0,0,:,:], x_rg_tfnp[0,0,0,:,:])) #False
+
+            print(np.allclose(x_rg, myx_rg)) #False
+            print(np.allclose(x_rg[0,0,0,:,:], myx_rg[0,0,0,:,:])) #False
 
     def check_channel(self, compare=True):
         from deepMIMO5 import time_lag_discrete_time_channel, cir_to_time_channel, cir_to_ofdm_channel, subcarrier_frequencies
@@ -142,12 +177,13 @@ class OFDMDataset(Dataset):
         print(np.allclose(h_freq_np[:,0,0,0,0,:,:], self.h_out[:,0,0,0,0,:,:])) #True
 
         if compare == True:
-            from sionna.channel import subcarrier_frequencies, cir_to_ofdm_channel
+            #from sionna.channel import subcarrier_frequencies, cir_to_ofdm_channel
+            from channel import cir_to_ofdm_channel
             h_freq_tf = cir_to_ofdm_channel(self.frequencies, self.h_b, self.tau_b, normalize=True)
             h_freq_tfnp = h_freq_tf.numpy()
             print(np.allclose(h_freq_np, h_freq_tfnp)) #False
             print(np.allclose(h_freq_np[:,:,:,0,0,:,:], h_freq_tfnp[:,:,:,0,0,:,:])) #False
-            print(np.allclose(h_freq_np[:,0,0,0,0,:,:], h_freq_tfnp[:,0,0,0,0,:,:])) #False
+            print(np.allclose(h_freq_np[:,0,0,0,0,:,:], h_freq_tfnp[:,0,0,0,0,:,:])) #True
             print(np.allclose(h_freq_np[0,0,0,0,0,:,:], h_freq_tfnp[0,0,0,0,0,:,:])) #True
             print(np.allclose(h_freq_np[0,0,0,0,0,0,:], h_freq_tfnp[0,0,0,0,0,0,:])) #True
             if self.drawfig:
@@ -175,18 +211,42 @@ class OFDMDataset(Dataset):
     def __len__(self):
         return self.maxdatalen
     
+    def receive(self):
+        import tensorflow as tf
+        from deepMIMO5 import hard_decisions, calculate_BER
+        #y: (128, 1, 16, 14, 76)
+        #perform channel estimation via pilots
+        #self.h_hat shape: (64, 1, 16, 1, 2, 14, 64), self.err_var: (1, 1, 1, 1, 2, 14, 64)
+        #Received OFDM resource grid after cyclic prefix removal and FFT y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], tf.complex
+        #Channel estimates for all streams from all transmitters h_hat : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols, num_effective_subcarriers], tf.complex
+        #x_hat, no_eff = self.lmmse_equ([y, self.h_hat, self.err_var, no]) 
+        
+        #Estimated symbols x_hat : [batch_size, num_tx, num_streams, num_data_symbols], tf.complex
+        #Effective noise variance for each estimated symbol no_eff : [batch_size, num_tx, num_streams, num_data_symbols], tf.float
+        # x_hat=x_hat.numpy() #x_hat: (2, 1, 2, 768), no_eff: (2, 1, 2, 768)
+        # no_eff=no_eff.numpy() 
+        # no_eff=np.mean(no_eff)
+        #num_data_symbols=768*2bit=1536
+        llr_est = self.mydemapper([self.x_hat, self.no_eff]) #(128, 1, 2, 1536)
+        #output: [batch size, num_rx, num_rx_ant, n * num_bits_per_symbol]
+        print(np.allclose(llr_est, self.llr_est)) #True
+
+        b_hat = hard_decisions(llr_est, np.int32)  #(128, 1, 2, 1536)
+        BER=calculate_BER(self.b, b_hat) #0
+        print("BER Value:", BER)
+    
     def __getitem__(self, index, rx_id=0, tx_id=0, tx_streams_id=0, rx_antenna_id=0):
         batch={}
         if self.training:
             data = self.b[:,tx_id, tx_streams_id, :] #[batch_size, num_tx, num_streams_per_tx, num_data_bits] #[self.batch_size, 1, self.num_streams_per_tx, self.k]
-            batch['labels']= data
+            batch['labels']= data #(128, 1536) [batch_size, num_data_bits]
         #(128, 1, 16, 14, 76) [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size]
-        rx_samples = self.y[:,rx_id, rx_antenna_id, :, :] #(128, 14, 76)
+        rx_samples = self.y[:,rx_id, rx_antenna_id, :, :] #(128, 14, 76) [batch_size, num_ofdm_symbols, fft_size]
         batch['samples']= rx_samples
         return batch
     
 def trainmain(args):
-    train_data = OFDMDataset(training=True)
+    train_data = OFDMDataset(training=True, compare=False)
     onebatch = train_data[0]
     print(onebatch['samples'].shape)
 
