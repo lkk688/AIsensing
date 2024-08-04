@@ -2125,6 +2125,8 @@ class MyLSChannelEstimator():
 
         #added test code
         mask = np.array(self._pilot_pattern.mask) #(1, 2, 14, 64)
+        #print(mask[0,0,:,:])#2,11 column is 1 for pilot
+        #print(mask[0,1,:,:])
         mask_shape = mask.shape # Store to reconstruct the original shape
         # Reshape the pilots to shape [-1, num_pilot_symbols]
         pilots = self._pilot_pattern.pilots #(1, 2, 128)
@@ -2152,18 +2154,18 @@ class MyLSChannelEstimator():
 
         # Precompute indices to gather received pilot signals
         num_pilot_symbols = self._pilot_pattern.num_pilot_symbols #128
-        mask = flatten_last_dims(self._pilot_pattern.mask) #(1, 2, 896)
+        mask = flatten_last_dims(self._pilot_pattern.mask) #(1, 2, 896) 14*64=896
         #np.save('mask_tf.npy', mask)
         pilot_ind = tf.argsort(mask, axis=-1, direction="DESCENDING") #(1, 2, 896)
         self._pilot_ind = pilot_ind[...,:num_pilot_symbols]
 
-        #print(self._pilot_ind) #(1, 2, 128) int32
+        print(self._pilot_ind[0,0,:]) #(1, 2, 128) int32 only 128 pilots [128-191 704-767]
 
 
     def estimate_at_pilot_locations(self, y_pilots, no):
 
         # y_pilots : [batch_size, num_rx, num_rx_ant, num_tx, num_streams,
-        #               num_pilot_symbols], tf.complex (2, 1, 16, 1, 2, 128)
+        #               num_pilot_symbols], tf.complex (b, 1, 16, 1, 2, 128)
         #     The observed signals for the pilot-carrying resource elements.
 
         # no : [batch_size, num_rx, num_rx_ant] or only the first n>=0 dims,
@@ -2180,10 +2182,10 @@ class MyLSChannelEstimator():
 
         # Compute error variance and broadcast to the same shape as h_ls
         # Expand rank of no for broadcasting
-        no = expand_to_rank(no, tf.rank(h_ls), -1) #(1, 1, 1, 1, 1, 1)
+        no = expand_to_rank(no, tf.rank(h_ls), -1) #float=>(1, 1, 1, 1, 1, 1)
 
         # Expand rank of pilots for broadcasting
-        pilots = expand_to_rank(self._pilot_pattern.pilots, tf.rank(h_ls), 0) #(1, 1, 1, 1, 2, 128)
+        pilots = expand_to_rank(self._pilot_pattern.pilots, tf.rank(h_ls), 0) #(1, 2, 128)=>(1, 1, 1, 1, 2, 128)
 
         # Compute error variance, broadcastable to the shape of h_ls
         err_var = tf.math.divide_no_nan(no, tf.abs(pilots)**2) #(1, 1, 1, 1, 2, 128)
@@ -2208,7 +2210,7 @@ class MyLSChannelEstimator():
         # Flatten the resource grid for pilot extraction
         # New shape: [...,num_ofdm_symbols*num_effective_subcarriers]
         y_eff_flat = flatten_last_dims(y_eff) #(2, 1, 16, 896)
-        # import matplotlib.pyplot as plt
+        import matplotlib.pyplot as plt
         # plt.figure()
         # plt.plot(np.real(y_eff_flat[0,0,0,:]))
         # plt.plot(np.imag(y_eff_flat[0,0,0,:]))
@@ -2218,15 +2220,15 @@ class MyLSChannelEstimator():
         # Resulting shape: y_eff_flat.shape[:-1] + pilot_ind.shape, i.e.:
         # [batch_size, num_rx, num_rx_ant, num_tx, num_streams,...
         #  ..., num_pilot_symbols]
-        y_pilots = tf.gather(y_eff_flat, self._pilot_ind, axis=-1) #y_eff_flat:(2, 1, 16, 896) pilot_ind: (1, 2, 128) =>(2, 1, 16, 1, 2, 128)
+        y_pilots = tf.gather(y_eff_flat, self._pilot_ind, axis=-1) #y_eff_flat:(b, 1, 16, 896) pilot_ind: (1, 2, 128) =>(b, 1, 16, 1, 2, 128)
         
         # plt.figure()
         # plt.plot(np.real(y_pilots[0,0,0,0,0,:]))
         # plt.plot(np.imag(y_pilots[0,0,0,0,0,:]))
         # plt.title('y_pilots')
-        np.save('y_eff_flat_tf.npy', y_eff_flat.numpy())
-        np.save('pilot_ind_tf.npy', self._pilot_ind)
-        np.save('y_pilots_tf.npy', y_pilots.numpy())
+        #np.save('y_eff_flat_tf.npy', y_eff_flat.numpy())
+        #np.save('pilot_ind_tf.npy', self._pilot_ind)
+        #np.save('y_pilots_tf.npy', y_pilots.numpy())
 
         # Compute LS channel estimates
         # Note: Some might be Inf because pilots=0, but we do not care
@@ -2235,13 +2237,20 @@ class MyLSChannelEstimator():
         # Broadcasting from pilots here is automatic since pilots have shape
         # [num_tx, num_streams, num_pilot_symbols]
         h_hat, err_var = self.estimate_at_pilot_locations(y_pilots, no)#h_hat: (2, 1, 16, 1, 2, 128), err_var: (1, 1, 1, 1, 2, 128)
-        np.save('h_hat_pilot_tf.npy', h_hat.numpy())
+        #np.save('h_hat_pilot_tf.npy', h_hat.numpy())
         #h_ls: (2, 1, 16, 1, 2, 128), err_var: (1, 1, 1, 1, 2, 128)
+        plt.figure()
+        plt.plot(np.real(h_hat[0,0,0,0,0,0:64]))
+        plt.plot(np.imag(h_hat[0,0,0,0,0,0:64]))
+        plt.plot(np.real(h_hat[0,0,0,0,0,64:128]),'--')
+        plt.plot(np.imag(h_hat[0,0,0,0,0,64:128]),'--')
+        plt.title('h_hat at_pilot')
+
         # Interpolate channel estimates over the resource grid
         if self._interpolation_type is not None:
             h_hat, err_var = self._interpol(h_hat, err_var) #h_hat: (2, 1, 16, 1, 2, 128)=>(2, 1, 16, 1, 2, 14, 64)
-            np.save('h_hat_inter_tf.npy', h_hat.numpy())
-            err_var = tf.maximum(err_var, tf.cast(0, err_var.dtype))
+            #np.save('h_hat_inter_tf.npy', h_hat.numpy())
+            err_var = tf.maximum(err_var, tf.cast(0, err_var.dtype)) #(1, 1, 1, 1, 2, 14, 64)=>(1, 1, 1, 1, 2, 14, 64)
 
         return h_hat, err_var
 

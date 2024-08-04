@@ -39,7 +39,16 @@ class OFDMDataset(Dataset):
         self.num_ut_ant = saved_data['num_ut_ant'] #2
         self.num_bs_ant = saved_data['num_bs_ant'] #16
         self.direction = saved_data['direction'] #uplink
+        if self.direction=="uplink": #the UT is transmitting.
+            self.num_tx = self.num_ut
+            self.num_rx = self.num_bs
+            #num_streams_per_tx = num_ut_ant #num_rx ##1
+        else:#downlink
+            self.num_tx = self.num_bs
+            self.num_rx = self.num_ut
+            #num_streams_per_tx = num_bs_ant #num_rx ##1
         self.num_streams_per_tx = saved_data['num_streams_per_tx'] #2
+        self.no=saved_data['no']
         self.k = saved_data['k'] #1536
         self.n = saved_data['n'] #1536
         self.b = saved_data['b'] # b's shape: (128, 1, 2, 1536) [self.batch_size, 1, self.num_streams_per_tx, self.k]
@@ -83,8 +92,28 @@ class OFDMDataset(Dataset):
         self.num_time_steps = saved_data['num_time_steps'] #(14,)
         self.sampling_frequency = saved_data['sampling_frequency'] #55609
         
-        from deepMIMO5 import MyDemapper
+        from deepMIMO5 import StreamManagement, MyResourceGrid, MyResourceGridMapper, MyDemapper, RemoveNulledSubcarriers
+        from sionna_tf import MyLMMSEEqualizer
+        from channel import MyLSChannelEstimator, LSChannelEstimator
+        self.RESOURCE_GRID = MyResourceGrid(num_ofdm_symbols=self.num_ofdm_symbols,
+                fft_size=self.fft_size,
+                subcarrier_spacing=60e3, #15e3,
+                num_tx=1,
+                num_streams_per_tx=self.num_streams_per_tx,
+                cyclic_prefix_length=6,
+                num_guard_carriers=[5,6],
+                dc_null=True,
+                pilot_pattern="kronecker",
+                pilot_ofdm_symbol_indices=[2,11])
+        self.myrg_mapper = MyResourceGridMapper(self.RESOURCE_GRID)
+        self.remove_nulled_scs = RemoveNulledSubcarriers(self.RESOURCE_GRID)
         self.mydemapper = MyDemapper("app", constellation_type="qam", num_bits_per_symbol=self.num_bits_per_symbol)
+        RX_TX_ASSOCIATION = np.ones([self.num_rx, self.num_tx], int) #[[1]]
+        self.STREAM_MANAGEMENT = StreamManagement(RX_TX_ASSOCIATION, self.num_streams_per_tx)
+        self.lmmse_equ = MyLMMSEEqualizer(self.RESOURCE_GRID, self.STREAM_MANAGEMENT)
+        self.ls_est = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn")#"lin_time_avg")
+        #self.ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn")
+
         self.receive()
         self.check_uplinktransmission(compare=compare)
         self.check_channel(compare=compare)
@@ -124,19 +153,9 @@ class OFDMDataset(Dataset):
             x_rg_tf = rg_mapper(x_tf) ##complex array[64,1,1,14,76] 14*76=1064
             #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76] (64, 1, 2, 14, 76)
             
-            myrg = MyResourceGrid(num_ofdm_symbols=self.num_ofdm_symbols,
-                  fft_size=self.fft_size,
-                  subcarrier_spacing=60e3, #15e3,
-                  num_tx=1,
-                  num_streams_per_tx=self.num_streams_per_tx,
-                  cyclic_prefix_length=6,
-                  num_guard_carriers=[5,6],
-                  dc_null=True,
-                  pilot_pattern="kronecker",
-                  pilot_ofdm_symbol_indices=[2,11])
-            myrg_mapper = MyResourceGridMapper(myrg)
-            myx_rg = myrg_mapper(x)
-            myx_rg_np = myrg_mapper(x_tf.numpy())
+            
+            myx_rg = self.myrg_mapper(x)
+            myx_rg_np = self.myrg_mapper(x_tf.numpy())
 
             print(np.allclose(myx_rg_np, x_rg_tf.numpy())) #False
 
@@ -211,23 +230,55 @@ class OFDMDataset(Dataset):
     def __len__(self):
         return self.maxdatalen
     
+    def comparefigure(self, h_perfect, h_hat):
+        h_est = h_hat[0,0,0,0,0,0] #(64, 1, 1, 1, 1, 14, 44)
+        h_perfect  = h_perfect[0,0,0,0,0,0]
+        plt.figure()
+        plt.plot(np.real(h_perfect))
+        plt.plot(np.imag(h_perfect))
+        plt.plot(np.real(h_est), "--")
+        plt.plot(np.imag(h_est), "--")
+        plt.xlabel("Subcarrier index")
+        plt.ylabel("Channel frequency response")
+        plt.legend(["Ideal (real part)", "Ideal (imaginary part)", "Estimated (real part)", "Estimated (imaginary part)"]);
+        plt.title("Comparison of channel frequency responses");
+    
     def receive(self):
         import tensorflow as tf
         from deepMIMO5 import hard_decisions, calculate_BER
-        #y: (128, 1, 16, 14, 76)
+
+        # Channel output y's shape: (128, 1, 16, 14, 76) [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size]
+
+        #h_out's shape: (128, 1, 16, 1, 2, 14, 76) [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm_symbols, num_subcarriers]
+        h_perfect, err_var_perfect = self.remove_nulled_scs(self.h_out), 0.
+        print(np.allclose(h_perfect, self.h_perfect)) #True
+        print("h_out after remove nulled shape:", h_perfect.shape) #(128, 1, 16, 1, 2, 14, 64)
+        #among 76 subcarriers, 5 and 6 are guard carriers, effective subcarrier is 76-6-5-1(DC carrier)=64
+
         #perform channel estimation via pilots
-        #self.h_hat shape: (64, 1, 16, 1, 2, 14, 64), self.err_var: (1, 1, 1, 1, 2, 14, 64)
-        #Received OFDM resource grid after cyclic prefix removal and FFT y : [batch_size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size], tf.complex
-        #Channel estimates for all streams from all transmitters h_hat : [batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols, num_effective_subcarriers], tf.complex
-        #x_hat, no_eff = self.lmmse_equ([y, self.h_hat, self.err_var, no]) 
-        
-        #Estimated symbols x_hat : [batch_size, num_tx, num_streams, num_data_symbols], tf.complex
-        #Effective noise variance for each estimated symbol no_eff : [batch_size, num_tx, num_streams, num_data_symbols], tf.float
-        # x_hat=x_hat.numpy() #x_hat: (2, 1, 2, 768), no_eff: (2, 1, 2, 768)
-        # no_eff=no_eff.numpy() 
-        # no_eff=np.mean(no_eff)
-        #num_data_symbols=768*2bit=1536
-        llr_est = self.mydemapper([self.x_hat, self.no_eff]) #(128, 1, 2, 1536)
+        print("h_hat after channel estimation via pilots:", self.h_hat.shape)
+        self.comparefigure(h_perfect, self.h_hat)
+        y_tf = tf.convert_to_tensor(self.y, dtype=tf.complex64)
+        h_hat, err_var = self.ls_est([y_tf, self.no])
+        self.comparefigure(h_perfect=self.h_hat, h_hat=h_hat.numpy())
+        #self.h_hat shape: (128, 1, 16, 1, 2, 14, 64), self.err_var: (1, 1, 1, 1, 2, 14, 64)
+        #[batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols, num_effective_subcarriers]
+        print(np.allclose(h_hat, self.h_hat)) #False
+        print(np.allclose(err_var, self.err_var)) #True
+
+        #x_hat, no_eff = self.lmmse_equ([self.y, self.h_hat, self.err_var, self.no]) 
+        x_hat, no_eff = self.lmmse_equ([y_tf, h_hat, err_var, self.no]) 
+        #Estimated symbols x_hat : [batch_size, num_tx, num_streams, num_data_symbols], complex
+        #Effective noise variance for each estimated symbol no_eff : [batch_size, num_tx, num_streams, num_data_symbols], float
+        #64*(14-2pilots)=768
+        print("x_hat after channel equalization:", self.x_hat.shape) #(128, 1, 2, 768)
+        no_eff=np.mean(no_eff)
+        print(self.no_eff)
+        print(np.allclose(x_hat, self.x_hat)) #True
+
+        #num_data_symbols=768, 768*2bit=1536bits
+        #llr_est = self.mydemapper([self.x_hat, self.no_eff]) #(128, 1, 2, 1536)
+        llr_est = self.mydemapper([x_hat, no_eff])
         #output: [batch size, num_rx, num_rx_ant, n * num_bits_per_symbol]
         print(np.allclose(llr_est, self.llr_est)) #True
 
