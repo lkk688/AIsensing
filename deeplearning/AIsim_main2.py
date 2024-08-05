@@ -14,6 +14,7 @@ from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 import tensorflow as tf
 from matplotlib import colors
+from datetime import datetime
 
 from deepMIMO5 import get_deepMIMOdata, DeepMIMODataset, flatten_last_dims, myexpand_to_rank
 from deepMIMO5 import count_errors, count_block_errors
@@ -1586,6 +1587,7 @@ class Transmitter():
     
     def save_parameters(self):
         saved_data = {}
+        saved_data['currenttime']=datetime.today().strftime('%Y-%m-%d %H:%M:%S')
         saved_data['channeltype'] = self.channeltype
         saved_data['channeldataset'] = self.channeldataset
         saved_data['fft_size'] = self.fft_size
@@ -1843,7 +1845,7 @@ if __name__ == '__main__':
     
     #test_DeepMIMOchannel()
     bers, blers, BERs = sim_bersingle2(channeldataset='cdl', channeltype='ofdm', NUM_BITS_PER_SYMBOL = 2, EBN0_DB_MIN = -5.0, EBN0_DB_MAX = 25.0, \
-                   BATCH_SIZE = 128, NUM_UT = 1, NUM_BS = 1, NUM_UT_ANT = 2, NUM_BS_ANT = 16, showfigure = True, datapathbase='data/')
+                   BATCH_SIZE = 128, NUM_UT = 1, NUM_BS = 1, NUM_UT_ANT = 2, NUM_BS_ANT = 16, showfigure = False, datapathbase='data/')
     bers, blers, BERs = sim_bersingle2(channeldataset='deepmimo', channeltype='ofdm', NUM_BITS_PER_SYMBOL = 2, EBN0_DB_MIN = -5.0, EBN0_DB_MAX = 25.0, \
                    BATCH_SIZE = 128, NUM_UT = 1, NUM_BS = 1, NUM_UT_ANT = 1, NUM_BS_ANT = 16, showfigure = False, datapathbase='data/')
     

@@ -14,7 +14,7 @@ from matplotlib import colors
 
 # custom dataset
 class OFDMDataset(Dataset):
-    def __init__(self, datapath='data/AISimData/cdl_ofdm_ebno25.npy', ch_SINR_min=25, ch_SINR_max=50, maxdatalen=10000, training=False, drawfig=True, compare=False):
+    def __init__(self, datapath='data/cdl_ofdm_ebno25.npy', ch_SINR_min=25, ch_SINR_max=50, maxdatalen=10000, training=False, drawfig=True, compare=False):
         self.maxdatalen = maxdatalen
         self.training = training
         self.drawfig = drawfig
@@ -28,6 +28,7 @@ class OFDMDataset(Dataset):
                 print(f"{k}'s shape: {v.shape}")
             else:
                 print(f"{k}: {v}")
+        print(saved_data['currenttime'])
         self.channeltype = saved_data['channeltype']# ofdm
         self.channeldataset = saved_data['channeldataset'] #cdl
         self.fft_size = saved_data['fft_size'] #76
@@ -243,8 +244,20 @@ class OFDMDataset(Dataset):
         plt.legend(["Ideal (real part)", "Ideal (imaginary part)", "Estimated (real part)", "Estimated (imaginary part)"]);
         plt.title("Comparison of channel frequency responses");
     
-    def receive(self):
+    def checkchannelestimate(self):
         import tensorflow as tf
+        #perform channel estimation via pilots
+        print("h_hat after channel estimation via pilots:", self.h_hat.shape)
+        
+        y_tf = tf.convert_to_tensor(self.y, dtype=tf.complex64)
+        h_hat, err_var = self.ls_est([y_tf, self.no])
+        self.comparefigure(h_perfect=self.h_hat, h_hat=h_hat.numpy())
+        #self.h_hat shape: (128, 1, 16, 1, 2, 14, 64), self.err_var: (1, 1, 1, 1, 2, 14, 64)
+        #[batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols, num_effective_subcarriers]
+        print(np.allclose(h_hat, self.h_hat)) #False
+        print(np.allclose(err_var, self.err_var)) #True
+
+    def receive(self):
         from deepMIMO5 import hard_decisions, calculate_BER
 
         # Channel output y's shape: (128, 1, 16, 14, 76) [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size]
@@ -254,20 +267,10 @@ class OFDMDataset(Dataset):
         print(np.allclose(h_perfect, self.h_perfect)) #True
         print("h_out after remove nulled shape:", h_perfect.shape) #(128, 1, 16, 1, 2, 14, 64)
         #among 76 subcarriers, 5 and 6 are guard carriers, effective subcarrier is 76-6-5-1(DC carrier)=64
-
-        #perform channel estimation via pilots
-        print("h_hat after channel estimation via pilots:", self.h_hat.shape)
         self.comparefigure(h_perfect, self.h_hat)
-        y_tf = tf.convert_to_tensor(self.y, dtype=tf.complex64)
-        h_hat, err_var = self.ls_est([y_tf, self.no])
-        self.comparefigure(h_perfect=self.h_hat, h_hat=h_hat.numpy())
-        #self.h_hat shape: (128, 1, 16, 1, 2, 14, 64), self.err_var: (1, 1, 1, 1, 2, 14, 64)
-        #[batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols, num_effective_subcarriers]
-        print(np.allclose(h_hat, self.h_hat)) #False
-        print(np.allclose(err_var, self.err_var)) #True
 
-        #x_hat, no_eff = self.lmmse_equ([self.y, self.h_hat, self.err_var, self.no]) 
-        x_hat, no_eff = self.lmmse_equ([y_tf, h_hat, err_var, self.no]) 
+        x_hat, no_eff = self.lmmse_equ([self.y, self.h_hat, self.err_var, self.no]) 
+        #x_hat, no_eff = self.lmmse_equ([y_tf, h_hat, err_var, self.no]) 
         #Estimated symbols x_hat : [batch_size, num_tx, num_streams, num_data_symbols], complex
         #Effective noise variance for each estimated symbol no_eff : [batch_size, num_tx, num_streams, num_data_symbols], float
         #64*(14-2pilots)=768
