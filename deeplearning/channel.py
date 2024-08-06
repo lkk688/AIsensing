@@ -2226,10 +2226,10 @@ class MyLSChannelEstimator():
         # plt.plot(np.real(y_pilots[0,0,0,0,0,:]))
         # plt.plot(np.imag(y_pilots[0,0,0,0,0,:]))
         # plt.title('y_pilots')
-        np.save('data/y_eff_tf.npy', y_eff.numpy())
-        np.save('data/y_eff_flat_tf.npy', y_eff_flat.numpy())
-        np.save('data/pilot_ind_tf.npy', self._pilot_ind)
-        np.save('data/y_pilots_tf.npy', y_pilots.numpy())
+        np.save('data/y_eff_tf2.npy', y_eff.numpy())
+        np.save('data/y_eff_flat_tf2.npy', y_eff_flat.numpy())
+        np.save('data/pilot_ind_tf2.npy', self._pilot_ind)
+        np.save('data/y_pilots_tf2.npy', y_pilots.numpy())
 
         # Compute LS channel estimates
         # Note: Some might be Inf because pilots=0, but we do not care
@@ -2246,17 +2246,17 @@ class MyLSChannelEstimator():
         plt.plot(np.real(h_hat[0,0,0,0,0,64:128]),'--')
         plt.plot(np.imag(h_hat[0,0,0,0,0,64:128]),'--')
         plt.title('h_hat at_pilot')
-        plt.savefig('data/h_hat_at_pilot.png')
-        np.save('data/h_hat_beforeinter.npy', h_hat.numpy())
-        np.save('data/err_var_beforeinter.npy', err_var.numpy())
+        plt.savefig('data/h_hat_at_pilot2.png')
+        np.save('data/h_hat_beforeinter2.npy', h_hat.numpy())
+        np.save('data/err_var_beforeinter2.npy', err_var.numpy())
 
         # Interpolate channel estimates over the resource grid
         if self._interpolation_type is not None:
             h_hat, err_var = self._interpol(h_hat, err_var) #h_hat: (2, 1, 16, 1, 2, 128)=>(2, 1, 16, 1, 2, 14, 64)
-            np.save('h_hat_inter.npy', h_hat.numpy())
+            np.save('h_hat_inter2.npy', h_hat.numpy())
             
             err_var = tf.maximum(err_var, tf.cast(0, err_var.dtype)) #(1, 1, 1, 1, 2, 14, 64)=>(1, 1, 1, 1, 2, 14, 64)
-            np.save('err_var_inter.npy', err_var.numpy())
+            np.save('err_var_inter2.npy', err_var.numpy())
 
         return h_hat, err_var
 

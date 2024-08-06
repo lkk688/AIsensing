@@ -22,7 +22,8 @@ class OFDMDataset(Dataset):
         # in case SDR not available, for channel simulation
         self.ch_SINR_min = ch_SINR_min # channel emulation min SINR
         self.ch_SINR_max = ch_SINR_max # channel emulation max SINR
-        saved_data = np.load(datapath, allow_pickle=True).item()
+        saved_data = np.load(datapath, allow_pickle=True)
+        saved_data = saved_data.item()
         for k, v in saved_data.items():
             if isinstance(v, np.ndarray):
                 print(f"{k}'s shape: {v.shape}")
