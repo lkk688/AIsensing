@@ -115,6 +115,7 @@ class OFDMDataset(Dataset):
         self.ls_est = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn")#"lin_time_avg")
         #self.ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn")
 
+        self.checkchannelestimate()
         self.receive()
         self.check_uplinktransmission(compare=compare)
         self.check_channel(compare=compare)
