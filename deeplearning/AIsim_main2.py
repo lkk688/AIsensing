@@ -1595,6 +1595,12 @@ class Transmitter():
         saved_data['num_ofdm_symbols'] = self.num_ofdm_symbols
         saved_data['num_bits_per_symbol'] = self.num_bits_per_symbol
         saved_data['pilot_pattern'] = self.pilot_pattern
+        saved_data['pilots'] = self.RESOURCE_GRID.pilot_pattern.pilots #new added
+        saved_data['num_data_symbols'] = self.RESOURCE_GRID.num_data_symbols
+        saved_data['cyclic_prefix_length'] = self.RESOURCE_GRID.cyclic_prefix_length
+        saved_data['ofdm_symbol_duration'] = self.RESOURCE_GRID.ofdm_symbol_duration
+        saved_data['num_time_samples'] = self.RESOURCE_GRID.num_time_samples
+        saved_data['bandwidth'] = self.RESOURCE_GRID.bandwidth
         saved_data['scenario'] = self.scenario
         saved_data['dataset_folder'] = self.dataset_folder
         saved_data['num_ut'] = self.num_ut

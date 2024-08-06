@@ -3016,150 +3016,7 @@ def ebnodb2no(ebno_db, num_bits_per_symbol, coderate, resource_grid=None):
 
     return no
 
-from channel import ChannelModel
-class CIRDataset(ChannelModel):
-    # pylint: disable=line-too-long
-    r"""CIRDataset(cir_generator, batch_size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps, dtype=tf.complex64)
 
-    Creates a channel model from a dataset that can be used with classes such as
-    :class:`~sionna.channel.TimeChannel` and :class:`~sionna.channel.OFDMChannel`.
-    The dataset is defined by a `generator <https://wiki.python.org/moin/Generators>`_.
-
-    The batch size is configured when instantiating the dataset or through the :attr:`~sionna.channel.CIRDataset.batch_size` property.
-    The number of time steps (`num_time_steps`) and sampling frequency (`sampling_frequency`) can only be set when instantiating the dataset.
-    The specified values must be in accordance with the data.
-
-    Example
-    --------
-
-    The following code snippet shows how to use this class as a channel model.
-
-    >>> my_generator = MyGenerator(...)
-    >>> channel_model = sionna.channel.CIRDataset(my_generator,
-    ...                                           batch_size,
-    ...                                           num_rx,
-    ...                                           num_rx_ant,
-    ...                                           num_tx,
-    ...                                           num_tx_ant,
-    ...                                           num_paths,
-    ...                                           num_time_steps+l_tot-1)
-    >>> channel = sionna.channel.TimeChannel(channel_model, bandwidth, num_time_steps)
-
-    where ``MyGenerator`` is a generator
-
-    >>> class MyGenerator:
-    ...
-    ...     def __call__(self):
-    ...         ...
-    ...         yield a, tau
-
-    that returns complex-valued path coefficients ``a`` with shape
-    `[num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]`
-    and real-valued path delays ``tau`` (in second)
-    `[num_rx, num_tx, num_paths]`.
-
-    Parameters
-    ----------
-    cir_generator : `generator <https://wiki.python.org/moin/Generators>`_
-        Generator that returns channel impulse responses ``(a, tau)`` where
-        ``a`` is the tensor of channel coefficients of shape
-        `[num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]`
-        and dtype ``dtype``, and ``tau`` the tensor of path delays
-        of shape  `[num_rx, num_tx, num_paths]` and dtype ``dtype.
-        real_dtype``.
-
-    batch_size : int
-        Batch size
-
-    num_rx : int
-        Number of receivers (:math:`N_R`)
-
-    num_rx_ant : int
-        Number of antennas per receiver (:math:`N_{RA}`)
-
-    num_tx : int
-        Number of transmitters (:math:`N_T`)
-
-    num_tx_ant : int
-        Number of antennas per transmitter (:math:`N_{TA}`)
-
-    num_paths : int
-        Number of paths (:math:`M`)
-
-    num_time_steps : int
-        Number of time steps
-
-    dtype : tf.DType
-        Complex datatype to use for internal processing and output.
-        Defaults to `tf.complex64`.
-
-    Output
-    -------
-    a : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps], tf.complex
-        Path coefficients
-
-    tau : [batch size, num_rx, num_tx, num_paths], tf.float
-        Path delays [s]
-    """
-
-    def __init__(self, cir_generator, batch_size, num_rx, num_rx_ant, num_tx,
-        num_tx_ant, num_paths, num_time_steps, dtype=tf.complex64):
-
-        self._cir_generator = cir_generator
-        self._batch_size = batch_size #64
-        self._num_time_steps = num_time_steps #1
-
-        # TensorFlow dataset
-        output_signature = (tf.TensorSpec(shape=[num_rx,
-                                                 num_rx_ant,
-                                                 num_tx,
-                                                 num_tx_ant,
-                                                 num_paths,
-                                                 num_time_steps],
-                                          dtype=dtype),
-                            tf.TensorSpec(shape=[num_rx,
-                                                 num_tx,
-                                                 num_paths],
-                                          dtype=dtype.real_dtype))
-        dataset = tf.data.Dataset.from_generator(cir_generator,
-                                            output_signature=output_signature) #specifies the expected output signature of the generator function
-        dataset = dataset.shuffle(32, reshuffle_each_iteration=True)
-        self._dataset = dataset.repeat(None)
-        self._batched_dataset = self._dataset.batch(batch_size)
-        # Iterator for sampling the dataset
-        self._iter = iter(self._batched_dataset)
-
-    @property
-    def batch_size(self):
-        """Batch size"""
-        return self._batch_size
-
-    @batch_size.setter
-    def batch_size(self, value):
-        """Set the batch size"""
-        self._batched_dataset = self._dataset.batch(value)
-        self._iter = iter(self._batched_dataset)
-        self._batch_size = value
-
-    def __call__(self, batch_size=None,
-                       num_time_steps=None,
-                       sampling_frequency=None):
-
-#         if ( (batch_size is not None)
-#                 and tf.not_equal(batch_size, self._batch_size) ):
-#             tf.print("Warning: The value of `batch_size` specified when calling \
-# the CIRDataset is different from the one configured for the dataset. \
-# The value specified when calling is ignored. Use the `batch_size` property \
-# of CIRDataset to use a batch size different from the one set when \
-# instantiating.")
-
-#         if ( (num_time_steps is not None)
-#             and tf.not_equal(num_time_steps, self._num_time_steps) ):
-#             tf.print("Warning: The value of `num_time_steps` specified when \
-# calling the CIRDataset is different from the one speficied when instantiating \
-# the dataset. The value specified when calling is ignored.")
-
-        return next(self._iter)
 
 def split_dim(tensor, shape, axis):
     """Reshapes a dimension of a tensor into multiple dimensions.
@@ -3718,7 +3575,115 @@ class MyOFDMEqualizer():
 
         return (x_hat, no_eff) #x_hat: (1, 2, 768, 2), no_eff: (2, 1, 2, 768)
     
-from channel import whiten_channel
+def matrix_sqrt_inv(tensor):
+    r""" Computes the inverse square root of a Hermitian matrix.
+
+    Given a batch of Hermitian positive definite matrices
+    :math:`\mathbf{A}`, with square root matrices :math:`\mathbf{B}`,
+    such that :math:`\mathbf{B}\mathbf{B}^H = \mathbf{A}`, the function
+    returns :math:`\mathbf{B}^{-1}`, such that
+    :math:`\mathbf{B}^{-1}\mathbf{B}=\mathbf{I}`.
+
+    The two inner dimensions are assumed to correspond to the matrix rows
+    and columns, respectively.
+
+    Args:
+        tensor ([..., M, M]) : A tensor of rank greater than or equal
+            to two.
+
+    Returns:
+        A tensor of the same shape and type as ``tensor`` containing
+        the inverse matrix square root of its last two dimensions.
+
+    Note:
+        If you want to use this function in Graph mode with XLA, i.e., within
+        a function that is decorated with ``@tf.function(jit_compile=True)``,
+        you must set ``sionna.Config.xla_compat=true``.
+        See :py:attr:`~sionna.Config.xla_compat`.
+    """
+    if config.xla_compat and not tf.executing_eagerly():
+        s, u = tf.linalg.eigh(tensor)
+
+        # Compute 1/sqrt of eigenvalues
+        s = tf.abs(s)
+        tf.debugging.assert_positive(s, "Input must be positive definite.")
+        s = 1/tf.sqrt(s)
+        s = tf.cast(s, u.dtype)
+
+        # Matrix multiplication
+        s = tf.expand_dims(s, -2)
+        return tf.matmul(u*s, u, adjoint_b=True)
+    else:
+        return tf.linalg.inv(tf.linalg.sqrtm(tensor))
+    
+def whiten_channel(y, h, s, return_s=True):
+    # pylint: disable=line-too-long
+    r"""Whitens a canonical MIMO channel.
+
+    Assume the canonical MIMO channel model
+
+    .. math::
+
+        \mathbf{y} = \mathbf{H}\mathbf{x} + \mathbf{n}
+
+    where :math:`\mathbf{y}\in\mathbb{C}^M(\mathbb{R}^M)` is the received signal vector,
+    :math:`\mathbf{x}\in\mathbb{C}^K(\mathbb{R}^K)` is the vector of transmitted symbols,
+    :math:`\mathbf{H}\in\mathbb{C}^{M\times K}(\mathbb{R}^{M\times K})` is the known channel matrix,
+    and :math:`\mathbf{n}\in\mathbb{C}^M(\mathbb{R}^M)` is a noise vector with covariance
+    matrix :math:`\mathbf{S}\in\mathbb{C}^{M\times M}(\mathbb{R}^{M\times M})`.
+
+    This function whitens this channel by multiplying :math:`\mathbf{y}` and
+    :math:`\mathbf{H}` from the left by :math:`\mathbf{S}^{-\frac{1}{2}}`.
+    Optionally, the whitened noise covariance matrix :math:`\mathbf{I}_M`
+    can be returned.
+
+    Input
+    -----
+    y : [...,M], tf.float or tf.complex
+        1+D tensor containing the received signals.
+
+    h : [...,M,K], tf.float or tf.complex
+        2+D tensor containing the  channel matrices.
+
+    s : [...,M,M], tf.float or complex
+        2+D tensor containing the noise covariance matrices.
+
+    return_s : bool
+        If `True`, the whitened covariance matrix is returned.
+        Defaults to `True`.
+
+    Output
+    ------
+    : [...,M], tf.float or tf.complex
+        1+D tensor containing the whitened received signals.
+
+    : [...,M,K], tf.float or tf.complex
+        2+D tensor containing the whitened channel matrices.
+
+    : [...,M,M], tf.float or tf.complex
+        2+D tensor containing the whitened noise covariance matrices.
+        Only returned if ``return_s`` is `True`.
+    """
+    # Compute whitening matrix
+    s_inv_1_2 = matrix_sqrt_inv(s)
+    s_inv_1_2 = expand_to_rank(s_inv_1_2, tf.rank(h), 0)
+
+    # Whiten obervation and channel matrix
+    yw = tf.expand_dims(y, -1)
+    yw = tf.matmul(s_inv_1_2, yw)
+    yw = tf.squeeze(yw, axis=-1)
+
+    hw = tf.matmul(s_inv_1_2, h)
+
+    if return_s:
+        # Ideal interference covariance matrix after whitening
+        sw = tf.eye(tf.shape(s)[-2], dtype=s.dtype)
+        sw = expand_to_rank(sw, tf.rank(s), 0)
+        return yw, hw, sw
+    else:
+        return yw, hw
+
+
 def lmmse_equalizer(y, h, s, whiten_interference=True):
     # pylint: disable=line-too-long
     r"""MIMO LMMSE Equalizer
@@ -4432,7 +4397,7 @@ class OFDMDemodulator(Layer):
 
 from ldpc.encoding import LDPC5GEncoder
 from ldpc.decoding import LDPC5GDecoder
-from channel import OFDMChannel
+#from channel import OFDMChannel
 if __name__ == '__main__':
     # Define the number of UT and BS antennas
     NUM_UT = 1

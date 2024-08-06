@@ -11,6 +11,7 @@ import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 from matplotlib import colors
+import tensorflow as tf
 
 # custom dataset
 class OFDMDataset(Dataset):
@@ -64,6 +65,15 @@ class OFDMDataset(Dataset):
         #among 14 symbols, 2,11 is the pilot, effective symbol is 12
         #1064 grids contains the data, DC and pilot, effective grid=12*64=768
 
+        #RESOURCE_GRID related data
+        self.pilot_pattern = saved_data['pilot_pattern']
+        self.pilots = saved_data['pilots'] #self.RESOURCE_GRID.pilot_pattern.pilots
+        self.num_data_symbols = saved_data['num_data_symbols']
+        self.cyclic_prefix_length = saved_data['cyclic_prefix_length']
+        self.ofdm_symbol_duration = saved_data['ofdm_symbol_duration']
+        self.num_time_samples = saved_data['num_time_samples']
+        self.bandwidth = saved_data['bandwidth']
+
         #Channel IR get_channelcir
         self.h_b = saved_data['h_b'] #h_b's shape: [batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps] (128, 1, 16, 1, 2, 23, 14)
         self.tau_b = saved_data['tau_b'] # tau_b's shape: [batch, num_rx, num_tx, num_paths] (128, 1, 1, 23)
@@ -107,6 +117,24 @@ class OFDMDataset(Dataset):
                 dc_null=True,
                 pilot_pattern="kronecker",
                 pilot_ofdm_symbol_indices=[2,11])
+        pilots = self.RESOURCE_GRID.pilot_pattern.pilots #(1, 2, 128)
+        RESOURCE_GRID2 = MyResourceGrid(num_ofdm_symbols=self.num_ofdm_symbols,
+                fft_size=self.fft_size,
+                subcarrier_spacing=60e3, #15e3,
+                num_tx=1,
+                num_streams_per_tx=self.num_streams_per_tx,
+                cyclic_prefix_length=6,
+                num_guard_carriers=[5,6],
+                dc_null=True,
+                pilot_pattern="kronecker",
+                pilot_ofdm_symbol_indices=[2,11])
+        pilots2 = RESOURCE_GRID2.pilot_pattern.pilots #(1, 2, 128)
+        print(pilots[0,0,:])
+        print(pilots2[0,0,:])
+        #The pilots are different, Each pilot sequence is constructed from randomly drawn QPSK constellation points.
+        print(np.allclose(pilots, pilots2)) #False
+        self.RESOURCE_GRID.pilot_pattern.pilots = self.pilots #changed here
+
         self.myrg_mapper = MyResourceGridMapper(self.RESOURCE_GRID)
         self.remove_nulled_scs = RemoveNulledSubcarriers(self.RESOURCE_GRID)
         self.mydemapper = MyDemapper("app", constellation_type="qam", num_bits_per_symbol=self.num_bits_per_symbol)
@@ -116,6 +144,7 @@ class OFDMDataset(Dataset):
         self.ls_est = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn")#"lin_time_avg")
         #self.ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn")
 
+        self.compare_channelestimationdata()
         self.checkchannelestimate()
         self.receive()
         self.check_uplinktransmission(compare=compare)
@@ -131,46 +160,28 @@ class OFDMDataset(Dataset):
         if compare:
             #from sionna.mapping import Mapper, Demapper
             #from sionna.ofdm import ResourceGrid, ResourceGridMapper
-            from sionna_tf import Mapper, ResourceGrid, ResourceGridMapper
-            from deepMIMO5 import MyResourceGrid, MyResourceGridMapper #StreamManagement, MyResourceGrid, Mapper, MyResourceGridMapper, MyDemapper
+            from sionna_tf import Mapper #, ResourceGrid, ResourceGridMapper
+            #from deepMIMO5 import MyResourceGrid, MyResourceGridMapper #StreamManagement, MyResourceGrid, Mapper, MyResourceGridMapper, MyDemapper
 
             # The mapper maps blocks of information bits to constellation symbols
             mapper = Mapper("qam", self.num_bits_per_symbol)
 
-            rg = ResourceGrid(num_ofdm_symbols=self.num_ofdm_symbols,
-                  fft_size=self.fft_size,
-                  subcarrier_spacing=60e3, #15e3,
-                  num_tx=1,
-                  num_streams_per_tx=self.num_streams_per_tx,
-                  cyclic_prefix_length=6,
-                  num_guard_carriers=[5,6],
-                  dc_null=True,
-                  pilot_pattern="kronecker",
-                  pilot_ofdm_symbol_indices=[2,11])
-            rg.show();
-
             # The resource grid mapper maps symbols onto an OFDM resource grid
-            rg_mapper = ResourceGridMapper(rg)
 
             x_tf = mapper(c) #np.array[64,1,1,896] if empty np.array[64,1,1,1064] 1064*4=4256 [batch_size, num_tx, num_streams_per_tx, num_data_symbols]
-            x_rg_tf = rg_mapper(x_tf) ##complex array[64,1,1,14,76] 14*76=1064
+            x_rg_tf = self.myrg_mapper(x_tf) ##complex array[64,1,1,14,76] 14*76=1064
             #output: [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size][64,1,1,14,76] (64, 1, 2, 14, 76)
             
-            
             myx_rg = self.myrg_mapper(x)
-            myx_rg_np = self.myrg_mapper(x_tf.numpy())
-
-            print(np.allclose(myx_rg_np, x_rg_tf.numpy())) #False
 
             print(np.allclose(x, x_tf.numpy())) #True
-            x_rg_tfnp=x_rg_tf.numpy()
-            print(np.allclose(x_rg, x_rg_tfnp)) #False
-            print(np.allclose(x_rg[0,:,:,:,:], x_rg_tfnp[0,:,:,:,:])) #False
-            print(np.allclose(x_rg[0,0,:,:,:], x_rg_tfnp[0,0,:,:,:])) #False
-            print(np.allclose(x_rg[0,0,0,:,:], x_rg_tfnp[0,0,0,:,:])) #False
+            print(np.allclose(x_rg, x_rg_tf)) #False->True
+            print(np.allclose(x_rg[0,:,:,:,:], x_rg_tf[0,:,:,:,:])) #False->True
+            print(np.allclose(x_rg[0,0,:,:,:], x_rg_tf[0,0,:,:,:])) #False->True
+            print(np.allclose(x_rg[0,0,0,:,:], x_rg_tf[0,0,0,:,:])) #False->True
 
-            print(np.allclose(x_rg, myx_rg)) #False
-            print(np.allclose(x_rg[0,0,0,:,:], myx_rg[0,0,0,:,:])) #False
+            print(np.allclose(x_rg, myx_rg)) #False->True
+            print(np.allclose(x_rg[0,0,0,:,:], myx_rg[0,0,0,:,:])) #False->True
 
     def check_channel(self, compare=True):
         from deepMIMO5 import time_lag_discrete_time_channel, cir_to_time_channel, cir_to_ofdm_channel, subcarrier_frequencies
@@ -201,19 +212,24 @@ class OFDMDataset(Dataset):
         if compare == True:
             #from sionna.channel import subcarrier_frequencies, cir_to_ofdm_channel
             from channel import cir_to_ofdm_channel
-            h_freq_tf = cir_to_ofdm_channel(self.frequencies, self.h_b, self.tau_b, normalize=True)
+            h_b_tf = tf.convert_to_tensor(self.h_b, dtype=tf.complex64)
+            #tau_b_tf = tf.convert_to_tensor(self.tau_b, dtype=tf.float)
+            h_freq_tf = cir_to_ofdm_channel(self.frequencies, h_b_tf, self.tau_b, normalize=True)
             h_freq_tfnp = h_freq_tf.numpy()
-            print(np.allclose(h_freq_np, h_freq_tfnp)) #False
-            print(np.allclose(h_freq_np[:,:,:,0,0,:,:], h_freq_tfnp[:,:,:,0,0,:,:])) #False
-            print(np.allclose(h_freq_np[:,0,0,0,0,:,:], h_freq_tfnp[:,0,0,0,0,:,:])) #True
-            print(np.allclose(h_freq_np[0,0,0,0,0,:,:], h_freq_tfnp[0,0,0,0,0,:,:])) #True
-            print(np.allclose(h_freq_np[0,0,0,0,0,0,:], h_freq_tfnp[0,0,0,0,0,0,:])) #True
+            print(np.allclose(self.h_out, h_freq_tfnp)) #False
+            print(np.allclose(self.h_out[:,:,:,0,0,:,:], h_freq_tfnp[:,:,:,0,0,:,:])) #False
+            print(np.allclose(self.h_out[:,0,0,0,0,:,:], h_freq_tfnp[:,0,0,0,0,:,:])) #False
+            print(np.allclose(self.h_out[0,0,0,0,0,:,:], h_freq_tfnp[0,0,0,0,0,:,:])) #False
+            print(np.allclose(self.h_out[0,0,0,0,0,0], h_freq_tfnp[0,0,0,0,0,0])) #False
+            print(self.h_out[0,0,0,0,0,0,:])
+            print(h_freq_tfnp[0,0,0,0,0,0,:])
             if self.drawfig:
                 plt.figure()
                 plt.plot(np.real(h_freq_tfnp[0,0,0,0,0,0]))
                 plt.plot(np.imag(h_freq_tfnp[0,0,0,0,0,0]))
-                plt.plot(np.real(h_freq_np[0,0,0,0,0,0]), "--")
-                plt.plot(np.imag(h_freq_np[0,0,0,0,0,0]), "--")
+                plt.plot(np.real(self.h_out[0,0,0,0,0,0]), "--")
+                plt.plot(np.imag(self.h_out[0,0,0,0,0,0]), "--")
+                plt.savefig("data/cir_to_ofdm_compare.png")
 
     def check_channelestimation(self):
         if self.drawfig:
@@ -233,7 +249,7 @@ class OFDMDataset(Dataset):
     def __len__(self):
         return self.maxdatalen
     
-    def comparefigure(self, h_perfect, h_hat):
+    def comparefigure(self, h_perfect, h_hat, savefile=None):
         h_est = h_hat[0,0,0,0,0,0] #(64, 1, 1, 1, 1, 14, 44)
         h_perfect  = h_perfect[0,0,0,0,0,0]
         plt.figure()
@@ -245,9 +261,84 @@ class OFDMDataset(Dataset):
         plt.ylabel("Channel frequency response")
         plt.legend(["Ideal (real part)", "Ideal (imaginary part)", "Estimated (real part)", "Estimated (imaginary part)"]);
         plt.title("Comparison of channel frequency responses");
+        if savefile is not None:
+            plt.savefig(savefile)
     
+    def compare_channelestimationdata(self):
+        y_eff_tf = np.load('data/y_eff_tf.npy')
+        y_eff_tf2 = np.load('data/y_eff_tf2.npy') #(128, 1, 16, 14, 64)
+        print(np.allclose(y_eff_tf, y_eff_tf2)) #True
+
+        y_eff_flat_tf = np.load('data/y_eff_flat_tf.npy')
+        y_eff_flat_tf2 = np.load('data/y_eff_flat_tf2.npy') #(128, 1, 16, 896)
+        print(np.allclose(y_eff_flat_tf, y_eff_flat_tf2)) #True
+
+        pilot_ind_tf = np.load('data/pilot_ind_tf.npy') #(1, 2, 128)
+        pilot_ind_tf2 = np.load('data/pilot_ind_tf2.npy')
+        print(np.allclose(pilot_ind_tf, pilot_ind_tf2)) #True
+
+        y_pilots_tf = np.load('data/y_pilots_tf.npy') #(128, 1, 16, 1, 2, 128)
+        y_pilots_tf2 = np.load('data/y_pilots_tf2.npy')
+        print(np.allclose(y_pilots_tf, y_pilots_tf2)) #True
+
+        #after self.estimate_at_pilot_locations
+        h_hat_beforeinter = np.load('data/h_hat_beforeinter.npy') #(128, 1, 16, 1, 2, 128)
+        h_hat_beforeinter2 = np.load('data/h_hat_beforeinter2.npy')
+        print(np.allclose(h_hat_beforeinter, h_hat_beforeinter2)) #False->True
+
+        h_ls, err_var = self.estimate_at_pilot_locations(y_pilots=y_pilots_tf, no=self.no, resource_grid=self.RESOURCE_GRID)
+        print(np.allclose(h_hat_beforeinter, h_ls)) #False->True
+
+        err_var_beforeinter = np.load('data/err_var_beforeinter.npy')
+        err_var_beforeinter2 = np.load('data/err_var_beforeinter2.npy')
+        print(np.allclose(err_var_beforeinter, err_var_beforeinter2)) #True
+
+        h_hat_inter = np.load('data/h_hat_inter.npy')
+        h_hat_inter2 = np.load('data/h_hat_inter2.npy')
+        print(np.allclose(h_hat_inter, h_hat_inter2)) #False->True
+
+        err_var_inter = np.load('data/err_var_inter.npy')
+        err_var_inter2 = np.load('data/err_var_inter2.npy')
+        print(np.allclose(err_var_inter, err_var_inter2)) #True
+
+        self.comparefigure(h_perfect=self.h_perfect, h_hat=self.h_hat, savefile='data/h_hatcompare.png')
+
+        self.comparefigure(h_perfect=self.h_perfect, h_hat=h_hat_inter, savefile='data/h_hat_intercompare.png')
+
+        self.comparefigure(h_perfect=self.h_perfect, h_hat=h_hat_inter2, savefile='data/h_hat_inter2compare.png')
+
+    def estimate_at_pilot_locations(self, y_pilots, no, resource_grid):
+        from channel import expand_to_rank
+        pilots = resource_grid.pilot_pattern.pilots
+        # y_pilots : [batch_size, num_rx, num_rx_ant, num_tx, num_streams,
+        #               num_pilot_symbols], tf.complex (b, 1, 16, 1, 2, 128)
+        #     The observed signals for the pilot-carrying resource elements.
+
+        # no : [batch_size, num_rx, num_rx_ant] or only the first n>=0 dims,
+        #   tf.float
+        #     The variance of the AWGN.
+
+        # Compute LS channel estimates
+        # Note: Some might be Inf because pilots=0, but we do not care
+        # as only the valid estimates will be considered during interpolation.
+        # We do a save division to replace Inf by 0.
+        # Broadcasting from pilots here is automatic since pilots have shape
+        # [num_tx, num_streams, num_pilot_symbols]
+        h_ls = tf.math.divide_no_nan(y_pilots, pilots) #pilots: (1, 2, 128)=>(2, 1, 16, 1, 2, 128)
+
+        # Compute error variance and broadcast to the same shape as h_ls
+        # Expand rank of no for broadcasting
+        no = expand_to_rank(no, tf.rank(h_ls), -1) #float=>(1, 1, 1, 1, 1, 1)
+
+        # Expand rank of pilots for broadcasting
+        pilots_md = expand_to_rank(pilots, tf.rank(h_ls), 0) #(1, 2, 128)=>(1, 1, 1, 1, 2, 128)
+
+        # Compute error variance, broadcastable to the shape of h_ls
+        err_var = tf.math.divide_no_nan(no, tf.abs(pilots_md)**2) #(1, 1, 1, 1, 2, 128)
+
+        return h_ls, err_var #h_ls: (2, 1, 16, 1, 2, 128), err_var: (1, 1, 1, 1, 2, 128)
+
     def checkchannelestimate(self):
-        import tensorflow as tf
         #perform channel estimation via pilots
         print("h_hat after channel estimation via pilots:", self.h_hat.shape)
         
@@ -256,7 +347,7 @@ class OFDMDataset(Dataset):
         self.comparefigure(h_perfect=self.h_hat, h_hat=h_hat.numpy())
         #self.h_hat shape: (128, 1, 16, 1, 2, 14, 64), self.err_var: (1, 1, 1, 1, 2, 14, 64)
         #[batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols, num_effective_subcarriers]
-        print(np.allclose(h_hat, self.h_hat)) #False
+        print(np.allclose(h_hat, self.h_hat)) #False->fixed to True
         print(np.allclose(err_var, self.err_var)) #True
 
     def receive(self):
@@ -302,7 +393,7 @@ class OFDMDataset(Dataset):
         return batch
     
 def trainmain(args):
-    train_data = OFDMDataset(training=True, compare=False)
+    train_data = OFDMDataset(training=True, compare=True)
     onebatch = train_data[0]
     print(onebatch['samples'].shape)
 

@@ -742,7 +742,8 @@ class PilotPattern():
 
     @pilots.setter
     def pilots(self, value):
-        self._pilots.assign(value)
+        #self._pilots.assign(value)
+        self._pilots = value
 
 
     def show(self, tx_ind=None, stream_ind=None, show_pilot_ind=False):
@@ -1180,8 +1181,8 @@ class MyResourceGrid():
                 #Kronecker not implemented
                 value = KroneckerPilotPattern(self,
                         self._pilot_ofdm_symbol_indices, dtype=self._dtype)
-        else:
-            raise ValueError("Unsupported pilot_pattern")
+        # else:
+        #     raise ValueError("Unsupported pilot_pattern")
         self._pilot_pattern = value
 
     def _check_settings(self):
