@@ -492,15 +492,17 @@ class Wav2Vec2Model(Wav2Vec2PreTrainedModel):
 
 #https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/wav2vec2/feature_extraction_wav2vec2.py#L31
 #class Wav2Vec2FeatureExtractor(SequenceFeatureExtractor):
-from transformers import AutoProcessor
-import os
-import torchaudio
-from datasets import load_dataset, Audio
-#mycache_dir=""
-mycache_dir=os.path.join('E:',os.sep, 'Cache','huggingface')
-os.environ['HF_HOME'] = mycache_dir
-os.environ['HF_DATASETS_CACHE'] = mycache_dir
+
 if __name__ == '__main__':
+    from transformers import AutoProcessor
+    import os
+    import torchaudio
+    from datasets import load_dataset, Audio
+    #mycache_dir=""
+    mycache_dir=os.path.join('E:',os.sep, 'Cache','huggingface')
+    os.environ['HF_HOME'] = mycache_dir
+    os.environ['HF_DATASETS_CACHE'] = mycache_dir
+
     model_name = "facebook/wav2vec2-base-960h"
     processor = AutoProcessor.from_pretrained(model_name, cache_dir=mycache_dir) #Wav2Vec2FeatureExtractor
     sampling_rate = processor.feature_extractor.sampling_rate

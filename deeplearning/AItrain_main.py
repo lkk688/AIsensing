@@ -13,6 +13,32 @@ import matplotlib.pyplot as plt
 from matplotlib import colors
 import tensorflow as tf
 
+def compare_allclose(arry1, arry2, threshold=1e-6, figname="data/compare_allclose.png"):
+    is_complex=False
+    if any(np.iscomplex(arry1)) and any(np.iscomplex(arry2)):
+        print("complex data")
+        is_complex = True
+        print("np allclose for real", np.allclose(np.real(arry1), np.real(arry2))) #False
+        print("np allclose for img", np.allclose(np.imag(arry1), np.imag(arry2))) #False
+    differences = np.abs(arry1 - arry2)
+    
+    num_differences = np.sum(differences > threshold)
+    print("Percent of differences:", num_differences/len(arry1))
+    print("np allclose", np.allclose(arry1, arry2, atol=threshold))
+    print("Demodulation error (L2 norm):", np.linalg.norm(arry1 - arry2))
+    if figname is not None:
+        plt.figure()
+        if is_complex:
+            plt.plot(np.real(arry1))
+            plt.plot(np.imag(arry1))
+            plt.plot(np.real(arry2), "--")
+            plt.plot(np.imag(arry2), "--")
+        else:
+            plt.plot(arry1)
+            plt.plot(arry2, "--")
+        plt.savefig(figname)
+
+    
 # custom dataset
 class OFDMDataset(Dataset):
     def __init__(self, datapath='data/cdl_ofdm_ebno25.npy', ch_SINR_min=25, ch_SINR_max=50, maxdatalen=10000, training=False, drawfig=True, compare=False):
@@ -214,22 +240,15 @@ class OFDMDataset(Dataset):
             from channel import cir_to_ofdm_channel
             h_b_tf = tf.convert_to_tensor(self.h_b, dtype=tf.complex64)
             #tau_b_tf = tf.convert_to_tensor(self.tau_b, dtype=tf.float)
-            h_freq_tf = cir_to_ofdm_channel(self.frequencies, h_b_tf, self.tau_b, normalize=True)
+            h_freq_tf = cir_to_ofdm_channel(self.frequencies, h_b_tf, self.tau_b, normalize=True) #(128, 1, 16, 1, 2, 14, 76)
             h_freq_tfnp = h_freq_tf.numpy()
-            print(np.allclose(self.h_out, h_freq_tfnp)) #False
+            print(np.allclose(self.h_out, h_freq_tfnp, atol=1e-06)) #False->True
             print(np.allclose(self.h_out[:,:,:,0,0,:,:], h_freq_tfnp[:,:,:,0,0,:,:])) #False
             print(np.allclose(self.h_out[:,0,0,0,0,:,:], h_freq_tfnp[:,0,0,0,0,:,:])) #False
             print(np.allclose(self.h_out[0,0,0,0,0,:,:], h_freq_tfnp[0,0,0,0,0,:,:])) #False
             print(np.allclose(self.h_out[0,0,0,0,0,0], h_freq_tfnp[0,0,0,0,0,0])) #False
-            print(self.h_out[0,0,0,0,0,0,:])
-            print(h_freq_tfnp[0,0,0,0,0,0,:])
-            if self.drawfig:
-                plt.figure()
-                plt.plot(np.real(h_freq_tfnp[0,0,0,0,0,0]))
-                plt.plot(np.imag(h_freq_tfnp[0,0,0,0,0,0]))
-                plt.plot(np.real(self.h_out[0,0,0,0,0,0]), "--")
-                plt.plot(np.imag(self.h_out[0,0,0,0,0,0]), "--")
-                plt.savefig("data/cir_to_ofdm_compare.png")
+            compare_allclose(self.h_out[0,0,0,0,0,0], h_freq_tfnp[0,0,0,0,0,0], figname="data/compare_allclose.png")
+
 
     def check_channelestimation(self):
         if self.drawfig:

@@ -8,7 +8,7 @@ import torch.nn.functional as tFunc # usually F, but that is reserved for other 
 import csv
 import os
 from ofdmsim_pytorchlib import *
-from signalmodels import ResModel_2D, ResModel_simple1_2D, MyWave2vec
+from signalmodels import ResModel_2D, ResModel_simple1_2D #, MyWave2vec
 import math
 from tqdm.auto import tqdm
 import pickle
@@ -242,7 +242,7 @@ class MultiReceiver():
         return BER_val.item(), new_wrongs
 
 
-def trainmain(args):
+def trainmain(trainoutput, saved_model_path = ""):
     device, useamp=get_device(gpuid='0', useamp=False)
 
     # OFDM Parameters
@@ -277,9 +277,9 @@ def trainmain(args):
     print(f"Feature batch shape: {feature_2d.size()}") #[16, 4, 14, 71]
     print(f"Labels batch shape: {data_labels.size()}") #[16, 14, 71, 6]
 
-    #model =  ResModel_2D(num_bits_per_symbol=Qm, num_ch=4, S=S, F=F).to(device)
+    model =  ResModel_2D(num_bits_per_symbol=Qm, num_ch=4, S=S, F=F).to(device)
     #model = ResModel_simple1_2D(num_bits_per_symbol=Qm, num_ch=4, S=S, F=F).to(device)
-    model = MyWave2vec(num_bits_per_symbol=Qm, num_ch=4, S=S, F=F).to(device)
+    #model = MyWave2vec(num_bits_per_symbol=Qm, num_ch=4, S=S, F=F).to(device)
 
     multiprocessor = MultiReceiver(Qm=Qm, S=S, Sp=Sp, F=F)
 
@@ -297,10 +297,10 @@ def trainmain(args):
     scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda_lr)
     criterion = nn.BCELoss()
 
-    saved_model_path = "" #'data/rx_model_168.pth'
-    trainoutput=os.path.join('output','exp0202b')
-    os.makedirs(trainoutput, exist_ok=True)
-    print("Trainoutput folder:", trainoutput)
+     #'data/rx_model_168.pth'
+    # trainoutput=os.path.join('output','exp0202b')
+    # os.makedirs(trainoutput, exist_ok=True)
+    # print("Trainoutput folder:", trainoutput)
     performance_csv_path = os.path.join(trainoutput, 'performance.csv')#'output/performance_res2d2.csv'
 
     # Check if a saved model exists
@@ -465,8 +465,8 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='OFDM training job')
     #data related arguments
-    parser.add_argument('--mode', default="Evaluate", choices=['Train','Evaluate', 'Visualization'], help='Running mode')
-    parser.add_argument('--traintag', type=str, default='exp0202b',
+    parser.add_argument('--mode', default="Train", choices=['Train','Evaluate', 'Visualization'], help='Running mode')
+    parser.add_argument('--traintag', type=str, default='exp806',
                     help='Train rag name, used for output folder')
     parser.add_argument('--data_type', type=str, default="OFDMsim",
                     help='data type name')
@@ -486,4 +486,4 @@ if __name__ == '__main__':
     if args.mode == "Evaluate":
         draw_trainresults(csv_path=os.path.join(trainoutput, 'performance.csv'), save_plots=True)
     elif args.mode == "Train":
-        trainmain(args)
+        trainmain(trainoutput)
