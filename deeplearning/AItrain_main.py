@@ -41,7 +41,7 @@ def compare_allclose(arry1, arry2, threshold=1e-6, figname="data/compare_allclos
     
 # custom dataset
 class OFDMDataset(Dataset):
-    def __init__(self, datapath='data/cdl_ofdm_ebno25.npy', ch_SINR_min=25, ch_SINR_max=50, maxdatalen=10000, training=False, drawfig=True, compare=False):
+    def __init__(self, datapath='data/cdl_ofdm_ebno25.npy', ch_SINR_min=25, ch_SINR_max=50, maxdatalen=10000, training=False, drawfig=True, testing=False, compare=False):
         self.maxdatalen = maxdatalen
         self.training = training
         self.drawfig = drawfig
@@ -51,12 +51,12 @@ class OFDMDataset(Dataset):
         self.ch_SINR_max = ch_SINR_max # channel emulation max SINR
         saved_data = np.load(datapath, allow_pickle=True)
         saved_data = saved_data.item()
-        for k, v in saved_data.items():
-            if isinstance(v, np.ndarray):
-                print(f"{k}'s shape: {v.shape}")
-            else:
-                print(f"{k}: {v}")
-        print(saved_data['currenttime'])
+        # for k, v in saved_data.items():
+        #     if isinstance(v, np.ndarray):
+        #         print(f"{k}'s shape: {v.shape}")
+        #     else:
+        #         print(f"{k}: {v}")
+        print("Dataset time:", saved_data['currenttime'])
         self.channeltype = saved_data['channeltype']# ofdm
         self.channeldataset = saved_data['channeldataset'] #cdl
         self.fft_size = saved_data['fft_size'] #76
@@ -90,6 +90,18 @@ class OFDMDataset(Dataset):
         #among 76 subcarriers, 5 and 6 are guard carriers, effective subcarrier is 76-6-5-1(DC carrier)=64
         #among 14 symbols, 2,11 is the pilot, effective symbol is 12
         #1064 grids contains the data, DC and pilot, effective grid=12*64=768
+        
+        num_guard_carriers=[5,6]
+        pilot_ofdm_symbol_indices=[2,11]
+        colofpilots=len(pilot_ofdm_symbol_indices) #2
+        self.totalsymbols = self.k/self.num_bits_per_symbol
+        self.effectiveofdmsymbols=self.num_ofdm_symbols-colofpilots #12
+        self.effectivesubcarrier=int(self.totalsymbols/(self.effectiveofdmsymbols)) #768/12=64
+        self.TTI_mask_RE = self.TTI_mask(S=14, F=64, num_guard_carriers=num_guard_carriers, \
+                                         pilot_ofdm_symbol_indices=pilot_ofdm_symbol_indices, dc_null=True, plotTTI=drawfig)#(14, 76)
+        # TTI_mask_RE_3d = TTI_mask_RE_small.unsqueeze(-1) #Returns a new tensor with a dimension of size one inserted at the specified position. [14, 71]->[14, 71, 1]
+        # self.TTI_mask_RE_3d = TTI_mask_RE_3d.expand(self.S, self.F-1, self.Qm) #[14, 71, 6]
+        # self.index_one =  self.TTI_mask_RE_3d==1 #[14, 71, 6]
 
         #RESOURCE_GRID related data
         self.pilot_pattern = saved_data['pilot_pattern']
@@ -130,51 +142,52 @@ class OFDMDataset(Dataset):
         self.num_time_steps = saved_data['num_time_steps'] #(14,)
         self.sampling_frequency = saved_data['sampling_frequency'] #55609
         
-        from deepMIMO5 import StreamManagement, MyResourceGrid, MyResourceGridMapper, MyDemapper, RemoveNulledSubcarriers
-        from sionna_tf import MyLMMSEEqualizer
-        from channel import MyLSChannelEstimator, LSChannelEstimator
-        self.RESOURCE_GRID = MyResourceGrid(num_ofdm_symbols=self.num_ofdm_symbols,
-                fft_size=self.fft_size,
-                subcarrier_spacing=60e3, #15e3,
-                num_tx=1,
-                num_streams_per_tx=self.num_streams_per_tx,
-                cyclic_prefix_length=6,
-                num_guard_carriers=[5,6],
-                dc_null=True,
-                pilot_pattern="kronecker",
-                pilot_ofdm_symbol_indices=[2,11])
-        pilots = self.RESOURCE_GRID.pilot_pattern.pilots #(1, 2, 128)
-        RESOURCE_GRID2 = MyResourceGrid(num_ofdm_symbols=self.num_ofdm_symbols,
-                fft_size=self.fft_size,
-                subcarrier_spacing=60e3, #15e3,
-                num_tx=1,
-                num_streams_per_tx=self.num_streams_per_tx,
-                cyclic_prefix_length=6,
-                num_guard_carriers=[5,6],
-                dc_null=True,
-                pilot_pattern="kronecker",
-                pilot_ofdm_symbol_indices=[2,11])
-        pilots2 = RESOURCE_GRID2.pilot_pattern.pilots #(1, 2, 128)
-        print(pilots[0,0,:])
-        print(pilots2[0,0,:])
-        #The pilots are different, Each pilot sequence is constructed from randomly drawn QPSK constellation points.
-        print(np.allclose(pilots, pilots2)) #False
-        self.RESOURCE_GRID.pilot_pattern.pilots = self.pilots #changed here
+        if testing:
+            from deepMIMO5 import StreamManagement, MyResourceGrid, MyResourceGridMapper, MyDemapper, RemoveNulledSubcarriers
+            from sionna_tf import MyLMMSEEqualizer
+            from channel import MyLSChannelEstimator, LSChannelEstimator
+            self.RESOURCE_GRID = MyResourceGrid(num_ofdm_symbols=self.num_ofdm_symbols,
+                    fft_size=self.fft_size,
+                    subcarrier_spacing=60e3, #15e3,
+                    num_tx=1,
+                    num_streams_per_tx=self.num_streams_per_tx,
+                    cyclic_prefix_length=6,
+                    num_guard_carriers=[5,6],
+                    dc_null=True,
+                    pilot_pattern="kronecker",
+                    pilot_ofdm_symbol_indices=[2,11])
+            pilots = self.RESOURCE_GRID.pilot_pattern.pilots #(1, 2, 128)
+            RESOURCE_GRID2 = MyResourceGrid(num_ofdm_symbols=self.num_ofdm_symbols,
+                    fft_size=self.fft_size,
+                    subcarrier_spacing=60e3, #15e3,
+                    num_tx=1,
+                    num_streams_per_tx=self.num_streams_per_tx,
+                    cyclic_prefix_length=6,
+                    num_guard_carriers=[5,6],
+                    dc_null=True,
+                    pilot_pattern="kronecker",
+                    pilot_ofdm_symbol_indices=[2,11])
+            pilots2 = RESOURCE_GRID2.pilot_pattern.pilots #(1, 2, 128)
+            print(pilots[0,0,:])
+            print(pilots2[0,0,:])
+            #The pilots are different, Each pilot sequence is constructed from randomly drawn QPSK constellation points.
+            print(np.allclose(pilots, pilots2)) #False
+            self.RESOURCE_GRID.pilot_pattern.pilots = self.pilots #changed here
 
-        self.myrg_mapper = MyResourceGridMapper(self.RESOURCE_GRID)
-        self.remove_nulled_scs = RemoveNulledSubcarriers(self.RESOURCE_GRID)
-        self.mydemapper = MyDemapper("app", constellation_type="qam", num_bits_per_symbol=self.num_bits_per_symbol)
-        RX_TX_ASSOCIATION = np.ones([self.num_rx, self.num_tx], int) #[[1]]
-        self.STREAM_MANAGEMENT = StreamManagement(RX_TX_ASSOCIATION, self.num_streams_per_tx)
-        self.lmmse_equ = MyLMMSEEqualizer(self.RESOURCE_GRID, self.STREAM_MANAGEMENT)
-        self.ls_est = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn")#"lin_time_avg")
-        #self.ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn")
+            self.myrg_mapper = MyResourceGridMapper(self.RESOURCE_GRID)
+            self.remove_nulled_scs = RemoveNulledSubcarriers(self.RESOURCE_GRID)
+            self.mydemapper = MyDemapper("app", constellation_type="qam", num_bits_per_symbol=self.num_bits_per_symbol)
+            RX_TX_ASSOCIATION = np.ones([self.num_rx, self.num_tx], int) #[[1]]
+            self.STREAM_MANAGEMENT = StreamManagement(RX_TX_ASSOCIATION, self.num_streams_per_tx)
+            self.lmmse_equ = MyLMMSEEqualizer(self.RESOURCE_GRID, self.STREAM_MANAGEMENT)
+            self.ls_est = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn")#"lin_time_avg")
+            #self.ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn")
 
-        self.compare_channelestimationdata()
-        self.checkchannelestimate()
-        self.receive()
-        self.check_uplinktransmission(compare=compare)
-        self.check_channel(compare=compare)
+            self.compare_channelestimationdata()
+            self.checkchannelestimate()
+            self.receive()
+            self.check_uplinktransmission(compare=compare)
+            self.check_channel(compare=compare)
 
     def check_uplinktransmission(self, compare=True):
         c = self.b
@@ -401,18 +414,72 @@ class OFDMDataset(Dataset):
         BER=calculate_BER(self.b, b_hat) #0
         print("BER Value:", BER)
     
+    #S: num_ofdm_symbols, F: fft_size/num_subcarriers
+    #RESOURCE_GRID.num_data_symbols=14(OFDM symbol)*76(subcarrier) array=1064
+        #among 76 subcarriers, 5 and 6 are guard carriers, effective subcarrier is 76-6-5-1(DC carrier)=64
+        #among 14 symbols, 2,11 is the pilot, effective symbol is 12
+        #1064 grids contains the data, DC and pilot, effective grid=12*64=768
+    #The meaning of the mask:
+    # 0: The PRB is null power.
+    # 1: The PRB is PDSCH (Physical Downlink Shared Channel).
+    # 2: Pilot symbols
+    # 3: (yellow bar) DC
+    
+    def TTI_mask(self, S=14, F=64, num_guard_carriers=[5,6], pilot_ofdm_symbol_indices=[2,11], dc_null=True, plotTTI=False):
+
+        if dc_null:
+            F=F+1
+        # Create a mask with all ones
+        TTI_mask = torch.ones((S, F), dtype=torch.int8) # all ones (14, 65)
+
+        # Set symbol Sp for pilots
+        TTI_mask[pilot_ofdm_symbol_indices[0], :] = 2 # for pilots
+        TTI_mask[pilot_ofdm_symbol_indices[1], :] = 2 # for pilots
+
+        # DC
+        TTI_mask[:, F // 2] = 3 # DC to non-allocable power (oscillator phase noise): 3 in the middle
+
+        TTI_1 = torch.zeros(S, num_guard_carriers[0], dtype=torch.int8) #empty space (14, 28) add before and after the TTI_mask
+        TTI_2 = torch.zeros(S, num_guard_carriers[1], dtype=torch.int8)
+        # Add FFT offsets
+        TTI_mask = torch.cat((TTI_1, TTI_mask, TTI_2), dim=1) #cat in the dim=1, 65+5+6=76 subcarriers
+
+        # Plotting the TTI mask
+        if plotTTI:
+            plt.figure(figsize=(8, 1.5))
+            plt.imshow(TTI_mask.numpy(), aspect='auto')  # Convert tensor to NumPy array for plotting
+            plt.title('TTI mask')
+            plt.xlabel('Subcarrier index')
+            plt.ylabel('Symbol')
+            plt.savefig('output/TTImask.png')
+            plt.tight_layout()
+            plt.show()
+
+        return TTI_mask #(14, 76)
+
+    def __len__(self):
+        return self.maxdatalen
+    
     def __getitem__(self, index, rx_id=0, tx_id=0, tx_streams_id=0, rx_antenna_id=0):
         batch={}
         if self.training:
             data = self.b[:,tx_id, tx_streams_id, :] #[batch_size, num_tx, num_streams_per_tx, num_data_bits] #[self.batch_size, 1, self.num_streams_per_tx, self.k]
-            batch['labels']= data #(128, 1536) [batch_size, num_data_bits]
+            #(128, 1536) [batch_size, num_data_bits]
+            data = data.reshape(-1, self.effectiveofdmsymbols, self.effectivesubcarrier, self.num_bits_per_symbol) #(128, 12, 64, 2)
+
+            labelsize = (self.num_ofdm_symbols, self.fft_size, self.num_bits_per_symbol) #14, 76, 2
+            #x_rg's shape: (128, 1, 2, 14, 76) [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size/num_subcarriers]
+        
+            TTI_3d = torch.zeros(labelsize) #[14, 128, 6]
+            np.reshape
+            batch['labels']= data 
         #(128, 1, 16, 14, 76) [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size]
         rx_samples = self.y[:,rx_id, rx_antenna_id, :, :] #(128, 14, 76) [batch_size, num_ofdm_symbols, fft_size]
         batch['samples']= rx_samples
         return batch
     
 def trainmain(args):
-    train_data = OFDMDataset(training=True, compare=True)
+    train_data = OFDMDataset(training=True, testing=True, compare=True)
     onebatch = train_data[0]
     print(onebatch['samples'].shape)
 
