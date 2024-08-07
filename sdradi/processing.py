@@ -19,6 +19,7 @@ def create_singlechannel_complexOFDMMIMO():
     SampleRate = myofdm.RESOURCE_GRID.fft_size * myofdm.RESOURCE_GRID.subcarrier_spacing #1920000
 
     bandwidth = SampleRate *1.1
+    print(np.mean(SAMPLES))
     return SAMPLES.flatten(), SampleRate, bandwidth
 
 def createcomplexsinusoid(fs, fc = 3000000, N = 1024):

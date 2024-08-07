@@ -318,7 +318,7 @@ class SDR:
         return alldata0, processtime
 
 
-    def SDR_TX_send(self, SAMPLES, SAMPLES2=None, max_scale=1, normalize=False, leadingzeros=0, cyclic=False):
+    def SDR_TX_send(self, SAMPLES, SAMPLES2=None, max_scale=1, normalize=False, leadingzeros=0, trailingzeros=0, cyclic=False):
         '''
         Transmit the given signal samples through the SDR transmitter.
 
@@ -359,17 +359,26 @@ class SDR:
         # # Scale the samples to their maximum amplitude and adjust according to max_scale
         # samples = (samples / np.max(np.abs(samples))) * max_scale
 
-        # # Scale the signal to the dynamic range expected by the SDR hardware
-        # samples *= 2**14  # scale the samples to 16-bit PlutoSDR, for example, expects sample values in the range -2^14 to +2^14
         if normalize:
-            SAMPLES = normalize_complexsignal(SAMPLES, max_scale=max_scale, scale4sdr=True)
+            SAMPLES = normalize_complexsignal(SAMPLES, max_scale=max_scale)
             if SAMPLES2 is not None:
-                SAMPLES2 = normalize_complexsignal(SAMPLES2, max_scale=max_scale, scale4sdr=True)
+                SAMPLES2 = normalize_complexsignal(SAMPLES2, max_scale=max_scale)
         if leadingzeros >0:
             leading_zeroes = np.zeros(leadingzeros, dtype=np.complex64)  # Leading 500 zeroes for noise floor measurement
             SAMPLES = np.concatenate([leading_zeroes, SAMPLES], axis=0)  # Add the quiet for noise measurements
             if SAMPLES2 is not None:
                 SAMPLES2 = np.concatenate([leading_zeroes, SAMPLES2], axis=0)
+        if trailingzeros >0:
+            trailing_zeroes = np.zeros(trailingzeros, dtype=np.complex64)
+            SAMPLES = np.concatenate([SAMPLES, trailing_zeroes], axis=0)
+            if SAMPLES2 is not None:
+                SAMPLES2 = np.concatenate([SAMPLES2, trailing_zeroes], axis=0)
+        
+        # # Scale the signal to the dynamic range expected by the SDR hardware
+        SAMPLES *= 2**14  # scale the samples to 16-bit PlutoSDR, for example, expects sample values in the range -2^14 to +2^14
+        if SAMPLES2 is not None:
+            SAMPLES2 *= 2**14
+        
         # Set cyclic buffer mode if required
         self.sdr.tx_cyclic_buffer = cyclic
 
@@ -393,21 +402,22 @@ class SDR:
         else:
             if signal_type == 'sinusoid': # Create a sinewave waveform
                 tx_samples = createcomplexsinusoid(fs, f_signal, N)
-            
-            if leadingzeros >0:
-                leading_zeroes = np.zeros(leadingzeros, dtype=np.complex64)  # Leading 500 zeroes for noise floor measurement
-                tx_samples = np.concatenate([leading_zeroes, tx_samples], axis=0)  # Add the quiet for noise measurements
-            if trailingzeros >0:
-                trailing_zeroes = np.zeros(trailingzeros, dtype=np.complex64)
-                tx_samples = np.concatenate([tx_samples, trailing_zeroes], axis=0)
-            # Send data
-            # Since sdr.tx_cyclic_buffer was set to True, this data will just keep repeating.  There’s no need to send it again.   
-            # Set cyclic buffer mode if required
-            self.sdr.tx_cyclic_buffer = cyclic
-            if self.Tx_CHANNEL==2:
-                self.sdr.tx([tx_samples,tx_samples])
-            else:
-                self.sdr.tx(tx_samples)
+            self.SDR_TX_send(SAMPLES=tx_samples, SAMPLES2=tx_samples, max_scale=1, normalize=True, leadingzeros=leadingzeros, trailingzeros=trailingzeros, cyclic=cyclic)
+        
+            # if leadingzeros >0:
+            #     leading_zeroes = np.zeros(leadingzeros, dtype=np.complex64)  # Leading 500 zeroes for noise floor measurement
+            #     tx_samples = np.concatenate([leading_zeroes, tx_samples], axis=0)  # Add the quiet for noise measurements
+            # if trailingzeros >0:
+            #     trailing_zeroes = np.zeros(trailingzeros, dtype=np.complex64)
+            #     tx_samples = np.concatenate([tx_samples, trailing_zeroes], axis=0)
+            # # Send data
+            # # Since sdr.tx_cyclic_buffer was set to True, this data will just keep repeating.  There’s no need to send it again.   
+            # # Set cyclic buffer mode if required
+            # self.sdr.tx_cyclic_buffer = cyclic
+            # if self.Tx_CHANNEL==2:
+            #     self.sdr.tx([tx_samples,tx_samples])
+            # else:
+            #     self.sdr.tx(tx_samples)
     
     def SDR_RXTX_offset(self, SAMPLES, leadingzeros=500, add_td_samples=16, make_plot=True):
         #add_td_samples: number of additional symbols to cater fordelay spread

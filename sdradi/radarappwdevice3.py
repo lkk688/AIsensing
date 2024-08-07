@@ -72,7 +72,7 @@ default_chirp_bw = 500e6
 signal_freq = 100e3
 sample_rate = 0.6e6*5  # 0.6M
 fs = int(sample_rate)  # 0.6MHz
-rxbuffersize = 1024 * 8  # 1024 * 16 * 15 #fft_size
+rxbuffersize = 1024 * 8 *5  # 1024 * 16 * 15 #fft_size
 center_freq = 2.1e9
 output_freq = 10e9  # 10GHz
 ramp_time = 500  # us 0.5e3
@@ -81,11 +81,11 @@ num_chirps = 1 #128 for TDD mode
 # int(output_freq 10e9 + signal_freq 100e3 + center_freq 2.1e9)
 
 baseip = 'ip:192.168.1.67' #'ip:phaser'
-UseRadarDevice = False
-tddmode =False # Use TDD mode or not
+UseRadarDevice = True
+tddmode =True #False # Use TDD mode or not
 signaltype='sinusoid'#'sinusoid' #'OFDM'
-ramp_mode = "disabled" ## ramp_mode can be:  "disabled", "continuous_sawtooth", "continuous_triangular", "single_sawtooth_burst", "single_ramp_burst"
-tagname = "static"
+ramp_mode = "single_ramp_burst" ## ramp_mode can be:  "disabled", "continuous_sawtooth", "continuous_triangular", "single_sawtooth_burst", "single_ramp_burst"
+tagname = "appsinusoidmoving"
 savefilename = f"Radarsaveddata_{datetime.today().strftime('%Y_%m_%d')}_{ramp_mode}_{tagname}.npy"
 if UseRadarDevice == True:
     sdrurl = baseip+":50901"  # "ip:pluto.local" #ip:phaser.local:50901
@@ -116,7 +116,8 @@ range_res = c / (2 * BW)
 
 plot_threshold = False
 cfar_toggle = False
-num_slices = 50     # this sets how much time will be displayed on the waterfall plot
+#increase the num_slices value will make the waterfall display slow
+num_slices = 50*5     # this sets how much time will be displayed on the waterfall plot
 plot_freq = 100e3    # x-axis freq range to plot
 #setup the imageitem view for Waterfall plot
 img_array = np.ones((num_slices, fft_size))*(-100)
@@ -343,7 +344,7 @@ class Window(QMainWindow):
         self.fft_plot.setTitle(
             "Received Signal - Frequency Spectrum", **title_style)
         layout.addWidget(self.fft_plot, 0, 2, self.num_rows, 1)
-        self.fft_plot.setYRange(-60, 0)
+        self.fft_plot.setYRange(-80, 0) #-60
         self.fft_plot.setXRange(signal_freq, signal_freq+plot_freq)
 
         # Waterfall plot

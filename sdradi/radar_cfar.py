@@ -9,7 +9,8 @@ print(adi.__version__)
    As of March 2024, this is in the main branch of https://github.com/analogdevicesinc/pyadi-iio
    Also, make sure your Pluto firmware is updated to rev 0.38 (or later)
 '''
-from myradar2 import createcomplexsinusoid
+#from myradar2 import createcomplexsinusoid
+from processing import createcomplexsinusoid
 from processing import cfar, get_spectrum, select_chirp
 import sys
 import time
@@ -18,23 +19,46 @@ import numpy as np
 import phaser.mycn0566 as mycn0566
 CN0566=mycn0566.CN0566
 
-Runtime="QT5" #"QT5"
-if Runtime=="Side6": #"QT5" Side6 and QT5 works in Mac
-   from PyQt5.QtWidgets import QApplication, QWidget, QLabel
-   #from PyQt5.QtGui import QIcon
-   #from PyQt5.QtCore import pyqtSlot
-elif Runtime=="QT5":
-   #from PyQt5.QtWidgets import QApplication, QWidget, QLabel
-   from PyQt5.QtCore import Qt
-   from PyQt5.QtWidgets import *
-elif Runtime=="QT6":
-   #from PyQt6.QtWidgets import QApplication, QWidget, QLabel
-   from PyQt6.QtCore import Qt
-   from PyQt6.QtWidgets import *
-elif Runtime=="Side6":
-   from PySide6 import QtCore, QtGui, QtWidgets
-   from PySide6.QtWidgets import QApplication, QWidget, QLabel
-
+Runtime = "Side6" #"Side6"
+if Runtime == "QT5":
+    # from PyQt5.QtWidgets import QApplication, QWidget, QLabel
+    from PyQt5.QtCore import Qt
+    #from PyQt5.QtWidgets import *
+    from PyQt5.QtWidgets import (
+        QMainWindow,
+        QApplication,
+        QCheckBox,
+        QVBoxLayout,
+        QLabel,
+        QWidget,
+        QToolBar, QStatusBar, QSlider, QGridLayout, QLineEdit, QPushButton
+    )
+elif Runtime == "QT6":
+    # from PyQt6.QtWidgets import QApplication, QWidget, QLabel
+    from PyQt6.QtCore import Qt
+    # from PyQt6.QtWidgets import *
+    from PyQt6.QtWidgets import (
+        QMainWindow,
+        QApplication,
+        QCheckBox,
+        QVBoxLayout,
+        QLabel,
+        QWidget,
+        QToolBar, QStatusBar, QSlider, QGridLayout, QLineEdit, QPushButton
+    )
+elif Runtime == "Side6":
+    from PySide6.QtCore import Qt
+    # from PySide6.QtWidgets import QApplication, QWidget, QLabel
+    from PySide6 import QtCore, QtGui, QtWidgets
+    from PySide6.QtWidgets import (
+        QMainWindow,
+        QApplication,
+        QCheckBox,
+        QVBoxLayout,
+        QLabel,
+        QWidget,
+        QToolBar, QStatusBar, QSlider, QGridLayout, QLineEdit, QPushButton
+    )
 #from PyQt5.QtCore import Qt
 #from PyQt5.QtWidgets import *
 import pyqtgraph as pg
@@ -225,7 +249,7 @@ def deviceInstantiate(rpi_ip = "ip:phaser.local", sdr_ip = "ip:192.168.2.1", rx_
     # Create a sinewave waveform for transmitter
     fs = int(my_sdr.sample_rate) #0.6MHz
     N = int(my_sdr.rx_buffer_size) #8192
-    iq = createcomplexsinusoid(fs = fs, signal_freq = signal_freq, N = N) #(8192,)
+    iq = createcomplexsinusoid(fs, signal_freq, N) #(8192,)
     # fc = int(signal_freq / (fs / N)) * (fs / N)
     # ts = 1 / float(fs)
     # t = np.arange(0, N * ts, ts)
