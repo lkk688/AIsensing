@@ -41,7 +41,7 @@ def trainmain(trainoutput, batch_size = 16, saved_model_path = ""):
     # OFDM Dataset
     #train_data = OFDMDataset(Qm=Qm, S=S, Sp=Sp, F=F, ch_SINR_min=-10, ch_SINR_max=40, training=True)
     
-    train_data = OFDMDataset(training=True, ch_SINR_min=-10, ch_SINR_max=40, maxdatalen=10000, testing=False, compare=False)
+    train_data = OFDMDataset(training=True, ch_SINR_min=-20, ch_SINR_max=30, maxdatalen=10000, testing=False, compare=False, drawfig=False)
     onebatch = train_data[0]
 
     # train, validation and test split
@@ -218,7 +218,7 @@ def draw_trainresults(csv_path = '../output/performance_details.csv', save_plots
     # Plot Validation BER
     plt.figure(figsize=(7, 3))
     plt.plot(df['Epoch'], df['Validation_BER'], label='Validation BER')
-    plt.plot(df['Epoch'], df['LS_BER'], label='LS BER')
+    #plt.plot(df['Epoch'], df['LS_BER'], label='LS BER')
     plt.xlabel('Epochs')
     plt.ylabel('BER')
     plt.legend()
@@ -256,7 +256,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='OFDM training job')
     #data related arguments
     parser.add_argument('--mode', default="Train", choices=['Train','Evaluate', 'Visualization'], help='Running mode')
-    parser.add_argument('--traintag', type=str, default='exp0808',
+    parser.add_argument('--traintag', type=str, default='exp0809b',
                     help='Train rag name, used for output folder')
     parser.add_argument('--data_type', type=str, default="OFDMsim",
                     help='data type name')

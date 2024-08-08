@@ -35,7 +35,7 @@ def compare_allclose(arry1, arry2, threshold=1e-6, figname="data/compare_allclos
     
 # custom dataset
 class OFDMDataset(Dataset):
-    def __init__(self, datapath='data/cdl_ofdm_ebno25.npy', ch_SINR_min=25, ch_SINR_max=50, maxdatalen=10000, training=False, drawfig=True, testing=False, compare=False):
+    def __init__(self, datapath='data/cdl_ofdm_ebno25.npy', ch_SINR_min=25, ch_SINR_max=50, maxdatalen=10000, training=False, drawfig=False, testing=False, compare=False):
         self.maxdatalen = maxdatalen
         self.training = training
         self.drawfig = drawfig
