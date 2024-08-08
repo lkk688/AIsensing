@@ -498,7 +498,7 @@ class RadarDevice:
             myphaser = PhaserDevice(phaserurl=phaserurl, sdr=self.mysdr.sdr, \
                                     vco_freq=vco_freq, output_freq=output_freq,\
                                         BW=chirp_bandwidth, \
-                                        ramp_time=ramp_time, tddmode=tddmode)
+                                        ramp_time=ramp_time, tddmode=tddmode, ramp_mode=ramp_mode)
             #Read parameters from phaser device
             self.ramp_time = myphaser.my_phaser.freq_dev_time
             self.ramp_time_s = self.ramp_time / 1e6
@@ -634,7 +634,7 @@ class RadarDevice:
         elif signaltype=='OFDM':
             self.iq, fs, bandwidth= create_singlechannel_complexOFDMMIMO()
             print(f"OFDMMIMO, sample rate: {fs}, bandwidth: {bandwidth}")
-            self.mysdr.SDR_RX_setup(n_SAMPLES=None, sample_rate=int(fs), rx_bandwidth=int(bandwidth))
+            #self.mysdr.SDR_RX_setup(n_SAMPLES=self.fft_size, sample_rate=int(fs), rx_bandwidth=int(bandwidth))
 
         #self.sdr._ctx.set_timeout(0)
         self.mysdr.sdr._ctx.set_timeout(30000)

@@ -81,12 +81,12 @@ num_chirps = 1 #128 for TDD mode
 # int(output_freq 10e9 + signal_freq 100e3 + center_freq 2.1e9)
 
 baseip = 'ip:192.168.1.67' #'ip:phaser'
-UseRadarDevice = True
-tddmode =True #False # Use TDD mode or not
-signaltype='sinusoid'#'sinusoid' #'OFDM'
-ramp_mode = "single_ramp_burst" ## ramp_mode can be:  "disabled", "continuous_sawtooth", "continuous_triangular", "single_sawtooth_burst", "single_ramp_burst"
-tagname = "appsinusoidmoving"
-savefilename = f"Radarsaveddata_{datetime.today().strftime('%Y_%m_%d')}_{ramp_mode}_{tagname}.npy"
+UseRadarDevice = False
+tddmode =False #False # Use TDD mode or not
+signaltype='OFDM'#'sinusoid' #'OFDM'
+ramp_mode = "continuous_triangular" ## ramp_mode can be:  "disabled", "continuous_sawtooth", "continuous_triangular", "single_sawtooth_burst", "single_ramp_burst"
+tagname = "moving3"
+savefilename = f"Radarsavedapp_{datetime.today().strftime('%Y_%m_%d')}_{signaltype}_{ramp_mode}_{tagname}.npy"
 if UseRadarDevice == True:
     sdrurl = baseip+":50901"  # "ip:pluto.local" #ip:phaser.local:50901
     phaserurl = baseip  # "ip:phaser.local"
@@ -94,12 +94,13 @@ if UseRadarDevice == True:
                         rxbuffersize=rxbuffersize, sdr_bandwidth=sample_rate, rx_gain=20, Rx_CHANNEL=2, Tx_CHANNEL=2,
                         signal_freq=signal_freq, chirp_bandwidth=default_chirp_bw, \
                             output_freq=output_freq, ramp_time = ramp_time, ramp_mode=ramp_mode, num_chirps=num_chirps, tddmode=tddmode,\
-                                savedata=True, savefilename=savefilename)
+                                savedata=False, savefilename=savefilename)
     #radar.transceiversetup(signaltype='sinusoid') #signaltype=='OFDM'
     radar.transceiversetup(signaltype=signaltype)
     radar.transmit() 
 else:
-    datapath = 'output/Radarsaveddata_2024_08_02_disabled_static_nozeros.npy'
+    datapath = 'output/Radarsavedapp_2024_08_07_sinusoid_continuous_triangular_moving3.npy'
+    #datapath = 'output/Radarsavedapp_2024_08_07_OFDM_continuous_triangular_moving3.npy'
     radar = RadarData(datapath=datapath)
     #radardata.plotfigure()
 
@@ -108,9 +109,9 @@ c, BW, num_steps, ramp_time_s, slope, N_c, N_s, \
     fft_size, rxbuffersize = radar.returnparameters()
 
 '''App Related Parameters'''
-N = rxbuffersize  # 2048#int(my_sdr.rx_buffer_size)
+N = fft_size #rxbuffersize  #40960 2048#int(my_sdr.rx_buffer_size)
 num_slices = 50     # this sets how much time will be displayed on the waterfall plot
-N_frame = fft_size
+#N_frame = fft_size #40960
 #plot_freq = 100e3    # x-axis freq range to plot
 range_res = c / (2 * BW)
 
@@ -344,7 +345,7 @@ class Window(QMainWindow):
         self.fft_plot.setTitle(
             "Received Signal - Frequency Spectrum", **title_style)
         layout.addWidget(self.fft_plot, 0, 2, self.num_rows, 1)
-        self.fft_plot.setYRange(-80, 0) #-60
+        self.fft_plot.setYRange(-90, 0) #-60
         self.fft_plot.setXRange(signal_freq, signal_freq+plot_freq)
 
         # Waterfall plot

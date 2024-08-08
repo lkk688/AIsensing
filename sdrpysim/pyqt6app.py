@@ -1,20 +1,63 @@
 # importing the required libraries 
-import PyQt6
-from PyQt6 import QtWidgets
-# importing pyqtgraph as pg
+Runtime = "Side6" #"Side6"
+if Runtime == "QT5":
+    # from PyQt5.QtWidgets import QApplication, QWidget, QLabel
+    from PyQt5.QtCore import Qt
+    #from PyQt5.QtWidgets import *
+    from PyQt5.QtWidgets import (
+        QMainWindow,
+        QApplication,
+        QCheckBox,
+        QVBoxLayout,
+        QLabel,
+        QWidget,
+        QToolBar, QStatusBar, QSlider, QGridLayout, QLineEdit, QPushButton
+    )
+elif Runtime == "QT6":
+    # from PyQt6.QtWidgets import QApplication, QWidget, QLabel
+    from PyQt6.QtCore import Qt
+    # from PyQt6.QtWidgets import *
+    from PyQt6.QtWidgets import (
+        QMainWindow,
+        QApplication,
+        QCheckBox,
+        QVBoxLayout,
+        QLabel,
+        QWidget,
+        QToolBar, QStatusBar, QSlider, QGridLayout, QLineEdit, QPushButton
+    )
+elif Runtime == "Side6":
+    from PySide6.QtCore import Qt
+    # from PySide6.QtWidgets import QApplication, QWidget, QLabel
+    from PySide6 import QtCore, QtGui, QtWidgets
+    from PySide6.QtWidgets import (
+        QMainWindow,
+        QApplication,
+        QCheckBox,
+        QVBoxLayout,
+        QLabel,
+        QWidget,
+        QToolBar, QStatusBar, QSlider, QGridLayout, QLineEdit, QPushButton
+    )
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui
-import pyqtgraph.opengl as gl
-#from PyQt6.QtGui import *
-#from PyQt6.QtCore import *
 
-from PyQt6.QtWidgets import (
-    QMainWindow, QApplication,
-    QLabel, QToolBar, QStatusBar, QSlider,
-    QCheckBox, QGridLayout, QLineEdit, QPushButton, QWidget
-)
-from PyQt6.QtGui import QAction, QIcon
-from PyQt6.QtCore import QSize, Qt
+# import PyQt6
+# from PyQt6 import QtWidgets
+# # importing pyqtgraph as pg
+# import pyqtgraph as pg
+# from pyqtgraph.Qt import QtCore, QtGui
+# import pyqtgraph.opengl as gl
+# #from PyQt6.QtGui import *
+# #from PyQt6.QtCore import *
+
+# from PyQt6.QtWidgets import (
+#     QMainWindow, QApplication,
+#     QLabel, QToolBar, QStatusBar, QSlider,
+#     QCheckBox, QGridLayout, QLineEdit, QPushButton, QWidget
+# )
+# from PyQt6.QtGui import QAction, QIcon
+# from PyQt6.QtCore import QSize, Qt
 
 # importing system
 import sys
