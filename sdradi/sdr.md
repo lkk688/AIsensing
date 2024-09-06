@@ -392,6 +392,12 @@ $ iio_info -u ip:pluto.local
 $ iio_info -u usb:1.10.5
 $ iio_info -u ip:192.168.2.1
 ```
+## SSH to ADRV9009 with Xilinx FPGA
+```bash
+% ssh root@192.168.86.29 #analog
+root@analog:~# iio_attr -a -C fw_version
+root@analog:~# iio_info -u ip:192.168.86.29
+```
 
 ## TDD Engine
 The latest version of `pyadi-iio' from pip is `0.016` and does not contain the tddn. Need to install the pyadi-iio from source.

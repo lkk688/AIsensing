@@ -15,7 +15,8 @@ sample_rate = 1e6 # Hz
 center_freq = 915e6 # Hz
 num_samps = 100000 # number of samples per call to rx()
 
-sdr = adi.Pluto("ip:192.168.2.1")
+#sdr = adi.Pluto("ip:192.168.2.1")
+sdr = adi.adrv9009("ip:192.168.86.29")
 #sdr = adi.ad9361(uri="ip:phaser:50901")
 #sdr = ad9361(uri="ip:192.168.1.69:50901")
 #sdr = adi.ad9361(uri="ip:192.168.1.69:50901")
