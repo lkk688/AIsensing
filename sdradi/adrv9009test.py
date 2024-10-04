@@ -288,7 +288,7 @@ def main():
     import adi
     parser = ArgumentParser()
     parser.add_argument('--devicename',  type=str, default='adrv9009', help='SDR name')#
-    parser.add_argument('--ip', type=str, default='192.168.86.29', help='ip address')
+    parser.add_argument('--ip', type=str, default='192.168.86.40', help='ip address') #192.168.86.29
     args = parser.parse_args()
 
     # Create radio

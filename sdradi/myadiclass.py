@@ -5,6 +5,7 @@ import adi
 # from adi import ad9361
 # from adi import ad9364
 from myadi.ad936x import ad9361, ad9364
+from myadi.adrv9009 import adrv9009
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy import signal
@@ -89,7 +90,7 @@ def ddstone(sdr, dualtune=True, dds_freq_hz = 10000, dds_scale = 0.9):
 #modified based on https://github.com/lkk688/AIsensing/blob/main/deeplearning/SDR.py
 class SDR:
     def __init__(self, SDR_IP, SDR_FC=2000000000, SDR_SAMPLERATE=1e6, SDR_BANDWIDTH=1e6, \
-                    Rx_CHANNEL=2, Tx_CHANNEL=1):
+                    Rx_CHANNEL=2, Tx_CHANNEL=1, device_name='ad9361'):
     
         self.SDR_IP = SDR_IP # IP address of the TX SDR device
         self.SDR_TX_FREQ = int(SDR_FC) # TX center frequency in Hz,  #2Ghz 2000000000
@@ -100,17 +101,25 @@ class SDR:
         self.SDR_TX_BANDWIDTH = int(SDR_BANDWIDTH) # TX bandwidth (Hz)
         self.SDR_RX_BANDWIDTH = int(SDR_BANDWIDTH) # RX bandwidth (Hz)
         self.num_samples=1024*8 #int(SDR_SAMPLERATE/10) #default save 0.1s data
-        self.sdr = self.setupSDR(fs=SDR_SAMPLERATE, useAD9361=True, Rx_CHANNEL=Rx_CHANNEL, Tx_CHANNEL=Tx_CHANNEL)
+        self.sdr = self.setupSDR(fs=SDR_SAMPLERATE, device_name=device_name, Rx_CHANNEL=Rx_CHANNEL, Tx_CHANNEL=Tx_CHANNEL)
+
+    # Function to check if a class has a setter property
+    def has_setter(self, cls, property_name):
+        prop = getattr(cls, property_name, None)
+        return isinstance(prop, property) and prop.fset is not None
 
     #new added
-    def setupSDR(self, fs= 6000000, useAD9361=True, Rx_CHANNEL=2, Tx_CHANNEL=1): #default fs=6Mhz
+    def setupSDR(self, fs= 6000000, device_name='ad9361', Rx_CHANNEL=2, Tx_CHANNEL=1): #default fs=6Mhz
         # Initialize the SDR device using the Analog Devices driver
-        if useAD9361:
+        if device_name.lower()=='ad9361':
             #sdr = adi.ad9361(uri=self.SDR_IP)
             sdr = ad9361(uri=self.SDR_IP)
-        else:
+        elif device_name.lower()=='ad9364':
             #sdr = adi.ad9364(self.SDR_IP)
             sdr = ad9364(self.SDR_IP)
+        elif device_name.lower()=='adrv9009':
+            #sdr = adi.adrv9009(self.SDR_IP)
+            sdr = adrv9009(uri=self.SDR_IP, jesd_monitor=False, jesd=None)
         
         # Configure the sample rate for both TX and RX
         sdr.sample_rate = fs
@@ -166,11 +175,20 @@ class SDR:
         #self.sdr.sample_rate = self.SDR_TX_SAMPLERATE
 
         # Set the RF bandwidth for both TX and RX
+        # if tx_bandwidth is not None:
+        #     if self.has_setter(self.sdr, 'tx_rf_bandwidth'):
+        #         self.sdr.tx_rf_bandwidth = tx_bandwidth
+        # else:
+        #     if self.has_setter(self.sdr, 'tx_rf_bandwidth'):
+        #         self.sdr.tx_rf_bandwidth = self.SDR_TX_BANDWIDTH
+        #     self.SDR_TX_BANDWIDTH = tx_bandwidth
         if tx_bandwidth is not None:
-            self.sdr.tx_rf_bandwidth = tx_bandwidth
-        else:
+            self.SDR_TX_BANDWIDTH = tx_bandwidth #update default bandwidth
+        if self.has_setter(self.sdr, 'tx_rf_bandwidth'):
             self.sdr.tx_rf_bandwidth = self.SDR_TX_BANDWIDTH
-            self.SDR_TX_BANDWIDTH = tx_bandwidth
+        else:
+            self.SDR_TX_BANDWIDTH = self.sdr.tx_rf_bandwidth
+            
         #self.sdr.rx_rf_bandwidth = self.SDR_TX_BANDWIDTH
 
         # Set the hardware gain for both TX and RX
@@ -232,11 +250,18 @@ class SDR:
             self.sdr.gain_control_mode_chan1 = controlmode
         
         # Set the hardware gain for both TX and RX
+        # if rx_bandwidth is not None:
+        #     self.sdr.rx_rf_bandwidth = rx_bandwidth
+        #     self.SDR_RX_BANDWIDTH = rx_bandwidth
+        # else:
+        #     self.sdr.rx_rf_bandwidth = self.SDR_RX_BANDWIDTH # rx filter cutoff 
         if rx_bandwidth is not None:
+            self.SDR_RX_BANDWIDTH = rx_bandwidth
+        if self.has_setter(self.sdr, 'rx_rf_bandwidth'):
             self.sdr.rx_rf_bandwidth = rx_bandwidth
             self.SDR_RX_BANDWIDTH = rx_bandwidth
         else:
-            self.sdr.rx_rf_bandwidth = self.SDR_RX_BANDWIDTH # rx filter cutoff 
+            self.SDR_RX_BANDWIDTH = self.sdr.rx_rf_bandwidth
 
         if sample_rate is not None:
         # update the sample rate for both TX and RX
@@ -441,7 +466,8 @@ class SDR:
         while success == 0:       
             # RX samples 
             rx_samples = self.SDR_RX_receive(combinerule='drop', normalize=False)
-            rx_samples_normalized, rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR = detect_signaloffset(rx_samples, tx_SAMPLES=SAMPLES, num_samples=num_samples, leadingzeros=leadingzeros, add_td_samples=add_td_samples)
+            rx_samples_normalized, rx_TTI, rx_noise, TTI_offset, TTI_corr, corr, SINR = detect_signaloffset(rx_samples, tx_samples=SAMPLES, num_samples=num_samples, leadingzeros=leadingzeros, add_td_samples=add_td_samples)
+            #detect_signaloffset(rx_samples, tx_samples, num_samples, leadingzeros=500, add_td_samples=0, normalize=True)
             if make_plot:
                 plot_noisesignalPSD(rx_samples, rx_samples_normalized, tx_SAMPLES=SAMPLES, \
                                     rx_TTI=rx_TTI, rx_noise=rx_noise, TTI_offset=TTI_offset, TTI_corr=TTI_corr, corr=corr, SINR=SINR)
@@ -669,6 +695,31 @@ def test_SDRclass(urladdress, signal_type='dds'):
     #print(np.mean(rxtime))
     print(np.mean(processtime))
 
+def test_SDR9009class(urladdress, signal_type='dds'):
+    fc=2.4*1e9 #2Ghz 2000000000
+    fs = 6000000 #6MHz
+    bandwidth = 4000000 #4MHz
+    mysdr = SDR(SDR_IP=urladdress, SDR_FC=fc, SDR_SAMPLERATE=fs, SDR_BANDWIDTH=bandwidth, device_name='adrv9009')
+    mysdr.SDR_TX_stop()
+    mysdr.SDR_TX_setup()
+    mysdr.SDR_RX_setup(n_SAMPLES=10000)
+    
+    time.sleep(0.3)  # Wait for settings to take effect
+
+    f_signal = 2000000 #1MHz
+    N_len = 10000 #data length, only needed for sin
+    mysdr.SDR_TX_signalgen(signal_type=signal_type, f_signal=f_signal, N=N_len, cyclic=True)
+    rx_sample = mysdr.SDR_RX_receive(normalize=False)
+    num_samps = mysdr.sdr.rx_buffer_size #10000
+
+    alldata0, processtime = mysdr.SDR_RX_receive_continuous(T_len = 0.2, spectrum=False, delay=0.5, plot_flag = False)
+    # Stop transmitting
+    mysdr.SDR_TX_stop()
+    with open('./data/test9009data.npy', 'wb') as f:
+        np.save(f, alldata0)
+    plotfigure(1/fs, alldata0.real[0:num_samps*2])
+    #print(np.mean(rxtime))
+    print(np.mean(processtime))
 
 def main():
     args = parser.parse_args()
@@ -680,7 +731,8 @@ def main():
     #testlibiioaccess(urladdress)
     #sdr_test(urladdress, signal_type=signal_type, Rx_CHANNEL=Rx_CHANNEL, plot_flag = plot_flag)
 
-    test_SDRclass(urladdress)
+    #test_SDRclass(urladdress)
+    test_SDR9009class(urladdress)
     fs=1000000
     #test_ofdm_SDR(urladdress=urladdress, SampleRate=fs)
     #test_ofdmmimo_SDR(urladdress=urladdress)
@@ -762,9 +814,11 @@ def updatefigure(axs, t, data0, data1, specf,specp):
 # localuri="ip:analog.local"
 # antsdruri="ip:192.168.1.10"#connected via Ethernet with static IP
 # plutodruri="ip:192.168.2.1" "ip:192.168.2.16"#connected via USB
+#adrv9009, ip: 192.168.86.40
+#ip:192.168.1.67:50901
 import argparse
-parser = argparse.ArgumentParser(description='MyAD9361')
-parser.add_argument('--urladdress', default="ip:192.168.1.67:50901", type=str,
+parser = argparse.ArgumentParser(description='MyADI devices')
+parser.add_argument('--urladdress', default="ip:192.168.86.40", type=str,
                     help='urladdress of the device, e.g., ip:pluto.local') 
 parser.add_argument('--rxch', default=1, type=int, 
                     help='number of rx channels')

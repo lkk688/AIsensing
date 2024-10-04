@@ -1,20 +1,21 @@
 #Combination of myad9361class.py and myofdm.py
 
 from myofdm import OFDMSymbol, OFDMAMIMO
-from myad9361class import SDR
+#from myad9361class import SDR
+from myadiclass import SDR
 
 # https://github.com/rikluost/sionna-with-PlutoSDR/tree/main/test
 # https://github.com/rikluost/sionna-PlutoSDR
 
 # https://github.com/Repo4Sub/NSDI2024
 
-def test_ofdm_SDR(urladdress, SampleRate, fc=921.1e6, leadingzeros=500, add_td_samples = 16):
+def test_ofdm_SDR(urladdress, SampleRate, device_name='ad9361', fc=921.1e6, leadingzeros=500, add_td_samples = 16):
     myofdm = OFDMSymbol()
     SAMPLES = myofdm.createOFDMsignal() #(80,) complex128
     #SampleRate = rg.fft_size*rg.subcarrier_spacing # sample 
 
     bandwidth = SampleRate *1.1
-    mysdr = SDR(SDR_IP=urladdress, SDR_FC=fc, SDR_SAMPLERATE=SampleRate, SDR_BANDWIDTH=bandwidth)
+    mysdr = SDR(SDR_IP=urladdress, SDR_FC=fc, SDR_SAMPLERATE=SampleRate, SDR_BANDWIDTH=bandwidth, device_name=device_name)
 
     # SINR, SDR_TX_GAIN, SDR_RX_GAIN, Attempts, Pearson R
     x_sdr = mysdr.SDR_RXTX_offset(SAMPLES, leadingzeros=leadingzeros, add_td_samples=add_td_samples)
@@ -45,12 +46,15 @@ def test_ofdmmimo_SDR(urladdress, fc=921.1e6, leadingzeros=500, add_td_samples =
 # antsdruri="ip:192.168.1.10"#connected via Ethernet with static IP
 # plutodruri="ip:192.168.2.1" "ip:192.168.2.16"#connected via USB
 #PoE device: ip:192.168.1.67:50901
+#adrv9009 ip:192.168.86.40
 import argparse
-parser = argparse.ArgumentParser(description='MyAD9361')
-parser.add_argument('--urladdress', default="ip:192.168.2.1", type=str,
+parser = argparse.ArgumentParser(description='OFDM with SDR')
+parser.add_argument('--urladdress', default="ip:192.168.86.40", type=str,
                     help='urladdress of the device, e.g., ip:pluto.local, ip:192.168.2.1') 
 parser.add_argument('--rxch', default=1, type=int, 
                     help='number of rx channels')
+parser.add_argument('--device', default="adrv9009", type=str,
+                    help='device type: ad9361, adrv9009')
 parser.add_argument('--signal', default="dds", type=str,
                     help='signal type: sinusoid, dds')
 parser.add_argument('--plot', default=False, type=bool,
@@ -62,13 +66,15 @@ def main():
     Rx_CHANNEL = args.rxch
     signal_type = args.signal
     plot_flag = args.plot
+    device_name = args.device
 
     #testlibiioaccess(urladdress)
     #sdr_test(urladdress, signal_type=signal_type, Rx_CHANNEL=Rx_CHANNEL, plot_flag = plot_flag)
 
     #test_SDRclass(urladdress)
     fs=1000000
-    test_ofdm_SDR(urladdress=urladdress, SampleRate=fs, leadingzeros=500)
+    #test_ofdm_SDR(urladdress=urladdress, SampleRate=fs, leadingzeros=500)
+    test_ofdm_SDR(urladdress=urladdress, SampleRate=fs, device_name=device_name, leadingzeros=500)
     #test_ofdmmimo_SDR(urladdress=urladdress, leadingzeros=500)
 
 if __name__ == '__main__':
