@@ -297,7 +297,7 @@ class SDR:
         #return torch.tensor(a, dtype=torch.complex64)
         return a
     
-    def SDR_RX_receive_continuous(self, T_len = 2, spectrum=False, delay=0.5, normalize=True, plot_flag = False):
+    def SDR_RX_receive_continuous(self, T_len = 2, spectrum=False, delay=1, normalize=True, plot_flag = False):
         #T_len = 2  #2second
         # Collect data
         #alldata0 = np.empty(0) #Default is numpy.float64.
@@ -336,7 +336,7 @@ class SDR:
                 updatefigure(axs, t, data0[0:Npoints], data1=None, f=f, Pxx_den=Pxx_den)
                 #plt.draw()
                 #plt.show()
-                plt.pause(0.01)
+                plt.pause(0.1)
                 time.sleep(delay)
             endtime = timer()
             processtime.append(endtime-start)
