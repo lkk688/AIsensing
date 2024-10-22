@@ -3,8 +3,8 @@ import os
 print(os.environ.get('QT_API'))
 #os.environ['QT_API'] = 'pyqt5'
 import matplotlib
-matplotlib.use('QtAgg')
-#matplotlib.use("TkAgg")
+#matplotlib.use('QtAgg')
+matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 plt.plot([1, 2, 3, 4])
 plt.ylabel('some numbers')

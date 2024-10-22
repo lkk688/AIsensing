@@ -88,15 +88,39 @@ pip uninstall numpy
 pip install numpy==1.26.4
 ```
 
+In Windows WSL2:
+```bash
+(base) lkk@newalienware:~/Developer/AIsensing$ conda create --name py310cu118 python=3.10
+(base) lkk@newalienware:~/Developer/AIsensing$ conda activate py310cu118
+(py310cu118) lkk@newalienware:~/Developer/AIsensing$ nvcc -V
+nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2022 NVIDIA Corporation
+Built on Wed_Sep_21_10:33:58_PDT_2022
+Cuda compilation tools, release 11.8, V11.8.89
+Build cuda_11.8.r11.8/compiler.31833905_0
+(py310cu118) lkk@newalienware:~/Developer/AIsensing$ pip install tensorflow[and-cuda]==2.14.0
+(py310cu118) lkk@newalienware:~/Developer/AIsensing$ mkdir -p $CONDA_PREFIX/etc/conda/activate.d
+(py310cu118) lkk@newalienware:~/Developer/AIsensing$ echo 'CUDNN_PATH=$(dirname $(python -c "import nvidia.cudnn;print(nvidia.cudnn.__file__)"))' >> $CONDA_PREFIX/etc/conda/activate.d/env_vars.sh
+(py310cu118) lkk@newalienware:~/Developer/AIsensing$ echo 'export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CONDA_PREFIX/lib/:$CUDNN_PATH/lib' >> $CONDA_PREFIX/etc/conda/activate.d/env_vars.sh
+(py310cu118) lkk@newalienware:~/Developer/AIsensing$ source $CONDA_PREFIX/etc/conda/activate.d/env_vars.sh
+(py310cu118) lkk@newalienware:~/Developer/AIsensing$ cat /home/lkk/miniconda3/envs/py310cu118/lib/python3.10/site-packages/nvidia/cudnn/include/cudnn_version.h
+(py310cu118) lkk@newalienware:~/Developer/AIsensing$ pip uninstall numpy
+  Successfully uninstalled numpy-2.1.2
+(py310cu118) lkk@newalienware:~/Developer/AIsensing$ pip install numpy==1.26.4
+(py310cu118) lkk@newalienware:~/Developer/AIsensing$ python3 -c "import tensorflow as tf; print('tf version:', tf.__version__); print(tf.config.list_physical_devices('GPU'))"
+[PhysicalDevice(name='/physical_device:GPU:0', device_type='GPU')]
+```
+
 Install other python packages:
 ```bash
    conda install -y -c conda-forge jupyterlab
    conda install -y ipykernel
    jupyter kernelspec list #view current jupyter kernels
    ipython kernel install --user --name=py310cu118
-   conda install -y numpy matplotlib pandas Pillow scipy pyyaml scikit-image 
+   conda install -y matplotlib pandas Pillow scipy pyyaml scikit-image 
    pip install pyqt5 pyqt6 PySide6 pyqtgraph opencv-python-headless PyOpenGL PyOpenGL_accelerate pyopengl
    pip install sionna DeepMIMO pyadi-iio
+   pip install opencv-python --upgrade
 ```
 
 Installation in Mac

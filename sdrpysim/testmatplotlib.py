@@ -1,4 +1,6 @@
 import matplotlib
+#import matplotlib
+matplotlib.use('TkAgg') #Windows WSL also needs this
 import platform
 if platform.system() == 'Darwin':
     #matplotlib.use('MacOSX')
