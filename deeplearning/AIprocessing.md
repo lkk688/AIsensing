@@ -121,6 +121,15 @@ Install other python packages:
    pip install pyqt5 pyqt6 PySide6 pyqtgraph opencv-python-headless PyOpenGL PyOpenGL_accelerate pyopengl
    pip install sionna DeepMIMO pyadi-iio
    pip install opencv-python --upgrade
+   $ python ./sdrpysim/testmatplotlibcv2.py #test matplotlib and cv2
+   $ pip install PyQt6
+   $ sudo apt-get install libegl1-mesa libegl1-mesa-dev
+   $ ldconfig -p | grep libEGL
+   $ pip install pyqtgraph
+   $ python ./sdrpysim/pyqt6qtgraphtest.py
+
+   $ pip install sionna
+   Successfully installed absl-py-2.1.0 asttokens-2.4.1 astunparse-1.6.3 decorator-5.1.1 drjit-0.4.6 executing-2.1.0 flatbuffers-24.3.25 gast-0.6.0 google-auth-2.35.0 google-auth-oauthlib-1.2.1 google-pasta-0.2.0 grpcio-1.67.0 h5py-3.12.1 importlib-resources-6.4.5 ipydatawidgets-4.3.2 ipython-8.28.0 ipywidgets-8.0.5 jedi-0.19.1 jupyterlab-widgets-3.0.5 keras-2.15.0 libclang-18.1.1 markdown-3.7 matplotlib-inline-0.1.7 mitsuba-3.5.2 ml-dtypes-0.3.2 oauthlib-3.2.2 opt-einsum-3.4.0 parso-0.8.4 pexpect-4.9.0 prompt-toolkit-3.0.48 protobuf-4.25.5 ptyprocess-0.7.0 pure-eval-0.2.3 pyasn1-0.6.1 pyasn1-modules-0.4.1 pythreejs-2.4.2 requests-oauthlib-2.0.0 rsa-4.9 sionna-0.19.0 stack-data-0.6.3 tensorboard-2.15.2 tensorboard-data-server-0.7.2 tensorflow-2.15.1 tensorflow-estimator-2.15.0 tensorflow-io-gcs-filesystem-0.37.1 termcolor-2.5.0 traitlets-5.14.3 traittypes-0.2.1 wcwidth-0.2.13 werkzeug-3.0.4 widgetsnbextension-4.0.13 wrapt-1.14.1
 ```
 
 Installation in Mac
