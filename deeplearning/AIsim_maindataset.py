@@ -145,12 +145,12 @@ class OFDMDataset(Dataset):
 
         if self.training:
             data = self.b[:,tx_id, tx_streams_id, :] #[batch_size, num_tx, num_streams_per_tx, num_data_bits] #[self.batch_size, 1, self.num_streams_per_tx, self.k]
-            #(128, 1536) [batch_size, num_data_bits]
+            #(128, 1, 2, 1536)=>(128, 1536) [batch_size, num_data_bits]
             self.labels_data = data.reshape(-1, self.effectiveofdmsymbols, self.effectivesubcarrier, self.num_bits_per_symbol) #(128, 12, 64, 2)
             #(128, 12, 64, 2)
             #labelsize = (self.num_ofdm_symbols, self.fft_size, self.num_bits_per_symbol) #14, 76, 2
         #(128, 1, 16, 14, 76) [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size]
-        rx_samples = self.y[:,rx_id, rx_antenna_id, :, :] #(128, 14, 76) [batch_size, num_ofdm_symbols, fft_size]
+        rx_samples = self.y[:,rx_id, rx_antenna_id, :, :] #(128, 1, 16, 14, 76)=>(128, 14, 76) [batch_size, num_ofdm_symbols, fft_size]
 
         #self.TTI_mask_RE #(14, 76)
         TTI_mask_indices = np.where(self.TTI_mask_RE==1)
@@ -315,47 +315,49 @@ class OFDMDataset(Dataset):
         if savefile is not None:
             plt.savefig(savefile)
     
-    def compare_channelestimationdata(self):
-        y_eff_tf = np.load('data/y_eff_tf.npy')
-        y_eff_tf2 = np.load('data/y_eff_tf2.npy') #(128, 1, 16, 14, 64)
-        print(np.allclose(y_eff_tf, y_eff_tf2)) #True
+    def compare_channelestimationdata(self, additionalcompare=False):
+        if additionalcompare==True:
+            y_eff_tf = np.load('data/y_eff_tf.npy')
+            y_eff_tf2 = np.load('data/y_eff_tf2.npy') #(128, 1, 16, 14, 64)
+            print(np.allclose(y_eff_tf, y_eff_tf2)) #True
 
-        y_eff_flat_tf = np.load('data/y_eff_flat_tf.npy')
-        y_eff_flat_tf2 = np.load('data/y_eff_flat_tf2.npy') #(128, 1, 16, 896)
-        print(np.allclose(y_eff_flat_tf, y_eff_flat_tf2)) #True
+            y_eff_flat_tf = np.load('data/y_eff_flat_tf.npy')
+            y_eff_flat_tf2 = np.load('data/y_eff_flat_tf2.npy') #(128, 1, 16, 896)
+            print(np.allclose(y_eff_flat_tf, y_eff_flat_tf2)) #True
 
-        pilot_ind_tf = np.load('data/pilot_ind_tf.npy') #(1, 2, 128)
-        pilot_ind_tf2 = np.load('data/pilot_ind_tf2.npy')
-        print(np.allclose(pilot_ind_tf, pilot_ind_tf2)) #True
+            pilot_ind_tf = np.load('data/pilot_ind_tf.npy') #(1, 2, 128)
+            pilot_ind_tf2 = np.load('data/pilot_ind_tf2.npy')
+            print(np.allclose(pilot_ind_tf, pilot_ind_tf2)) #True
 
-        y_pilots_tf = np.load('data/y_pilots_tf.npy') #(128, 1, 16, 1, 2, 128)
-        y_pilots_tf2 = np.load('data/y_pilots_tf2.npy')
-        print(np.allclose(y_pilots_tf, y_pilots_tf2)) #True
+            y_pilots_tf = np.load('data/y_pilots_tf.npy') #(128, 1, 16, 1, 2, 128)
+            y_pilots_tf2 = np.load('data/y_pilots_tf2.npy')
+            print(np.allclose(y_pilots_tf, y_pilots_tf2)) #True
 
-        #after self.estimate_at_pilot_locations
-        h_hat_beforeinter = np.load('data/h_hat_beforeinter.npy') #(128, 1, 16, 1, 2, 128)
-        h_hat_beforeinter2 = np.load('data/h_hat_beforeinter2.npy')
-        print(np.allclose(h_hat_beforeinter, h_hat_beforeinter2)) #False->True
+            #after self.estimate_at_pilot_locations
+            h_hat_beforeinter = np.load('data/h_hat_beforeinter.npy') #(128, 1, 16, 1, 2, 128)
+            h_hat_beforeinter2 = np.load('data/h_hat_beforeinter2.npy')
+            print(np.allclose(h_hat_beforeinter, h_hat_beforeinter2)) #False->True
 
-        h_ls, err_var = self.estimate_at_pilot_locations(y_pilots=y_pilots_tf, no=self.no, resource_grid=self.RESOURCE_GRID)
-        print(np.allclose(h_hat_beforeinter, h_ls)) #False->True
+            h_ls, err_var = self.estimate_at_pilot_locations(y_pilots=y_pilots_tf, no=self.no, resource_grid=self.RESOURCE_GRID)
+            print(np.allclose(h_hat_beforeinter, h_ls)) #False->True
 
-        err_var_beforeinter = np.load('data/err_var_beforeinter.npy')
-        err_var_beforeinter2 = np.load('data/err_var_beforeinter2.npy')
-        print(np.allclose(err_var_beforeinter, err_var_beforeinter2)) #True
+            err_var_beforeinter = np.load('data/err_var_beforeinter.npy')
+            err_var_beforeinter2 = np.load('data/err_var_beforeinter2.npy')
+            print(np.allclose(err_var_beforeinter, err_var_beforeinter2)) #True
 
-        h_hat_inter = np.load('data/h_hat_inter.npy')
-        h_hat_inter2 = np.load('data/h_hat_inter2.npy')
-        print(np.allclose(h_hat_inter, h_hat_inter2)) #False->True
+            h_hat_inter = np.load('data/h_hat_inter.npy')
+            h_hat_inter2 = np.load('data/h_hat_inter2.npy')
+            print(np.allclose(h_hat_inter, h_hat_inter2)) #False->True
 
-        err_var_inter = np.load('data/err_var_inter.npy')
-        err_var_inter2 = np.load('data/err_var_inter2.npy')
-        print(np.allclose(err_var_inter, err_var_inter2)) #True
+            err_var_inter = np.load('data/err_var_inter.npy')
+            err_var_inter2 = np.load('data/err_var_inter2.npy')
+            print(np.allclose(err_var_inter, err_var_inter2)) #True
 
         self.comparefigure(h_perfect=self.h_perfect, h_hat=self.h_hat, savefile='data/h_hatcompare.png')
 
-        self.comparefigure(h_perfect=self.h_perfect, h_hat=h_hat_inter, savefile='data/h_hat_intercompare.png')
-
+        
+        #self.comparefigure(h_perfect=self.h_perfect, h_hat=h_hat_inter, savefile='data/h_hat_intercompare.png')
+        h_hat_inter2 = np.load('data/h_hat_inter2.npy')
         self.comparefigure(h_perfect=self.h_perfect, h_hat=h_hat_inter2, savefile='data/h_hat_inter2compare.png')
 
     def estimate_at_pilot_locations(self, y_pilots, no, resource_grid):
@@ -517,7 +519,7 @@ class OFDMDataset(Dataset):
         return batch
     
 def testdataset():
-    train_data = OFDMDataset(training=True, testing=False, compare=False)
+    train_data = OFDMDataset(training=True, testing=True, compare=True)
     onebatch = train_data[0]
     print(onebatch['feature_2d'].shape) #(2, 12, 64)
     print(onebatch['labels'].shape) #(12, 64, 2)
