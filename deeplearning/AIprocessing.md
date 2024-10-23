@@ -109,6 +109,7 @@ Build cuda_11.8.r11.8/compiler.31833905_0
 (py310cu118) lkk@newalienware:~/Developer/AIsensing$ pip install numpy==1.26.4
 (py310cu118) lkk@newalienware:~/Developer/AIsensing$ python3 -c "import tensorflow as tf; print('tf version:', tf.__version__); print(tf.config.list_physical_devices('GPU'))"
 [PhysicalDevice(name='/physical_device:GPU:0', device_type='GPU')]
+(py310cu118) lkk@newalienware:~/Developer/AIsensing$ conda install -y pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia
 ```
 
 Install other python packages:

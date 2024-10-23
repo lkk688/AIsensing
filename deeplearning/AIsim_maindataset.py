@@ -88,7 +88,7 @@ class OFDMDataset(Dataset):
         num_guard_carriers=[5,6]
         pilot_ofdm_symbol_indices=[2,11]
         colofpilots=len(pilot_ofdm_symbol_indices) #2
-        self.totalsymbols = self.k/self.num_bits_per_symbol
+        self.totalsymbols = int(self.k/self.num_bits_per_symbol)
         self.effectiveofdmsymbols=self.num_ofdm_symbols-colofpilots #12
         self.effectivesubcarrier=int(self.totalsymbols/(self.effectiveofdmsymbols)) #768/12=64
         self.TTI_mask_RE = self.TTI_mask(S=14, F=64, num_guard_carriers=num_guard_carriers, \
