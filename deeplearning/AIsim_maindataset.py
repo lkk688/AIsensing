@@ -277,8 +277,8 @@ class OFDMDataset(Dataset):
             print(np.allclose(self.h_out, h_freq_tfnp, atol=1e-06)) #False->True
             print(np.allclose(self.h_out[:,:,:,0,0,:,:], h_freq_tfnp[:,:,:,0,0,:,:])) #False
             print(np.allclose(self.h_out[:,0,0,0,0,:,:], h_freq_tfnp[:,0,0,0,0,:,:])) #False
-            print(np.allclose(self.h_out[0,0,0,0,0,:,:], h_freq_tfnp[0,0,0,0,0,:,:])) #False
-            print(np.allclose(self.h_out[0,0,0,0,0,0], h_freq_tfnp[0,0,0,0,0,0])) #False
+            print(np.allclose(self.h_out[0,0,0,0,0,:,:], h_freq_tfnp[0,0,0,0,0,:,:])) #False->True
+            print(np.allclose(self.h_out[0,0,0,0,0,0], h_freq_tfnp[0,0,0,0,0,0])) #False->True
             compare_allclose(self.h_out[0,0,0,0,0,0], h_freq_tfnp[0,0,0,0,0,0], figname="data/compare_allclose.png")
 
 
@@ -516,7 +516,7 @@ class OFDMDataset(Dataset):
         
         batch['feature_2d'] = feature_2d_data_noise.astype(np.float32) #self.feature_2d_data
         self.index = (self.index +1) % self.batch_size
-        return batch
+        return batch #'labels':(12, 64, 2) HWbits, 'feature_2d'(2, 12, 64) CHW
     
 def testdataset():
     train_data = OFDMDataset(training=True, testing=True, compare=True)
