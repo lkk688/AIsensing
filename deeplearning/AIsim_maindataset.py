@@ -7,7 +7,9 @@ import matplotlib.pyplot as plt
 from deepMIMO5 import hard_decisions, calculate_BER
 import random
 
-def compare_allclose(arry1, arry2, threshold=1e-6, figname="data/compare_allclose.png"):
+IMG_FORMAT=".pdf" #".png"
+
+def compare_allclose(arry1, arry2, threshold=1e-6, figname="data/compare_allclose"+IMG_FORMAT):
     is_complex=False
     if any(np.iscomplex(arry1)) and any(np.iscomplex(arry2)):
         print("complex data")
@@ -240,7 +242,7 @@ class OFDMDataset(Dataset):
             print(np.allclose(x_rg, myx_rg)) #False->True
             print(np.allclose(x_rg[0,0,0,:,:], myx_rg[0,0,0,:,:])) #False->True
 
-    def check_channel(self, compare=True):
+    def check_channel(self, compare=True, savefile=True):
         from deepMIMO5 import time_lag_discrete_time_channel, cir_to_time_channel, cir_to_ofdm_channel, subcarrier_frequencies
         if self.drawfig:
              #eval_transceiver.RESOURCE_GRID.num_ofdm_symbols
@@ -250,6 +252,8 @@ class OFDMDataset(Dataset):
             plt.stem(self.tau_b[0,0,0,:]/1e-9, np.abs(self.h_b)[0,0,0,0,0,:,0])#10 different pathes
             plt.xlabel(r"$\tau$ [ns]")
             plt.ylabel(r"$|a|$")
+            if savefile is not None:
+                plt.savefig("data/channelimpulse"+IMG_FORMAT)
 
             plt.figure()
             plt.title("Time evolution of path gain")
@@ -260,6 +264,8 @@ class OFDMDataset(Dataset):
             plt.legend(["Real part", "Imaginary part"])
             plt.xlabel(r"$t$ [us]")
             plt.ylabel(r"$a$");
+            if savefile is not None:
+                plt.savefig("data/timeevolutionofpath"+IMG_FORMAT)
         h_freq_np = cir_to_ofdm_channel(self.frequencies, self.h_b, self.tau_b, normalize=True)
         #(128, 1, 16, 1, 2, 14, 76)
         print(np.allclose(h_freq_np, self.h_out)) #True
@@ -279,10 +285,10 @@ class OFDMDataset(Dataset):
             print(np.allclose(self.h_out[:,0,0,0,0,:,:], h_freq_tfnp[:,0,0,0,0,:,:])) #False
             print(np.allclose(self.h_out[0,0,0,0,0,:,:], h_freq_tfnp[0,0,0,0,0,:,:])) #False->True
             print(np.allclose(self.h_out[0,0,0,0,0,0], h_freq_tfnp[0,0,0,0,0,0])) #False->True
-            compare_allclose(self.h_out[0,0,0,0,0,0], h_freq_tfnp[0,0,0,0,0,0], figname="data/compare_allclose.png")
+            compare_allclose(self.h_out[0,0,0,0,0,0], h_freq_tfnp[0,0,0,0,0,0], figname="data/compare_allclose"+IMG_FORMAT)
 
 
-    def check_channelestimation(self):
+    def check_channelestimation(self, savefile=True):
         if self.drawfig:
             h_perfect = self.h_perfect[0,0,0,0,0,0]
             h_hat = self.h_hat[0,0,0,0,0,0]
@@ -295,6 +301,8 @@ class OFDMDataset(Dataset):
             plt.ylabel("Channel frequency response")
             plt.legend(["Ideal (real part)", "Ideal (imaginary part)", "Estimated (real part)", "Estimated (imaginary part)"]);
             plt.title("Comparison of channel frequency responses");
+            if savefile is not None:
+                plt.savefig("data/channelestimation"+IMG_FORMAT)
 
     
     def __len__(self):
@@ -353,12 +361,12 @@ class OFDMDataset(Dataset):
             err_var_inter2 = np.load('data/err_var_inter2.npy')
             print(np.allclose(err_var_inter, err_var_inter2)) #True
 
-        self.comparefigure(h_perfect=self.h_perfect, h_hat=self.h_hat, savefile='data/h_hatcompare.png')
+        self.comparefigure(h_perfect=self.h_perfect, h_hat=self.h_hat, savefile='data/h_hatcompare'+IMG_FORMAT)
 
         
         #self.comparefigure(h_perfect=self.h_perfect, h_hat=h_hat_inter, savefile='data/h_hat_intercompare.png')
         h_hat_inter2 = np.load('data/h_hat_inter2.npy')
-        self.comparefigure(h_perfect=self.h_perfect, h_hat=h_hat_inter2, savefile='data/h_hat_inter2compare.png')
+        self.comparefigure(h_perfect=self.h_perfect, h_hat=h_hat_inter2, savefile='data/h_hat_inter2compare'+IMG_FORMAT)
 
     def estimate_at_pilot_locations(self, y_pilots, no, resource_grid):
         from channel import expand_to_rank
@@ -398,7 +406,7 @@ class OFDMDataset(Dataset):
         import tensorflow as tf
         y_tf = tf.convert_to_tensor(self.y, dtype=tf.complex64)
         h_hat, err_var = self.ls_est([y_tf, self.no])
-        self.comparefigure(h_perfect=self.h_hat, h_hat=h_hat.numpy())
+        self.comparefigure(h_perfect=self.h_hat, h_hat=h_hat.numpy(), savefile="data/comparechannelestimate"+IMG_FORMAT)
         #self.h_hat shape: (128, 1, 16, 1, 2, 14, 64), self.err_var: (1, 1, 1, 1, 2, 14, 64)
         #[batch_size, num_rx, num_rx_ant, num_tx, num_streams_per_tx, num_ofdm_symbols, num_effective_subcarriers]
         print(np.allclose(h_hat, self.h_hat)) #False->fixed to True
@@ -452,7 +460,7 @@ class OFDMDataset(Dataset):
     # 2: Pilot symbols
     # 3: (yellow bar) DC
     
-    def TTI_mask(self, S=14, F=64, num_guard_carriers=[5,6], pilot_ofdm_symbol_indices=[2,11], dc_null=True, plotTTI=False):
+    def TTI_mask(self, S=14, F=64, num_guard_carriers=[5,6], pilot_ofdm_symbol_indices=[2,11], dc_null=True, plotTTI=False, savefile=True):
 
         if dc_null:
             F=F+1
@@ -478,9 +486,11 @@ class OFDMDataset(Dataset):
             plt.title('TTI mask')
             plt.xlabel('Subcarrier index')
             plt.ylabel('Symbol')
-            plt.savefig('output/TTImask.png')
+            #plt.savefig('output/TTImask.png')
             plt.tight_layout()
             plt.show()
+            if savefile is not None:
+                plt.savefig("data/TTImask"+IMG_FORMAT)
 
         return TTI_mask #(14, 76)
 
@@ -696,6 +706,6 @@ def validation(model, val_loader, device, criterion, multiprocessor=None):
 
 
 if __name__ == '__main__':
-    #testdataset()
+    testdataset()
     trainoutput = './output/'
     trainmain(trainoutput)
