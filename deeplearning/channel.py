@@ -2159,10 +2159,10 @@ class MyLSChannelEstimator():
         # plt.plot(np.real(y_pilots[0,0,0,0,0,:]))
         # plt.plot(np.imag(y_pilots[0,0,0,0,0,:]))
         # plt.title('y_pilots')
-        np.save('data/y_eff_tf2.npy', y_eff.numpy())
-        np.save('data/y_eff_flat_tf2.npy', y_eff_flat.numpy())
-        np.save('data/pilot_ind_tf2.npy', self._pilot_ind)
-        np.save('data/y_pilots_tf2.npy', y_pilots.numpy())
+        np.save('data/y_eff_tf2.npy', y_eff.numpy()) #(128, 1, 16, 14, 64)
+        np.save('data/y_eff_flat_tf2.npy', y_eff_flat.numpy()) #(128, 1, 16, 896)
+        np.save('data/pilot_ind_tf2.npy', self._pilot_ind) #(1, 2, 128)
+        np.save('data/y_pilots_tf2.npy', y_pilots.numpy()) #(128, 1, 16, 1, 2, 128)
 
         # Compute LS channel estimates
         # Note: Some might be Inf because pilots=0, but we do not care

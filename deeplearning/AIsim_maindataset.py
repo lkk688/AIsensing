@@ -361,6 +361,15 @@ class OFDMDataset(Dataset):
             err_var_inter2 = np.load('data/err_var_inter2.npy')
             print(np.allclose(err_var_inter, err_var_inter2)) #True
 
+        h_hat_beforeinter2 = np.load('data/h_hat_beforeinter2.npy')
+        plt.figure()
+        plt.plot(np.real(h_hat_beforeinter2[0,0,0,0,0,:])) #0:64
+        plt.plot(np.imag(h_hat_beforeinter2[0,0,0,0,0,:]))
+        #plt.plot(np.real(h_hat_beforeinter2[0,0,0,0,0,64:128]),'--')
+        #plt.plot(np.imag(h_hat_beforeinter2[0,0,0,0,0,64:128]),'--')
+        plt.title('h_hat at_pilot')
+        plt.savefig('data/h_hat_at_pilot'+IMG_FORMAT)
+        
         self.comparefigure(h_perfect=self.h_perfect, h_hat=self.h_hat, savefile='data/h_hatcompare'+IMG_FORMAT)
 
         
