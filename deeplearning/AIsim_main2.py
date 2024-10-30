@@ -35,6 +35,8 @@ from ldpc.encoding import LDPC5GEncoder
 from ldpc.decoding import LDPC5GDecoder
 
 import scipy
+import os
+IMG_FORMAT=".pdf" #".png"
 
 def ber_plot(ebno_dbs, bers, legend="", ylabel="BER", title="Bit Error Rate", ebno=True, xlim=None,
              ylim=None, is_bler=False, savefigpath='./data/ber.jpg'):
@@ -635,7 +637,7 @@ class Transmitter():
                  direction="uplink", num_ut = 1, num_ut_ant=2, num_bs = 1, num_bs_ant=16,\
                  batch_size =64, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = 4,  \
                  subcarrier_spacing=15e3, num_guard_carriers=None, pilot_ofdm_symbol_indices=None, \
-                USE_LDPC = True, pilot_pattern = "kronecker", guards = True, showfig = True, savedata=True) -> None:
+                USE_LDPC = True, pilot_pattern = "kronecker", guards = True, showfig = True, savedata=True, outputpath=None) -> None:
                 #num_guard_carriers=[15,16]
         self.channeltype = channeltype
         self.channeldataset = channeldataset
@@ -654,6 +656,7 @@ class Transmitter():
         self.num_ut_ant = num_ut_ant #num_rx #2 #4
         self.num_bs_ant = num_bs_ant #8
         self.num_time_steps = 1 #num_ofdm_symbols #??? 
+        self.outputpath = outputpath
         #[batch, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, num_time_steps]
         if direction=="uplink": #the UT is transmitting.
             self.num_tx = self.num_ut
@@ -715,8 +718,17 @@ class Transmitter():
                                             pilot_pattern=pilot_pattern,
                                             pilot_ofdm_symbol_indices=pilot_ofdm_symbol_indices)
         if showfig:
-            RESOURCE_GRID.show() #14(OFDM symbol)*76(subcarrier) array=1064
-            RESOURCE_GRID.pilot_pattern.show();
+            fig = RESOURCE_GRID.show() #14(OFDM symbol)*76(subcarrier) array=1064
+            if outputpath is not None:
+                figurename=os.path.join(outputpath, "RESOURCE_GRID"+IMG_FORMAT)
+                fig.savefig(figurename)
+
+            figs = RESOURCE_GRID.pilot_pattern.show()
+            if outputpath is not None:
+                for i, fig in enumerate(figs):
+                    figurename=os.path.join(outputpath, f"pilot_pattern_{i}"+IMG_FORMAT)
+                    fig.savefig(figurename)
+
             #The pilot patterns are defined over the resource grid of *effective subcarriers* from which the nulled DC and guard carriers have been removed. 
             #This leaves us in our case with 76 - 1 (DC) - 5 (left guards) - 6 (right guards) = 64 effective subcarriers.
 
@@ -731,6 +743,9 @@ class Transmitter():
                         markerfmt="C{}.".format(i), linefmt="C{}-".format(i),
                         label="Stream {}".format(i))
             plt.legend()
+            if outputpath is not None:
+                figurename=os.path.join(outputpath, "PilotSeq"+IMG_FORMAT)
+                plt.savefig(figurename)
             print("Average energy per pilot symbol: {:1.2f}".format(np.mean(np.abs(RESOURCE_GRID.pilot_pattern.pilots[0,0])**2)))
         self.RESOURCE_GRID = RESOURCE_GRID
         print("RG num_ofdm_symbols", RESOURCE_GRID.num_ofdm_symbols) #14
@@ -846,6 +861,10 @@ class Transmitter():
             plt.stem(tau_b[0,0,0,:]/1e-9, np.abs(h_b)[0,0,0,0,0,:,0])#10 different pathes
             plt.xlabel(r"$\tau$ [ns]")
             plt.ylabel(r"$|a|$")
+            if self.outputpath is not None:
+                figurename=os.path.join(self.outputpath, "Channel_impulse"+IMG_FORMAT)
+                plt.savefig(figurename)
+            
     
     def create_CDLchanneldataset(self):
         # try:
@@ -932,6 +951,9 @@ class Transmitter():
             plt.stem(tau_b[0,0,0,:]/1e-9, np.abs(h_b)[0,0,0,0,0,:,0])#10 different pathes
             plt.xlabel(r"$\tau$ [ns]")
             plt.ylabel(r"$|a|$")
+            if self.outputpath is not None:
+                figurename=os.path.join(self.outputpath, "Channel_cir"+IMG_FORMAT)
+                plt.savefig(figurename)
 
             plt.figure()
             plt.title("Time evolution of path gain")
@@ -942,6 +964,9 @@ class Transmitter():
             plt.legend(["Real part", "Imaginary part"])
             plt.xlabel(r"$t$ [us]")
             plt.ylabel(r"$a$");
+            if self.outputpath is not None:
+                figurename=os.path.join(self.outputpath, "Time_evolution_path"+IMG_FORMAT)
+                plt.savefig(figurename)
         
         return h_b, tau_b
 
@@ -971,6 +996,9 @@ class Transmitter():
             plt.xlabel("OFDM Symbol Index")
             plt.ylabel(r"$h$")
             plt.legend(["Real part", "Imaginary part"]);
+            if self.outputpath is not None:
+                figurename=os.path.join(self.outputpath, "OFDMchannelresponse"+IMG_FORMAT)
+                plt.savefig(figurename)
         return h_freq
     
     def get_timechannelresponse(self, h_b, tau_b):
@@ -986,6 +1014,9 @@ class Transmitter():
             plt.stem(np.abs(h_time[0,0,0,0,0,0]))
             plt.xlabel(r"Time step $\ell$")
             plt.ylabel(r"$|\bar{h}|$");
+            if self.outputpath is not None:
+                figurename=os.path.join(self.outputpath, "Discrete_time_channel"+IMG_FORMAT)
+                plt.savefig(figurename)
         return h_time
     
 
@@ -1015,8 +1046,11 @@ class Transmitter():
                 plt.plot(np.imag(h_freq_plt))
                 plt.xlabel("Subcarrier index")
                 plt.ylabel("Channel frequency response")
-                plt.legend(["Ideal (real part)", "Ideal (imaginary part)"]);
-                plt.title("Comparison of channel frequency responses");
+                plt.legend(["Ideal (real part)", "Ideal (imaginary part)"])
+                plt.title("Comparison of channel frequency responses")
+                if self.outputpath is not None:
+                    figurename=os.path.join(self.outputpath, "channel_compare"+IMG_FORMAT)
+                    plt.savefig(figurename)
 
             # Generate the OFDM channel
             channel_freq = MyApplyOFDMChannel(add_awgn=True)
@@ -1052,6 +1086,9 @@ class Transmitter():
                 plt.stem(np.abs(h_time[0,0,0,0,0,0]))
                 plt.xlabel(r"Time step $\ell$")
                 plt.ylabel(r"$|\bar{h}|$");
+                if self.outputpath is not None:
+                    figurename=os.path.join(self.outputpath, "Discrete_time_channel2"+IMG_FORMAT)
+                    plt.savefig(figurename)
             #channel_time = ApplyTimeChannel(self.RESOURCE_GRID.num_time_samples, l_tot=l_tot, add_awgn=False)
             channel_time = MyApplyTimeChannel(self.RESOURCE_GRID.num_time_samples, l_tot=l_tot, add_awgn=True)
             # OFDM modulator and demodulator
@@ -1174,6 +1211,9 @@ class Transmitter():
                 plt.ylabel("Channel frequency response")
                 plt.legend(["Ideal (real part)", "Ideal (imaginary part)", "Estimated (real part)", "Estimated (imaginary part)"]);
                 plt.title("Comparison of channel frequency responses");
+                if self.outputpath is not None:
+                    figurename=os.path.join(self.outputpath, "OFDMChannel_compare"+IMG_FORMAT)
+                    plt.savefig(figurename)
         
         # if perfect_csi:
         #     return h_perfect, err_var_perfect
@@ -1245,6 +1285,9 @@ class Transmitter():
             plt.stem(np.abs(h_time[0,0,0,0,0,0]))
             plt.xlabel(r"Time step $\ell$")
             plt.ylabel(r"$|\bar{h}|$");
+            if self.outputpath is not None:
+                figurename=os.path.join(self.outputpath, "Discrete_time_channel2"+IMG_FORMAT)
+                plt.savefig(figurename)
 
                 # OFDM modulator and demodulator
         #from sionna.ofdm import OFDMModulator, OFDMDemodulator, ZFPrecoder, RemoveNulledSubcarriers
@@ -1421,6 +1464,9 @@ class Transmitter():
             plt.ylabel("Channel frequency response")
             plt.legend(["Ideal (real part)", "Ideal (imaginary part)", "Estimated (real part)", "Estimated (imaginary part)"]);
             plt.title("Comparison of channel frequency responses");
+            if self.outputpath is not None:
+                figurename=os.path.join(self.outputpath, "TimeChannel_compare"+IMG_FORMAT)
+                plt.savefig(figurename)
 
         # if perfect_csi:
         #     return h_perfect, err_var_perfect
