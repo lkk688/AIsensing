@@ -1856,6 +1856,9 @@ def sim_bersingle2(channeldataset='deepmimo', channeltype='ofdm', NUM_BITS_PER_S
     # NUM_UT_ANT = 1 #2 is not working
     # NUM_BS_ANT = 16
 
+    if not os.path.exists(datapathbase):
+        os.makedirs(datapathbase)
+
     ebno_dbs=np.linspace(EBN0_DB_MIN, EBN0_DB_MAX, 20)
 
     datapath = datapathbase+channeldataset+'_'+channeltype
@@ -1863,7 +1866,7 @@ def sim_bersingle2(channeldataset='deepmimo', channeltype='ofdm', NUM_BITS_PER_S
                     num_ut = NUM_UT, num_ut_ant=NUM_UT_ANT, num_bs = NUM_BS, num_bs_ant=NUM_BS_ANT, \
                     batch_size =BATCH_SIZE, fft_size = 76, num_ofdm_symbols=14, num_bits_per_symbol = NUM_BITS_PER_SYMBOL,  \
                     subcarrier_spacing=60e3, \
-                    USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=showfigure, savedata=True)
+                    USE_LDPC = False, pilot_pattern = "kronecker", guards=True, showfig=showfigure, savedata=True, outputpath=datapathbase)
     
     b_hat, BER = eval_transceiver(ebno_db = 5.0, perfect_csi=False, datapath=datapath+"_ebno5.npy")
 
@@ -1897,7 +1900,7 @@ if __name__ == '__main__':
     
     #test_DeepMIMOchannel()
     bers, blers, BERs = sim_bersingle2(channeldataset='cdl', channeltype='ofdm', NUM_BITS_PER_SYMBOL = 2, EBN0_DB_MIN = -5.0, EBN0_DB_MAX = 25.0, \
-                   BATCH_SIZE = 128, NUM_UT = 1, NUM_BS = 1, NUM_UT_ANT = 2, NUM_BS_ANT = 16, showfigure = False, datapathbase='data/')
+                   BATCH_SIZE = 128, NUM_UT = 1, NUM_BS = 1, NUM_UT_ANT = 2, NUM_BS_ANT = 16, showfigure = False, datapathbase='data/cdl/')
     bers, blers, BERs = sim_bersingle2(channeldataset='deepmimo', channeltype='ofdm', NUM_BITS_PER_SYMBOL = 2, EBN0_DB_MIN = -5.0, EBN0_DB_MAX = 25.0, \
                    BATCH_SIZE = 128, NUM_UT = 1, NUM_BS = 1, NUM_UT_ANT = 1, NUM_BS_ANT = 16, showfigure = False, datapathbase='data/')
     
