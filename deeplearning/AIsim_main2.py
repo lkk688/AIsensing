@@ -749,7 +749,7 @@ class Transmitter():
             print("Average energy per pilot symbol: {:1.2f}".format(np.mean(np.abs(RESOURCE_GRID.pilot_pattern.pilots[0,0])**2)))
         self.RESOURCE_GRID = RESOURCE_GRID
         print("RG num_ofdm_symbols", RESOURCE_GRID.num_ofdm_symbols) #14
-        print("RG ofdm_symbol_duration", RESOURCE_GRID.ofdm_symbol_duration)
+        print("RG ofdm_symbol_duration", RESOURCE_GRID.ofdm_symbol_duration) #1.7982456140350878e-05
         #from sionna.channel import subcarrier_frequencies
         self.frequencies = subcarrier_frequencies(RESOURCE_GRID.fft_size, RESOURCE_GRID.subcarrier_spacing) #corresponding to the different subcarriers
         #76, 60k
@@ -759,7 +759,7 @@ class Transmitter():
         #num_bits_per_symbol = 4
         # Codeword length
         n = int(RESOURCE_GRID.num_data_symbols * num_bits_per_symbol) #num_data_symbols: if empty 1064*4=4256, else, 768*4=3072
-        self.n = n
+        self.n = n #1536
 
         #USE_LDPC = True
         if USE_LDPC:
@@ -773,7 +773,7 @@ class Transmitter():
         else:
             coderate = 1
             # Number of information bits per codeword
-            k = int(n * coderate)  
+            k = int(n * coderate)  #1536
         self.k = k # Number of information bits per codeword, 3072
         self.USE_LDPC = USE_LDPC
         self.coderate = coderate
@@ -1476,7 +1476,7 @@ class Transmitter():
     
     def channelest_equ(self, y, no, h_b=None, tau_b=None, h_out=None, perfect_csi= False):
         print(self.RESOURCE_GRID.pilot_pattern) #<__main__.EmptyPilotPattern object at 0x7f2659dfd9c0>
-        print("Num of Pilots:", len(self.RESOURCE_GRID.pilot_pattern.pilots))
+        print("Num of Pilots:", len(self.RESOURCE_GRID.pilot_pattern.pilots)) #1
         h_hat = None
         err_var = None 
         h_perfect = None 
@@ -1515,7 +1515,7 @@ class Transmitter():
             # Reshape the array by collapsing the last two dimensions
             llr_est = llr.reshape(llr.shape[:-2] + (-1,)) #(64, 1, 16, 4256)
         else:
-            llr_est = self.mydemapper([x_hat, no_eff]) #(2, 1, 2, 3072)
+            llr_est = self.mydemapper([x_hat, no_eff]) #(128, 1, 2, 1536) #(2, 1, 2, 3072)
             #output: [batch size, num_rx, num_rx_ant, n * num_bits_per_symbol]
         
         #llr_est #(64, 1, 1, 4256)
@@ -1523,7 +1523,7 @@ class Transmitter():
             b_hat_tf = self.decoder(llr_est) #[64, 1, 1, 2128]
             b_hat = b_hat_tf.numpy()
         else:
-            b_hat = hard_decisions(llr_est, np.int32)  #(2, 1, 2, 3072)
+            b_hat = hard_decisions(llr_est, np.int32)  #(128, 1, 2, 1536) #(2, 1, 2, 3072)
         return b_hat, llr_est
 
     def receiver(self, y, no, x_rg, b=None, h_b=None, tau_b=None, h_out=None, perfect_csi= False):
@@ -1591,7 +1591,7 @@ class Transmitter():
         h_b, tau_b = self.get_channelcir() #h_b: (128, 1, 16, 1, 2, 23, 14), tau_b: (128, 1, 1, 23)
         if self.channeltype=='ofdm':
             h_out = self.get_OFDMchannelresponse(h_b, tau_b) #cir_to_ofdm_channel
-            print("h_freq shape:", h_out.shape) #(64, 1, 16, 1, 2, 14, 76)
+            print("h_freq shape:", h_out.shape) #(128, 1, 16, 1, 2, 14, 76)
         elif self.channeltype=='time':
             h_out = self.get_timechannelresponse(h_b, tau_b) #(64, 1, 16, 1, 2, 1174, 27)
 
@@ -1900,14 +1900,14 @@ if __name__ == '__main__':
     
     #test_DeepMIMOchannel()
     bers, blers, BERs = sim_bersingle2(channeldataset='cdl', channeltype='ofdm', NUM_BITS_PER_SYMBOL = 2, EBN0_DB_MIN = -5.0, EBN0_DB_MAX = 25.0, \
-                   BATCH_SIZE = 128, NUM_UT = 1, NUM_BS = 1, NUM_UT_ANT = 2, NUM_BS_ANT = 16, showfigure = False, datapathbase='data/cdl/')
+                   BATCH_SIZE = 128, NUM_UT = 1, NUM_BS = 1, NUM_UT_ANT = 2, NUM_BS_ANT = 16, showfigure = showfigure, datapathbase='data/cdl/')
     bers, blers, BERs = sim_bersingle2(channeldataset='deepmimo', channeltype='ofdm', NUM_BITS_PER_SYMBOL = 2, EBN0_DB_MIN = -5.0, EBN0_DB_MAX = 25.0, \
-                   BATCH_SIZE = 128, NUM_UT = 1, NUM_BS = 1, NUM_UT_ANT = 1, NUM_BS_ANT = 16, showfigure = False, datapathbase='data/')
+                   BATCH_SIZE = 128, NUM_UT = 1, NUM_BS = 1, NUM_UT_ANT = 1, NUM_BS_ANT = 16, showfigure = showfigure, datapathbase='data/')
     
     bers, blers, BERs = sim_bersingle2(channeldataset='cdl', channeltype='time', NUM_BITS_PER_SYMBOL = 2, EBN0_DB_MIN = -5.0, EBN0_DB_MAX = 25.0, \
-                   BATCH_SIZE = 32, NUM_UT = 1, NUM_BS = 1, NUM_UT_ANT = 2, NUM_BS_ANT = 16, showfigure = False, datapathbase='data/')
+                   BATCH_SIZE = 32, NUM_UT = 1, NUM_BS = 1, NUM_UT_ANT = 2, NUM_BS_ANT = 16, showfigure = showfigure, datapathbase='data/')
     bers, blers, BERs = sim_bersingle2(channeldataset='deepmimo', channeltype='time', NUM_BITS_PER_SYMBOL = 2, EBN0_DB_MIN = -5.0, EBN0_DB_MAX = 25.0, \
-                   BATCH_SIZE = 32, NUM_UT = 1, NUM_BS = 1, NUM_UT_ANT = 1, NUM_BS_ANT = 16, showfigure = False, datapathbase='data/')
+                   BATCH_SIZE = 32, NUM_UT = 1, NUM_BS = 1, NUM_UT_ANT = 1, NUM_BS_ANT = 16, showfigure = showfigure, datapathbase='data/')
     
     if cdltest is True:
         test_CDLchannel()
