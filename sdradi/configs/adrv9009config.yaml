@@ -1,0 +1,13 @@
+default_chirp_bw: 500e6
+signal_freq: 100e3
+sample_rate: 3e6  # 0.6M * 5
+rxbuffersize: 40960  # 1024 * 8 * 5
+center_freq: 2.1e9
+output_freq: 10e9  # 10GHz
+ramp_time: 500  # us 0.5e3
+num_chirps: 1  # 128 for TDD mode
+sdrurl: 'ip:192.168.1.67:50901' #baseip+":50901"
+phaserurl: None
+tddmode: False  # Use TDD mode or not
+signaltype: 'sinusoid' #'OFDM'  # 'sinusoid' or 'OFDM'
+ramp_mode: 'continuous_triangular'  # "disabled", "continuous_sawtooth", "continuous_triangular", "single_sawtooth_burst", "single_ramp_burst"
