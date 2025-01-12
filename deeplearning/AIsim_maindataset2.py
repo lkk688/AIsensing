@@ -717,7 +717,7 @@ def validation(model, val_loader, device, criterion, multiprocessor=None):
 
 
 if __name__ == '__main__':
-    testdataset(datapath='data/cdl/cdl_ofdm_ebno25.npy')
+    testdataset(datapath='data/cdldatagen/cdl_ofdm_ebno5.npy')
 
     trainoutput = './output/'
     trainmain(trainoutput)

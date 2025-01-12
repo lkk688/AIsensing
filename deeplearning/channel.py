@@ -2092,7 +2092,7 @@ class MyLSChannelEstimator():
         pilot_ind = tf.argsort(mask, axis=-1, direction="DESCENDING") #(1, 2, 896)
         self._pilot_ind = pilot_ind[...,:num_pilot_symbols]
 
-        print(self._pilot_ind[0,0,:]) #(1, 2, 128) int32 only 128 pilots [128-191 704-767]
+        #print(self._pilot_ind[0,0,:]) #(1, 2, 128) int32 only 128 pilots [128-191 704-767]
 
 
     def estimate_at_pilot_locations(self, y_pilots, no):
@@ -2126,7 +2126,7 @@ class MyLSChannelEstimator():
         return h_ls, err_var #h_ls: (2, 1, 16, 1, 2, 128), err_var: (1, 1, 1, 1, 2, 128)
 
     #def call(self, inputs):
-    def __call__(self, inputs):
+    def __call__(self, inputs, testmode=False):
 
         y, no = inputs #y: (2, 1, 16, 14, 76) tf complex64
 
@@ -2143,26 +2143,12 @@ class MyLSChannelEstimator():
         # Flatten the resource grid for pilot extraction
         # New shape: [...,num_ofdm_symbols*num_effective_subcarriers]
         y_eff_flat = flatten_last_dims(y_eff) #(2, 1, 16, 896)
-        import matplotlib.pyplot as plt
-        # plt.figure()
-        # plt.plot(np.real(y_eff_flat[0,0,0,:]))
-        # plt.plot(np.imag(y_eff_flat[0,0,0,:]))
-        # plt.title('y_eff_flat')
 
         # Gather pilots along the last dimensions, pilot_ind: (1, 2, 128)
         # Resulting shape: y_eff_flat.shape[:-1] + pilot_ind.shape, i.e.:
         # [batch_size, num_rx, num_rx_ant, num_tx, num_streams,...
         #  ..., num_pilot_symbols]
         y_pilots = tf.gather(y_eff_flat, self._pilot_ind, axis=-1) #y_eff_flat:(b, 1, 16, 896) pilot_ind: (1, 2, 128) =>(b, 1, 16, 1, 2, 128)
-        
-        # plt.figure()
-        # plt.plot(np.real(y_pilots[0,0,0,0,0,:]))
-        # plt.plot(np.imag(y_pilots[0,0,0,0,0,:]))
-        # plt.title('y_pilots')
-        np.save('data/y_eff_tf2.npy', y_eff.numpy()) #(128, 1, 16, 14, 64)
-        np.save('data/y_eff_flat_tf2.npy', y_eff_flat.numpy()) #(128, 1, 16, 896)
-        np.save('data/pilot_ind_tf2.npy', self._pilot_ind) #(1, 2, 128)
-        np.save('data/y_pilots_tf2.npy', y_pilots.numpy()) #(128, 1, 16, 1, 2, 128)
 
         # Compute LS channel estimates
         # Note: Some might be Inf because pilots=0, but we do not care
@@ -2173,23 +2159,41 @@ class MyLSChannelEstimator():
         h_hat, err_var = self.estimate_at_pilot_locations(y_pilots, no)#h_hat: (2, 1, 16, 1, 2, 128), err_var: (1, 1, 1, 1, 2, 128)
         #np.save('h_hat_pilot_tf.npy', h_hat.numpy())
         #h_ls: (2, 1, 16, 1, 2, 128), err_var: (1, 1, 1, 1, 2, 128)
-        plt.figure()
-        plt.plot(np.real(h_hat[0,0,0,0,0,0:64]))
-        plt.plot(np.imag(h_hat[0,0,0,0,0,0:64]))
-        plt.plot(np.real(h_hat[0,0,0,0,0,64:128]),'--')
-        plt.plot(np.imag(h_hat[0,0,0,0,0,64:128]),'--')
-        plt.title('h_hat at_pilot')
-        plt.savefig('data/h_hat_at_pilot2.png')
-        np.save('data/h_hat_beforeinter2.npy', h_hat.numpy())
-        np.save('data/err_var_beforeinter2.npy', err_var.numpy())
+
+        if testmode == True:
+            import matplotlib.pyplot as plt
+            # plt.figure()
+            # plt.plot(np.real(y_eff_flat[0,0,0,:]))
+            # plt.plot(np.imag(y_eff_flat[0,0,0,:]))
+            # plt.title('y_eff_flat')
+            # plt.figure()
+            # plt.plot(np.real(y_pilots[0,0,0,0,0,:]))
+            # plt.plot(np.imag(y_pilots[0,0,0,0,0,:]))
+            # plt.title('y_pilots')
+            np.save('data/y_eff_tf2.npy', y_eff.numpy()) #(128, 1, 16, 14, 64)
+            np.save('data/y_eff_flat_tf2.npy', y_eff_flat.numpy()) #(128, 1, 16, 896)
+            np.save('data/pilot_ind_tf2.npy', self._pilot_ind) #(1, 2, 128)
+            np.save('data/y_pilots_tf2.npy', y_pilots.numpy()) #(128, 1, 16, 1, 2, 128)
+
+            plt.figure()
+            plt.plot(np.real(h_hat[0,0,0,0,0,0:64]))
+            plt.plot(np.imag(h_hat[0,0,0,0,0,0:64]))
+            plt.plot(np.real(h_hat[0,0,0,0,0,64:128]),'--')
+            plt.plot(np.imag(h_hat[0,0,0,0,0,64:128]),'--')
+            plt.title('h_hat at_pilot')
+            plt.savefig('data/h_hat_at_pilot2.png')
+            np.save('data/h_hat_beforeinter2.npy', h_hat.numpy())
+            np.save('data/err_var_beforeinter2.npy', err_var.numpy())
 
         # Interpolate channel estimates over the resource grid
         if self._interpolation_type is not None:
             h_hat, err_var = self._interpol(h_hat, err_var) #h_hat: (2, 1, 16, 1, 2, 128)=>(2, 1, 16, 1, 2, 14, 64)
-            np.save('data/h_hat_inter2.npy', h_hat.numpy())
+            if testmode == True:
+                np.save('data/h_hat_inter2.npy', h_hat.numpy())
             
             err_var = tf.maximum(err_var, tf.cast(0, err_var.dtype)) #(1, 1, 1, 1, 2, 14, 64)=>(1, 1, 1, 1, 2, 14, 64)
-            np.save('data/err_var_inter2.npy', err_var.numpy())
+            if testmode == True:
+                np.save('data/err_var_inter2.npy', err_var.numpy())
 
         return h_hat, err_var
 
