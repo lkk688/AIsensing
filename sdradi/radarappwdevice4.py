@@ -1,4 +1,4 @@
-from myradar3 import RadarDevice, RadarData  # createcomplexsinusoid
+from myradar4 import RadarDevice, RadarData  # createcomplexsinusoid
 import pyqtgraph as pg  # pip install pyqtgraph
 from pyqtgraph.Qt import QtCore, QtGui
 import sys
@@ -59,7 +59,7 @@ def setup_device(configfile='configs/config.yaml', UseRadarDevice = False, datap
     default_chirp_bw = config['default_chirp_bw'] #500e6
     signal_freq = config['signal_freq'] #100e3
     sample_rate = config['sample_rate'] #0.6e6*5  # 0.6M
-    fs = int(sample_rate)
+    fs = int(float(sample_rate))
     rxbuffersize = config['rxbuffersize'] #1024 * 8 *5
     center_freq = config['center_freq'] #2.1e9
     output_freq = config['output_freq'] #10e9  # 10GHz
@@ -96,9 +96,9 @@ def setup_device(configfile='configs/config.yaml', UseRadarDevice = False, datap
 
 import argparse
 parser = argparse.ArgumentParser(description='MyRadar')
-parser.add_argument('--configfile', default='configs/radarconfig.yaml', type=str,
+parser.add_argument('--configfile', default='sdradi/configs/radarconfig.yaml', type=str,
                     help='Radar configuration file')
-parser.add_argument('--datasetpath', default=None, type=str,
+parser.add_argument('--datasetpath', default='output/Radarsavedapp_2024_08_07_sinusoid_continuous_triangular_moving3.npy', type=str,
                     help='provide the dataset')
 parser.add_argument('--tagname', default="static1", type=str,
                     help='name the saved data file')
@@ -113,7 +113,7 @@ else:
     
 
 radar = setup_device(configfile=configfile, UseRadarDevice=UseRadarDevice, datapath=datasetpath, tagname=args.tagname)
-c, BW, num_steps, ramp_time_s, slope, N_c, N_s, \
+c, BW, fs, num_steps, ramp_time_s, slope, N_c, N_s, \
     freq, dist, range_resolution, signal_freq, range_x, \
     fft_size, rxbuffersize = radar.returnparameters()
 
@@ -122,6 +122,8 @@ N = fft_size #rxbuffersize  #40960 2048#int(my_sdr.rx_buffer_size)
 num_slices = 50     # this sets how much time will be displayed on the waterfall plot
 #N_frame = fft_size #40960
 #plot_freq = 100e3    # x-axis freq range to plot
+default_chirp_bw = BW
+sample_rate = fs
 range_res = c / (2 * BW)
 
 plot_threshold = False

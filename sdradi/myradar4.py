@@ -261,7 +261,7 @@ class RadarData:
         dist = (freq - self.signal_freq) * c / (4 * self.slope)
         range_resolution = c / (2 * self.BW) #0.3
         range_x = (self.signal_freq) * c / (4 * self.slope) #15
-        return c, self.BW, self.num_steps, self.ramp_time_s, self.slope, self.N_c, self.N_s, \
+        return c, self.BW, fs, self.num_steps, self.ramp_time_s, self.slope, self.N_c, self.N_s, \
             freq, dist, range_resolution, self.signal_freq, range_x, self.fft_size, self.rxbuffersize
 
     def receive(self, index=None, plotfigure=False):
