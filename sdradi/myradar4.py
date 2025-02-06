@@ -17,6 +17,8 @@ from myadi.aditddn import tddn
 from myadiclass import SDR
 from processing import cfar, get_spectrum, select_chirp, estimate_velocity,\
       createcomplexsinusoid, create_singlechannel_complexOFDMMIMO
+from networkutils import check_ip_accessibility
+
 
 # Read back properties from hardware https://analogdevicesinc.github.io/pyadi-iio/devices/adi.ad936x.html
 def printSDRproperties(sdr):
@@ -39,6 +41,7 @@ def printSDRproperties(sdr):
     print("DDS scales:", sdr.dds_scales)
 
 def initPhaser(urladdress, my_sdr, Blackman=False):
+    check_ip_accessibility(urladdress)
     #my_phaser = adi.CN0566(uri=urladdress, sdr=my_sdr)
     my_phaser = CN0566(uri=urladdress, sdr=my_sdr)
     print("Phaser url: ", my_phaser.uri)
@@ -95,6 +98,7 @@ def configureADF4159(my_phaser, output_freq= 12.1e9, BW= 500e6, num_steps= 1000,
     return my_phaser
 
 def initAD9361(urladdress, fs, center_freq=2.2e9, rxbuffer=1024, Rx_CH=2, Tx_CH=2, rxbw=4000000, rxgain0=30, rxgain1=30, txgain0=-88, txgain1=-88):
+    check_ip_accessibility(urladdress)
     # Create radio
     sdr = adi.ad9361(uri=urladdress)
     sdr.rx_rf_bandwidth = int(rxbw) #4000000 #4MHz
@@ -1007,6 +1011,7 @@ def test_radardata():
     print("Done")
 
 if __name__ == '__main__':
+
     #test_radardata()
     main(tddmode =False, signaltype='sinusoid', savefilename="test_adrv9009", plot_flag=True)
     

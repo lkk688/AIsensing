@@ -98,8 +98,8 @@ import argparse
 parser = argparse.ArgumentParser(description='MyRadar')
 parser.add_argument('--configfile', default='sdradi/configs/radarconfig.yaml', type=str,
                     help='Radar configuration file')
-parser.add_argument('--datasetpath', default='output/Radarsavedapp_2024_08_07_sinusoid_continuous_triangular_moving3.npy', type=str,
-                    help='provide the dataset')
+parser.add_argument('--datasetpath', default=None, type=str,
+                    help='provide the dataset') #'output/Radarsavedapp_2024_08_07_sinusoid_continuous_triangular_moving3.npy'
 parser.add_argument('--tagname', default="static1", type=str,
                     help='name the saved data file')
 
