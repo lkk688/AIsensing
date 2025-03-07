@@ -6,7 +6,8 @@ matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 from deepMIMO5 import hard_decisions, calculate_BER
 import random
-
+from AIcomm_models import OFDMNet
+from AI_multitask import DualPurposeTransformer #option2
 IMG_FORMAT=".pdf" #".png"
 
 def compare_allclose(arry1, arry2, threshold=1e-6, figname="data/compare_allclose"+IMG_FORMAT):
@@ -57,7 +58,6 @@ def compute_range_doppler(radar_reflection, fft_size, num_ofdm_symbols):
     return range_doppler
 
 # Plot range-Doppler response
-# Plot range-Doppler response
 def plot_range_doppler(range_doppler, fft_size, num_ofdm_symbols, targets=None, system_params=None):
     """
     Plot the range-Doppler response with log10 scaling and ground truth target locations.
@@ -72,6 +72,24 @@ def plot_range_doppler(range_doppler, fft_size, num_ofdm_symbols, targets=None, 
     """
     plt.figure(figsize=(10, 6))
     
+    # Extract system parameters
+    carrier_freq = system_params.get('carrier_frequency', 3.5e9)  # Hz
+    subcarrier_spacing = system_params.get('subcarrier_spacing', 15e3)  # Hz
+    sampling_rate = subcarrier_spacing * fft_size  # Hz
+    speed_of_light = 3e8  # m/s
+    wavelength = speed_of_light / carrier_freq  # m
+    
+    # Calculate range and velocity axes with more realistic limits
+    # For range axis (y-axis)
+    # Maximum range based on target data rather than theoretical maximum
+    max_range = 400  # meters (slightly larger than the furthest target)
+    range_axis = np.linspace(0, max_range, fft_size)  # in meters, starting from 0
+    
+    # For velocity axis (x-axis)
+    # Maximum velocity based on target data rather than theoretical maximum
+    max_velocity = 30  # m/s (slightly larger than the fastest target)
+    velocity_axis = np.linspace(-max_velocity, max_velocity, num_ofdm_symbols)  # in m/s
+    
     # Apply log10 scaling for better visualization
     range_doppler_db = 20 * np.log10(np.abs(range_doppler) + 1e-10)
     
@@ -79,53 +97,49 @@ def plot_range_doppler(range_doppler, fft_size, num_ofdm_symbols, targets=None, 
     range_doppler_db_norm = range_doppler_db - np.min(range_doppler_db)
     range_doppler_db_norm = range_doppler_db_norm / np.max(range_doppler_db_norm) * 60  # 60 dB dynamic range
     
-    # Plot the range-Doppler map
+    # Plot the range-Doppler map with physical units
     plt.imshow(range_doppler_db_norm, aspect='auto', cmap='viridis',
-               extent=[-num_ofdm_symbols//2, num_ofdm_symbols//2, -fft_size//2, fft_size//2])
+               extent=[velocity_axis[0], velocity_axis[-1], range_axis[0], range_axis[-1]])
     
     plt.colorbar(label='Magnitude (dB)')
-    plt.xlabel('Doppler Frequency (bins)')
-    plt.ylabel('Range (bins)')
+    plt.xlabel('Velocity (m/s)')
+    plt.ylabel('Distance (m)')
     plt.title('Range-Doppler Response')
     
     # Add ground truth target locations if provided
-    if targets is not None and system_params is not None:
-        # Extract system parameters
-        carrier_freq = system_params.get('carrier_frequency', 3.5e9)  # Hz
-        subcarrier_spacing = system_params.get('subcarrier_spacing', 15e3)  # Hz
-        sampling_rate = subcarrier_spacing * fft_size  # Hz
-        speed_of_light = 3e8  # m/s
-        wavelength = speed_of_light / carrier_freq  # m
+    if targets is not None:
+        # Create a list to store target labels for legend
+        target_labels = []
         
-        for target in targets:
-            # Convert distance to range bin
+        for i, target in enumerate(targets):
+            # Extract target parameters
             distance = target['distance']  # m
-            two_way_delay = 2 * distance / speed_of_light  # s
-            range_bin = int(round(two_way_delay * sampling_rate))
-            
-            # Convert velocity to Doppler bin
             velocity = target['velocity']  # m/s
-            doppler_freq = 2 * velocity / wavelength  # Hz
-            doppler_bin = int(round(doppler_freq / sampling_rate * fft_size))
             
-            # Adjust for FFT shift
-            range_bin_shifted = range_bin - fft_size//2
-            doppler_bin_shifted = doppler_bin - num_ofdm_symbols//2
+            # Create unique label for this target
+            label = f'Target {i+1}: {distance}m, {velocity}m/s'
+            target_labels.append(label)
             
-            # Plot target location
-            plt.scatter(doppler_bin_shifted, range_bin_shifted, 
-                       c='red', marker='x', s=100, linewidths=2, 
-                       label=f'Target: {distance}m, {velocity}m/s')
+            # Plot target location with enhanced visibility
+            plt.scatter(velocity, distance, 
+                       c='red', marker='x', s=150, linewidths=3, 
+                       label=label, zorder=10)
+            
+            # Add a circle around the marker for better visibility
+            plt.scatter(velocity, distance, 
+                       c='none', edgecolors='white', marker='o', s=200, linewidths=2,
+                       zorder=9)
+            
+            print(f"Plotting Target {i+1} at ({velocity} m/s, {distance} m)")
         
-        # Add legend (only once)
-        handles, labels = plt.gca().get_legend_handles_labels()
-        by_label = dict(zip(labels, handles))
-        plt.legend(by_label.values(), by_label.keys(), loc='upper right')
+        # Add legend (only once, with all targets)
+        if target_labels:
+            plt.legend(loc='upper right', fontsize='small')
     
     plt.tight_layout()
-    plt.savefig("./data/radar_results/range_doppler.png")
+    plt.savefig("./data/radar_results/range_doppler.png", dpi=300)
     plt.close()
-
+    
 def simulate_radar_reflections(ofdm_symbols, targets, snr_db, fft_size, num_ofdm_symbols, 
                               subcarrier_spacing, carrier_frequency, speed_of_light=3e8):
     """
@@ -279,17 +293,17 @@ def generate_radar_data(ofdm_symbols, snr_db, fft_size, num_ofdm_symbols,
         }
     plot_range_doppler(range_doppler[0,0,:,:], fft_size, num_ofdm_symbols, targets, system_params)
     
-    print("Radar Reflection Shape:", radar_reflection.shape)
-    #Radar reflection signals (shape: [batch_size, num_ofdm_symbols, fft_size]).
+    print("Radar Reflection Shape:", radar_reflection.shape) #(128, 1, 2, 14, 76)
+
 
     # Save dataset to file
     import pickle
     import os
     # Create directory if it doesn't exist
     os.makedirs(outputfolder, exist_ok=True)
-    outputfile=os.path.join(outputfolder, "ofdm_radar_dataset.pkl")
+    outputfile=os.path.join(outputfolder, "radar", "ofdm_radar_dataset.pkl")
     with open(outputfile, "wb") as f:
-        pickle.dump(dataset, f)
+        pickle.dump(radar_reflection, f)
         
     return radar_reflection
     
@@ -469,7 +483,7 @@ class OFDMDataset(Dataset):
             self.ls_est = MyLSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn")#"lin_time_avg")
             #self.ls_est = LSChannelEstimator(self.RESOURCE_GRID, interpolation_type="nn")
 
-            self.compare_channelestimationdata()
+            #self.compare_channelestimationdata()
             self.checkchannelestimate()
             self.receive()
             self.check_uplinktransmission(compare=compare)
@@ -627,14 +641,14 @@ class OFDMDataset(Dataset):
             err_var_inter2 = np.load('data/err_var_inter2.npy')
             print(np.allclose(err_var_inter, err_var_inter2)) #True
 
-        h_hat_beforeinter2 = np.load('data/h_hat_beforeinter2.npy')
-        plt.figure()
-        plt.plot(np.real(h_hat_beforeinter2[0,0,0,0,0,:])) #0:64
-        plt.plot(np.imag(h_hat_beforeinter2[0,0,0,0,0,:]))
-        #plt.plot(np.real(h_hat_beforeinter2[0,0,0,0,0,64:128]),'--')
-        #plt.plot(np.imag(h_hat_beforeinter2[0,0,0,0,0,64:128]),'--')
-        plt.title('h_hat at_pilot')
-        plt.savefig('data/h_hat_at_pilot'+IMG_FORMAT)
+            h_hat_beforeinter2 = np.load('data/h_hat_beforeinter2.npy')
+            plt.figure()
+            plt.plot(np.real(h_hat_beforeinter2[0,0,0,0,0,:])) #0:64
+            plt.plot(np.imag(h_hat_beforeinter2[0,0,0,0,0,:]))
+            #plt.plot(np.real(h_hat_beforeinter2[0,0,0,0,0,64:128]),'--')
+            #plt.plot(np.imag(h_hat_beforeinter2[0,0,0,0,0,64:128]),'--')
+            plt.title('h_hat at_pilot')
+            plt.savefig('data/h_hat_at_pilot'+IMG_FORMAT)
         
         self.comparefigure(h_perfect=self.h_perfect, h_hat=self.h_hat, savefile='data/h_hatcompare'+IMG_FORMAT)
 
