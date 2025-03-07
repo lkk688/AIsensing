@@ -6,8 +6,8 @@ matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 from deepMIMO5 import hard_decisions, calculate_BER
 import random
-from AIcomm_models import OFDMNet
-from AI_multitask import DualPurposeTransformer #option2
+from AImodels_comm import OFDMNet
+#from AI_multitask import DualPurposeTransformer #option2
 IMG_FORMAT=".pdf" #".png"
 
 def compare_allclose(arry1, arry2, threshold=1e-6, figname="data/compare_allclose"+IMG_FORMAT):
@@ -305,7 +305,7 @@ def generate_radar_data(ofdm_symbols, snr_db, fft_size, num_ofdm_symbols,
     with open(outputfile, "wb") as f:
         pickle.dump(radar_reflection, f)
         
-    return radar_reflection
+    return radar_reflection, targets
     
     
 # custom dataset
@@ -412,12 +412,47 @@ class OFDMDataset(Dataset):
         self.sampling_frequency = saved_data['sampling_frequency'] #55609
         
         ofdm_symbols = self.x_rg
+        #(128, 1, 2, 14, 76) [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size]
         snr_db = 25
         subcarrier_spacing=15e3
         carrier_frequency = 2.6e9 # Carrier frequency in Hz.
-        generate_radar_data(ofdm_symbols, snr_db, self.fft_size, self.num_ofdm_symbols, 
+        radar_reflection, targets = generate_radar_data(ofdm_symbols, snr_db, self.fft_size, self.num_ofdm_symbols, 
                         subcarrier_spacing, carrier_frequency, outputfolder='./data')
         
+        # Save dataset
+        dataset = {
+            "ofdm_symbols": ofdm_symbols,  # Transmitted OFDM symbols
+            "received_symbols": self.y,  # Received OFDM symbols (communication) (128, 1, 16, 14, 76) [batch size, num_rx, num_rx_ant, num_ofdm_symbols, fft_size]
+            "channel_response": self.h_out,  # Channel response (communication) [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_ofdm_symbols, num_subcarriers] (64, 1, 16, 1, 2, 14, 76)
+            "radar_reflection": radar_reflection,  # Radar reflection (sensing)
+            "targets": targets,  # Target parameters
+            "system_params": {
+                "carrier_frequency": carrier_frequency,
+                "subcarrier_spacing": subcarrier_spacing,
+                "fft_size": self.fft_size,
+                "num_ofdm_symbols": self.num_ofdm_symbols
+            }
+        }
+
+        # Print dataset shapes
+        print("OFDM Symbols Shape:", dataset["ofdm_symbols"].shape) #(128, 1, 2, 14, 76)
+        #Transmitted OFDM symbols (shape: [batch_size, num_ofdm_symbols, fft_size]).
+        print("Received Symbols Shape:", dataset["received_symbols"].shape) #(128, 1, 16, 14, 76)
+        #Received OFDM symbols after passing through the 5G channel (shape: [batch_size, num_ofdm_symbols, fft_size]).
+        print("Channel Response Shape:", dataset["channel_response"].shape) #(128, 1, 16, 1, 2, 14, 76)
+        #Channel response (shape: [batch_size, num_rx_antennas, num_tx_antennas, num_ofdm_symbols, fft_size]).
+        print("Radar Reflection Shape:", dataset["radar_reflection"].shape) #(128, 1, 2, 14, 76)
+        #Radar reflection signals (shape: [batch_size, num_ofdm_symbols, fft_size]).
+
+        # Save dataset to file
+        import pickle
+        import os
+        # Create directory if it doesn't exist
+        outputfile=os.path.join('./data', 'radar_results', "ofdm_radar_dataset.pkl")
+        with open(outputfile, "wb") as f:
+            pickle.dump(dataset, f)
+
+        print("Dataset saved to ofdm_radar_dataset.pkl")
         self.index = 0
         rx_id=0
         tx_id=0

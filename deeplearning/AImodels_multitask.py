@@ -3,10 +3,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
 class DualPurposeTransformer(nn.Module):
     def __init__(self, 
                  in_channels=2,          # Real and imaginary channels
@@ -277,4 +273,5 @@ def test2():
     print(f"Radar output shape: {radar_output.shape}")
     
 if __name__ == "__main__":
-    test1()
+    #test1()
+    test2()
