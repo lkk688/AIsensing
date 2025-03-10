@@ -33,7 +33,7 @@ class OFDMRadarDataset(Dataset):
         with open(data_path, 'rb') as f:
             self.data = pickle.load(f)
         
-        # Get dataset size
+        # Get dataset size (128, 1, 2, 14, 76)
         self.total_samples = len(self.data['ofdm_symbols']) #128
         
         # Split indices
@@ -60,21 +60,23 @@ class OFDMRadarDataset(Dataset):
         actual_idx = self.indices[idx]
         
         # Get OFDM symbols and radar reflections
-        ofdm_symbols = self.data['ofdm_symbols'][actual_idx]  # Shape: [num_ofdm_symbols, fft_size]
-        radar_reflection = self.data['radar_reflection'][actual_idx]  # Shape: [num_ofdm_symbols, fft_size]
+        ofdm_symbols = self.data['ofdm_symbols'][actual_idx]  # (128, 1, 2, 14, 76) [batch_size, num_tx, num_streams_per_tx, num_ofdm_symbols, fft_size]
+        radar_reflection = self.data['radar_reflection'][actual_idx]  #(128, 1, 2, 14, 76)
+        #Radar reflection signals (shape: [batch_size, num_ofdm_symbols, fft_size]).
+        # (1, 2, 14, 76)
         
         # Convert to real/imaginary representation
         ofdm_real = np.real(ofdm_symbols)
         ofdm_imag = np.imag(ofdm_symbols)
-        ofdm_features = np.stack([ofdm_real, ofdm_imag], axis=0)  # Shape: [2, num_ofdm_symbols, fft_size]
+        ofdm_features = np.stack([ofdm_real, ofdm_imag], axis=0)  # (2, 1, 2, 14, 76) Shape: [2, num_ofdm_symbols, fft_size]
         
         radar_real = np.real(radar_reflection)
         radar_imag = np.imag(radar_reflection)
-        radar_features = np.stack([radar_real, radar_imag], axis=0)  # Shape: [2, num_ofdm_symbols, fft_size]
+        radar_features = np.stack([radar_real, radar_imag], axis=0)  # (2, 1, 2, 14, 76) Shape: [2, num_ofdm_symbols, fft_size]
         
         # Get targets
         # For OFDM: the received symbols (for channel estimation/equalization)
-        received_symbols = self.data['received_symbols'][actual_idx]
+        received_symbols = self.data['received_symbols'][actual_idx] #(1, 16, 14, 76)
         received_real = np.real(received_symbols)
         received_imag = np.imag(received_symbols)
         ofdm_target = np.stack([received_real, received_imag], axis=0)
@@ -208,7 +210,7 @@ def train_model(config):
         radar_train_loss = 0.0
         
         for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{config['num_epochs']} - Training"):
-            # Get data
+            # Get data 
             ofdm_features = batch['ofdm_features'].to(device) #[32, 2, 1, 2, 14, 76]
             radar_features = batch['radar_features'].to(device) #[32, 2, 1, 2, 14, 76])
             ofdm_target = batch['ofdm_target'].to(device) #[32, 2, 1, 2, 14, 76]

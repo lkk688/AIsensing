@@ -295,7 +295,6 @@ def generate_radar_data(ofdm_symbols, snr_db, fft_size, num_ofdm_symbols,
     
     print("Radar Reflection Shape:", radar_reflection.shape) #(128, 1, 2, 14, 76)
 
-
     # Save dataset to file
     import pickle
     import os
