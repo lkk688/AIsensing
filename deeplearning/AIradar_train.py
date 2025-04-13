@@ -1908,8 +1908,8 @@ def compare_signal_types(
 if __name__ == '__main__':
     # Uncomment to run the signal type comparison
     compare_signal_types(
-        output_dir='/Users/kaikailiu/Documents/MyRepo/radarsensing/data/radar_comparison',
-        data_dir='/Users/kaikailiu/Documents/MyRepo/radarsensing/data/radar',
+        output_dir='data/radar_comparison',
+        data_dir='data/radar',
         num_samples=10000,
         batch_size=32,
         num_epochs=20,  # Reduced for faster comparison

@@ -1,3 +1,4 @@
+import h5py
 import torch
 import numpy as np
 from torch.utils.data import Dataset
@@ -9,9 +10,10 @@ import random
 from scipy.signal import chirp
 from tqdm import tqdm
 IMG_FORMAT=".pdf" #".png"
-import h5py
 
-def __init__(self, 
+
+class RadarDataset(Dataset):
+    def __init__(self, 
                  datapath=None,
                  num_samples=10000, 
                  num_range_bins=64, 
@@ -73,6 +75,7 @@ def __init__(self,
         # Store parameters
         self.training = training
         self.drawfig = drawfig
+        self.num_samples = num_samples
         self.num_range_bins = num_range_bins
         self.num_doppler_bins = num_doppler_bins
         self.snr_min = snr_min
