@@ -7,6 +7,26 @@ import matplotlib.pyplot as plt
 import os
 from tqdm.auto import tqdm
 import csv
+import time
+from matplotlib.ticker import FormatStrFormatter
+import pandas as pd
+try:
+    import seaborn as sns
+except ImportError:
+    import matplotlib.pyplot as plt
+    # Create a basic replacement for seaborn's heatmap
+    def heatmap(data, ax=None, cmap='viridis', annot=False, fmt='.2f', **kwargs):
+        if ax is None:
+            ax = plt.gca()
+        im = ax.imshow(data, cmap=cmap)
+        plt.colorbar(im)
+        if annot:
+            for i in range(data.shape[0]):
+                for j in range(data.shape[1]):
+                    ax.text(j, i, fmt.format(data[i, j]), ha='center', va='center')
+        return im
+    sns = type('Sns', (), {'heatmap': heatmap})()
+#from tqdm import tqdm
 
 from AIradar_dataset import RadarDataset
 
@@ -926,7 +946,7 @@ def train_radar_modelv2(output_dir,
         print('-' * 60)
         
         # Visualize training progress
-        if visualize_progress and epoch % 5 == 0:
+        if visualize_progress: # and epoch % 5 == 0:
             # Plot loss curves
             plt.figure(figsize=(15, 5))
             
@@ -955,6 +975,9 @@ def train_radar_modelv2(output_dir,
             plt.grid(True)
             
             plt.tight_layout()
+            # Ensure visualization directory exists
+            vis_dir = os.path.join(output_dir, 'visualizations')
+            os.makedirs(vis_dir, exist_ok=True)
             plt.savefig(os.path.join(output_dir, 'visualizations', f'training_progress_epoch_{epoch+1}.pdf'))
             plt.close()
             
@@ -1410,14 +1433,6 @@ def compare_signal_types(
         visualize_progress: Whether to visualize training progress
         snr_test_levels: List of SNR levels to test (in dB), defaults to [0, 5, 10, 15, 20, 25]
     """
-    import os
-    import time
-    import numpy as np
-    import matplotlib.pyplot as plt
-    from matplotlib.ticker import FormatStrFormatter
-    import pandas as pd
-    import seaborn as sns
-    from tqdm import tqdm
     
     # Create output directories
     os.makedirs(output_dir, exist_ok=True)

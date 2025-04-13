@@ -39,6 +39,7 @@ class RadarDataset(Dataset):
                  use_lazy_loading=False,  # Enable lazy loading for HDF5 files
                  use_memory_mapping=False, # Enable memory mapping for NumPy files
                  cache_size=100,         # Number of samples to cache when using lazy loading
+                 precision='float32',     # Data precision: 'float32' or 'float16'
                  apply_realistic_effects=True,  # Apply realistic RF impairments
                  recalculate_rd_map=True):       # Recalculate RD map after applying effects
         """
@@ -69,6 +70,7 @@ class RadarDataset(Dataset):
             use_lazy_loading: Whether to use lazy loading for HDF5 files
             use_memory_mapping: Whether to use memory mapping for NumPy files
             cache_size: Number of samples to cache when using lazy loading
+            precision: Data precision to use ('float32' or 'float16')
             apply_realistic_effects: Whether to apply realistic RF impairments
             recalculate_rd_map: Whether to recalculate RD map after applying effects
         """
@@ -82,6 +84,12 @@ class RadarDataset(Dataset):
         self.snr_max = snr_max
         self.max_targets = max_targets
         self.save_path = save_path
+
+        # Set precision for data (MPS framework doesn't support float64)
+        self.precision = precision
+        if precision not in ['float32', 'float16']:
+            print(f"Warning: Unsupported precision '{precision}'. Using 'float32' instead.")
+            self.precision = 'float32'
         
         # Store SDR parameters
         self.sample_rate = sample_rate
@@ -890,12 +898,16 @@ class RadarDataset(Dataset):
             else:
                 # Lazy loading from HDF5
                 sample = {}
-                sample['feature_2d'] = np.array(self.h5_file['range_doppler_maps'][idx])
-                sample['labels'] = np.array(self.h5_file['target_masks'][idx])
+                # Convert to specified precision (float32 or float16)
+                dtype = np.float32 if self.precision == 'float32' else np.float16
+                
+                # Load and convert data to the specified precision
+                sample['feature_2d'] = np.array(self.h5_file['range_doppler_maps'][idx], dtype=dtype)
+                sample['labels'] = np.array(self.h5_file['target_masks'][idx], dtype=dtype)
                 
                 # Load time_domain data if available
                 if 'time_domain_data' in self.h5_file:
-                    sample['time_domain'] = np.array(self.h5_file['time_domain_data'][idx])
+                    sample['time_domain'] = np.array(self.h5_file['time_domain_data'][idx], dtype=dtype)
                 
                 # Load target info if available
                 if hasattr(self, 'target_info') and self.target_info and idx < len(self.target_info):
@@ -953,15 +965,18 @@ class RadarDataset(Dataset):
                     # Apply zoom to resize
                     time_feature = zoom(time_feature, zoom_factors, order=1)
                 
+            # Set the appropriate dtype based on precision setting
+            dtype = np.float32 if self.precision == 'float32' else np.float16
+            
             sample = {
-                'feature_2d': rd_feature.astype(np.float32),  # [2, num_doppler_bins, num_range_bins]
-                'labels': target_mask.astype(np.float32),     # [num_doppler_bins, num_range_bins, 1]
+                'feature_2d': rd_feature.astype(dtype),  # [2, num_doppler_bins, num_range_bins]
+                'labels': target_mask.astype(dtype),     # [num_doppler_bins, num_range_bins, 1]
                 'target_info': self.target_info[idx] if self.target_info else None
             }
             
             if time_feature is not None:
-                sample['time_domain'] = time_feature.astype(np.float32)  # [num_rx, num_chirps, samples_per_chirp, 2]
-        
+                sample['time_domain'] = time_feature.astype(dtype)  # [num_rx, num_chirps, samples_per_chirp, 2]
+                
         # Apply training augmentations to the loaded data (for both in-memory and h5 data)
         if self.training:
             # Add random noise to make the model more robust
