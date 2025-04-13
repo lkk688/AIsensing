@@ -9,6 +9,7 @@ import random
 from scipy.signal import chirp
 from tqdm import tqdm
 IMG_FORMAT=".pdf" #".png"
+import h5py
 
 class RadarDataset(Dataset):
     def __init__(self, 
@@ -32,7 +33,11 @@ class RadarDataset(Dataset):
                  center_freq=2.1e9,      # Center frequency in Hz (from radarconfig.yaml)
                  num_rx=4,               # Number of RX antennas (typical for Phaser)
                  num_tx=1,               # Number of TX antennas
-                 signal_type='OFDM'):    # Signal type (from radarconfig.yaml)
+                 signal_type='OFDM',     # Signal type (from radarconfig.yaml)
+                 signal_freq=1e6,        # Signal frequency for FMCW modulation (Hz)
+                 use_lazy_loading=False,  # Enable lazy loading for HDF5 files
+                 use_memory_mapping=False, # Enable memory mapping for NumPy files
+                 cache_size=100):        # Number of samples to cache when using lazy loading
         """
         Dataset for radar range-Doppler data
         
@@ -47,58 +52,65 @@ class RadarDataset(Dataset):
             training: Whether this dataset is for training
             drawfig: Whether to draw figures for visualization
             save_data: Whether to save generated data
+            savedataformat: Format to save data ('hdf5' or 'numpy')
+            save_path: Path to save generated data
             sample_rate: Sample rate in Hz
-            chirp_duration: Duration of each chirp in seconds
-            num_chirps: Number of chirps (should match num_doppler_bins)
+            chirp_duration: Chirp duration in seconds
+            num_chirps: Number of chirps
             bandwidth: Bandwidth in Hz
             center_freq: Center frequency in Hz
             num_rx: Number of RX antennas
             num_tx: Number of TX antennas
+            signal_type: Type of radar signal ('FMCW', 'OFDM', or 'Sine')
+            use_lazy_loading: Whether to use lazy loading for HDF5 files
+            use_memory_mapping: Whether to use memory mapping for NumPy files
+            cache_size: Number of samples to cache when using lazy loading
         """
-        self.num_samples = num_samples
+        # Store parameters
+        self.training = training
+        self.drawfig = drawfig
         self.num_range_bins = num_range_bins
         self.num_doppler_bins = num_doppler_bins
         self.snr_min = snr_min
         self.snr_max = snr_max
         self.max_targets = max_targets
-        self.training = training
-        self.drawfig = drawfig
-        
-        # SDR parameters
+        self.save_path = save_path
+        # Store SDR parameters
         self.sample_rate = sample_rate
         self.chirp_duration = chirp_duration
         self.num_chirps = num_chirps
         self.bandwidth = bandwidth
         self.center_freq = center_freq
+        self.signal_type = signal_type
+        self.signal_freq = signal_freq
         self.num_rx = num_rx
         self.num_tx = num_tx
-        self.signal_type = signal_type
-        self.save_path = save_path
-        
-        # Add signal frequency parameter (typically a baseband or IF frequency)
-        self.signal_freq = 0  # For baseband signals, or could be set to an IF frequency
-        
-        # Calculate number of samples per chirp
-        self.samples_per_chirp = int(self.chirp_duration * self.sample_rate) #20
-        
-        # Calculate range resolution
+
         self.speed_of_light = 3e8  # m/s
-        self.range_resolution = self.speed_of_light / (2 * self.bandwidth) #1.5
         
-        # Calculate maximum unambiguous range
-        self.max_range = self.range_resolution * self.num_range_bins #96
-        
+        # Calculate derived parameters
+        self.samples_per_chirp = int(self.sample_rate * self.chirp_duration)
+        self.range_resolution = 3e8 / (2 * self.bandwidth)  # c / (2 * B)
+        self.max_range = self.range_resolution * self.num_range_bins
+
         # Calculate velocity resolution
         self.wavelength = self.speed_of_light / self.center_freq
         self.prf = 1 / self.chirp_duration  # Pulse repetition frequency
         self.velocity_resolution = self.wavelength / (2 * self.num_chirps * self.chirp_duration)
         
         # Calculate maximum unambiguous velocity
-        self.max_velocity = self.velocity_resolution * self.num_doppler_bins / 2
+        self.velocity_resolution = 3e8 / (2 * self.center_freq * self.chirp_duration * self.num_chirps)
+        self.max_velocity = self.velocity_resolution * (self.num_doppler_bins // 2)
         
-        if datapath is not None and os.path.exists(datapath):
-            print(f"Loading radar data from {datapath}")
-            self.load_data(datapath)
+        # Initialize lazy loading parameters
+        self.use_lazy_loading = use_lazy_loading
+        self.use_memory_mapping = use_memory_mapping
+        self.h5_file = None
+        self.data_cache = {} if use_lazy_loading else None
+        self.cache_size = cache_size
+
+        if datapath is not None:
+            self._load_data(datapath)
         else:
             print("Generating new radar data")
             self.generate_radar_data(save_data, format=savedataformat)
@@ -704,60 +716,110 @@ class RadarDataset(Dataset):
             np.save(output_file, data_dict, allow_pickle=True, fix_imports=True)
             print(f"Radar simulation data saved to {output_file} using pickle protocol 4")
     
-    def load_data(self, datapath):
-        """Load data from file"""
-        # Check file extension to determine format
-        if datapath.endswith('.h5'):
+    def _load_data(self, datapath):
+        """Load radar data from file with support for lazy loading"""
+        # Check if the file is HDF5 format
+        is_hdf5 = datapath.endswith('.h5') or datapath.endswith('.hdf5')
+        
+        if is_hdf5:
             # HDF5 format
-            try:
-                import h5py
-            except ImportError:
-                raise ImportError("h5py not installed. Please install with 'pip install h5py'")
-            
-            with h5py.File(datapath, 'r') as f:
-                # Load large arrays
-                if 'time_domain_data' in f:
-                    self.time_domain_data = f['time_domain_data'][:]
-                else:
-                    self.time_domain_data = None
-                
-                self.range_doppler_maps = f['range_doppler_maps'][:]
-                self.target_masks = f['target_masks'][:]
+            if self.use_lazy_loading:
+                # Lazy loading - keep file open and load data on demand
+                self.h5_file = h5py.File(datapath, 'r')
                 
                 # Load metadata
-                self.num_range_bins = f['num_range_bins'][()]
-                self.num_doppler_bins = f['num_doppler_bins'][()]
-                snr_range = f['snr_range'][:]
+                self.num_range_bins = self.h5_file['num_range_bins'][()]
+                self.num_doppler_bins = self.h5_file['num_doppler_bins'][()]
+                snr_range = self.h5_file['snr_range'][:]
                 self.snr_min, self.snr_max = snr_range
-                self.max_targets = f['max_targets'][()]
+                self.max_targets = self.h5_file['max_targets'][()]
                 
                 # Load SDR parameters
-                self.sample_rate = f['sample_rate'][()]
-                self.chirp_duration = f['chirp_duration'][()]
-                self.num_chirps = f['num_chirps'][()]
-                self.bandwidth = f['bandwidth'][()]
-                self.center_freq = f['center_freq'][()]
-                self.range_resolution = f['range_resolution'][()]
-                self.velocity_resolution = f['velocity_resolution'][()]
-                self.max_range = f['max_range'][()]
-                self.max_velocity = f['max_velocity'][()]
+                self.sample_rate = self.h5_file['sample_rate'][()]
+                self.chirp_duration = self.h5_file['chirp_duration'][()]
+                self.num_chirps = self.h5_file['num_chirps'][()]
+                self.bandwidth = self.h5_file['bandwidth'][()]
+                self.center_freq = self.h5_file['center_freq'][()]
+                self.range_resolution = self.h5_file['range_resolution'][()]
+                self.velocity_resolution = self.h5_file['velocity_resolution'][()]
+                self.max_range = self.h5_file['max_range'][()]
+                self.max_velocity = self.h5_file['max_velocity'][()]
                 
                 # Load target info from JSON
                 import json
-                if 'target_info_json' in f:
-                    target_info_json = f['target_info_json'][()]
+                if 'target_info_json' in self.h5_file:
+                    target_info_json = self.h5_file['target_info_json'][()]
                     if isinstance(target_info_json, bytes):
                         target_info_json = target_info_json.decode('utf-8')
                     self.target_info = json.loads(target_info_json)
                 else:
                     self.target_info = []
+                
+                # Initialize cache
+                self.data_cache = {}
+                
+                # Get number of samples
+                self.num_samples = self.h5_file['range_doppler_maps'].shape[0]
+            else:
+                # Load everything into memory
+                with h5py.File(datapath, 'r') as f:
+                    # Load data
+                    self.range_doppler_maps = f['range_doppler_maps'][:]
+                    self.target_masks = f['target_masks'][:]
+                    
+                    # Load time domain data if available
+                    if 'time_domain_data' in f:
+                        self.time_domain_data = f['time_domain_data'][:]
+                    else:
+                        self.time_domain_data = None
+                    
+                    # Load metadata
+                    self.num_range_bins = f['num_range_bins'][()]
+                    self.num_doppler_bins = f['num_doppler_bins'][()]
+                    snr_range = f['snr_range'][:]
+                    self.snr_min, self.snr_max = snr_range
+                    self.max_targets = f['max_targets'][()]
+                    
+                    # Load SDR parameters
+                    self.sample_rate = f['sample_rate'][()]
+                    self.chirp_duration = f['chirp_duration'][()]
+                    self.num_chirps = f['num_chirps'][()]
+                    self.bandwidth = f['bandwidth'][()]
+                    self.center_freq = f['center_freq'][()]
+                    self.range_resolution = f['range_resolution'][()]
+                    self.velocity_resolution = f['velocity_resolution'][()]
+                    self.max_range = f['max_range'][()]
+                    self.max_velocity = f['max_velocity'][()]
+                    
+                    # Load target info from JSON
+                    import json
+                    if 'target_info_json' in f:
+                        target_info_json = f['target_info_json'][()]
+                        if isinstance(target_info_json, bytes):
+                            target_info_json = target_info_json.decode('utf-8')
+                        self.target_info = json.loads(target_info_json)
+                    else:
+                        self.target_info = []
+                
+                self.num_samples = len(self.range_doppler_maps)
         else:
             # NumPy format
-            data_dict = np.load(datapath, allow_pickle=True).item()
+            if self.use_memory_mapping:
+                # Use memory mapping for large NumPy files
+                data_dict = np.load(datapath, allow_pickle=True, mmap_mode='r')
+                
+                # For memory mapping, we need to handle the item() differently
+                if isinstance(data_dict, np.ndarray) and data_dict.dtype == np.dtype('O'):
+                    # This is a numpy object array containing a dictionary
+                    # We need to load it into memory to access its contents
+                    data_dict = np.load(datapath, allow_pickle=True).item()
+            else:
+                # Load everything into memory
+                data_dict = np.load(datapath, allow_pickle=True).item()
             
-            self.time_domain_data = data_dict.get('time_domain_data')
-            self.range_doppler_maps = data_dict['range_doppler_maps']
+            self.range_doppler_maps = data_dict.get('range_doppler_maps')
             self.target_masks = data_dict['target_masks']
+            self.time_domain_data = data_dict.get('time_domain_data')
             self.target_info = data_dict.get('target_info', [])
             self.num_range_bins = data_dict['num_range_bins']
             self.num_doppler_bins = data_dict['num_doppler_bins']
@@ -774,8 +836,8 @@ class RadarDataset(Dataset):
             self.velocity_resolution = data_dict.get('velocity_resolution')
             self.max_range = data_dict.get('max_range')
             self.max_velocity = data_dict.get('max_velocity')
-        
-        self.num_samples = len(self.range_doppler_maps)
+            
+            self.num_samples = len(self.range_doppler_maps)
         
         print(f"Loaded {self.num_samples} radar samples")
         
@@ -788,73 +850,108 @@ class RadarDataset(Dataset):
         return self.num_samples
     
     def __getitem__(self, idx):
-        # Add some noise variation for training robustness
-        if self.training:
-            # Add random noise to make the model more robust
-            noise_level = random.uniform(0.05, 0.2)
-            noise = np.random.normal(0, noise_level, self.range_doppler_maps[idx].shape)
-            rd_feature = self.range_doppler_maps[idx] + noise
-            
-            if self.time_domain_data is not None:
-                time_noise = np.random.normal(0, noise_level, self.time_domain_data[idx].shape)
-                time_feature = self.time_domain_data[idx] + time_noise
+        # Check if we're using lazy loading with h5py
+        if self.use_lazy_loading and self.h5_file is not None:
+            # Check if the sample is already in cache
+            if idx in self.data_cache:
+                sample = self.data_cache[idx]
             else:
-                time_feature = None
+                # Lazy loading from HDF5
+                sample = {}
+                sample['feature_2d'] = np.array(self.h5_file['range_doppler_maps'][idx])
+                sample['labels'] = np.array(self.h5_file['target_masks'][idx])
+                
+                # Load time_domain data if available
+                if 'time_domain_data' in self.h5_file:
+                    sample['time_domain'] = np.array(self.h5_file['time_domain_data'][idx])
+                
+                # Load target info if available
+                if hasattr(self, 'target_info') and self.target_info and idx < len(self.target_info):
+                    sample['target_info'] = self.target_info[idx]
+                
+                # Add to cache if we're using caching
+                # Manage cache size
+                if len(self.data_cache) >= self.cache_size:
+                    # Remove oldest item if cache is full
+                    self.data_cache.pop(next(iter(self.data_cache)))
+                self.data_cache[idx] = sample
         else:
+            # Original implementation for in-memory data
             rd_feature = self.range_doppler_maps[idx]
             time_feature = self.time_domain_data[idx] if self.time_domain_data is not None else None
-        
-        # Ensure consistent shapes for all samples
-        # For range-Doppler maps
-        if rd_feature.shape[1] != self.num_doppler_bins or rd_feature.shape[2] != self.num_range_bins:
-            # Resize using interpolation if needed
-            from scipy.ndimage import zoom
+            target_mask = self.target_masks[idx]
             
-            # Calculate zoom factors for each dimension
-            zoom_factors = (1, self.num_doppler_bins / rd_feature.shape[1], 
-                           self.num_range_bins / rd_feature.shape[2])
-            
-            # Apply zoom to resize
-            rd_feature = zoom(rd_feature, zoom_factors, order=1)
-        
-        # For target masks
-        target_mask = self.target_masks[idx]
-        if target_mask.shape[0] != self.num_doppler_bins or target_mask.shape[1] != self.num_range_bins:
-            # Resize using interpolation
-            from scipy.ndimage import zoom
-            
-            # Calculate zoom factors
-            zoom_factors = (self.num_doppler_bins / target_mask.shape[0], 
-                           self.num_range_bins / target_mask.shape[1], 1)
-            
-            # Apply zoom to resize
-            target_mask = zoom(target_mask, zoom_factors, order=1)
-        
-        # For time domain data
-        if time_feature is not None:
-            if (time_feature.shape[1] != self.num_chirps or 
-                time_feature.shape[2] != self.samples_per_chirp):
+            # Ensure consistent shapes for all samples
+            # For range-Doppler maps
+            if rd_feature.shape[1] != self.num_doppler_bins or rd_feature.shape[2] != self.num_range_bins:
+                # Resize using interpolation if needed
+                from scipy.ndimage import zoom
                 
+                # Calculate zoom factors for each dimension
+                zoom_factors = (1, self.num_doppler_bins / rd_feature.shape[1], 
+                               self.num_range_bins / rd_feature.shape[2])
+                
+                # Apply zoom to resize
+                rd_feature = zoom(rd_feature, zoom_factors, order=1)
+            
+            # For target masks
+            if target_mask.shape[0] != self.num_doppler_bins or target_mask.shape[1] != self.num_range_bins:
                 # Resize using interpolation
                 from scipy.ndimage import zoom
                 
                 # Calculate zoom factors
-                zoom_factors = (1, self.num_chirps / time_feature.shape[1], 
-                               self.samples_per_chirp / time_feature.shape[2], 1)
+                zoom_factors = (self.num_doppler_bins / target_mask.shape[0], 
+                               self.num_range_bins / target_mask.shape[1], 1)
                 
                 # Apply zoom to resize
-                time_feature = zoom(time_feature, zoom_factors, order=1)
+                target_mask = zoom(target_mask, zoom_factors, order=1)
             
-        batch = {
-            'feature_2d': rd_feature.astype(np.float32),  # [2, num_doppler_bins, num_range_bins]
-            'labels': target_mask.astype(np.float32),     # [num_doppler_bins, num_range_bins, 1]
-            'target_info': self.target_info[idx] if self.target_info else None
-        }
+            # For time domain data
+            if time_feature is not None:
+                if (time_feature.shape[1] != self.num_chirps or 
+                    time_feature.shape[2] != self.samples_per_chirp):
+                    
+                    # Resize using interpolation
+                    from scipy.ndimage import zoom
+                    
+                    # Calculate zoom factors
+                    zoom_factors = (1, self.num_chirps / time_feature.shape[1], 
+                                   self.samples_per_chirp / time_feature.shape[2], 1)
+                    
+                    # Apply zoom to resize
+                    time_feature = zoom(time_feature, zoom_factors, order=1)
+                
+            sample = {
+                'feature_2d': rd_feature.astype(np.float32),  # [2, num_doppler_bins, num_range_bins]
+                'labels': target_mask.astype(np.float32),     # [num_doppler_bins, num_range_bins, 1]
+                'target_info': self.target_info[idx] if self.target_info else None
+            }
+            
+            if time_feature is not None:
+                sample['time_domain'] = time_feature.astype(np.float32)  # [num_rx, num_chirps, samples_per_chirp, 2]
         
-        if time_feature is not None:
-            batch['time_domain'] = time_feature.astype(np.float32)  # [num_rx, num_chirps, samples_per_chirp, 2]
+        # Apply training augmentations to the loaded data (for both in-memory and h5 data)
+        if self.training:
+            # Add random noise to make the model more robust
+            noise_level = random.uniform(0.05, 0.2)
+            
+            # Add noise to range-Doppler maps
+            if 'feature_2d' in sample:
+                noise = np.random.normal(0, noise_level, sample['feature_2d'].shape)
+                sample['feature_2d'] = sample['feature_2d'] + noise
+            
+            # Add noise to time domain data if available
+            if 'time_domain' in sample:
+                time_noise = np.random.normal(0, noise_level, sample['time_domain'].shape)
+                sample['time_domain'] = sample['time_domain'] + time_noise
         
-        return batch
+        return sample
+    
+    def __del__(self):
+        # Close the HDF5 file when the dataset is deleted
+        if hasattr(self, 'h5_file') and self.h5_file is not None:
+            self.h5_file.close()
+            print("Closed HDF5 file")
 
 # Test function to evaluate the RadarDataset class
 def test_radar_dataset():

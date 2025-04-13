@@ -585,12 +585,16 @@ def train_radar_modelv2(output_dir,
                      batch_size=32,
                      num_epochs=50,
                      saved_model_path=None,
-                     use_time_domain=False,  # Whether to use time-domain data for training
-                     visualize_progress=True,  # Whether to visualize training progress
+                     use_time_domain=False,
+                     visualize_progress=True,
                      learning_rate=0.001,
-                     signal_type='OFDM',     # Signal type: 'FMCW', 'OFDM', or 'Sine'
+                     signal_type='OFDM',
                      data_format='hdf5',
-                     data_dir='data/radar'):    # Data format: 'numpy' or 'hdf5'
+                     data_dir='data/radar',
+                     num_workers=4,
+                     prefetch_factor=2,
+                     use_lazy_loading=True,  # New parameter to control lazy loading
+                     cache_size=100):        # Cache size for lazy loading
     """
     Train a radar target detection model
     
@@ -605,10 +609,16 @@ def train_radar_modelv2(output_dir,
         learning_rate: Initial learning rate
         signal_type: Type of radar signal to use ('FMCW', 'OFDM', or 'Sine')
         data_format: Format to save/load data ('numpy' or 'hdf5')
+        data_dir: Directory containing radar data
+        num_workers: Number of worker processes for data loading
+        prefetch_factor: Number of batches to prefetch
+        use_lazy_loading: Whether to use lazy loading for HDF5 files
+        cache_size: Number of samples to keep in memory cache for lazy loading
     """
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
-    os.makedirs(os.path.join(output_dir, 'visualizations'), exist_ok=True)
+    os.makedirs(os.path.join(output_dir, signal_type.lower()), exist_ok=True)
+    os.makedirs(os.path.join(output_dir, signal_type.lower(), 'visualizations'), exist_ok=True)
     
     # Set device
     device, useamp = get_device(gpuid='0', useamp=False)
@@ -619,20 +629,53 @@ def train_radar_modelv2(output_dir,
     
     # Create or load dataset
     data_path = os.path.join(data_dir, f'radar_simulation_data_{signal_type.lower()}{file_ext}')
-    #data_path = os.path.join(output_dir, f'radar_simulation_data{file_ext}')
-    # Check for both possible file formats
     numpy_path = os.path.join(data_dir, f'radar_simulation_data_{signal_type.lower()}.npy')
     hdf5_path = os.path.join(data_dir, f'radar_simulation_data_{signal_type.lower()}.h5')
     
-    if os.path.exists(data_path):
-        print(f"Loading existing radar dataset from {data_path}")
-        train_data = RadarDataset(datapath=data_path, training=True, drawfig=visualize_progress)
+    # Load dataset with appropriate method based on file type
+    if os.path.exists(hdf5_path) and use_lazy_loading:
+        print(f"Loading existing radar dataset from {hdf5_path} with lazy loading")
+        train_data = RadarDataset(
+            datapath=hdf5_path, 
+            training=True, 
+            drawfig=visualize_progress,
+            use_lazy_loading=True,  # Enable lazy loading
+            cache_size=cache_size    # Set cache size
+        )
     elif os.path.exists(numpy_path):
-        print(f"Loading existing radar dataset from {numpy_path}")
-        train_data = RadarDataset(datapath=numpy_path, training=True, drawfig=visualize_progress)
-    elif os.path.exists(hdf5_path):
-        print(f"Loading existing radar dataset from {hdf5_path}")
-        train_data = RadarDataset(datapath=hdf5_path, training=True, drawfig=visualize_progress)
+        print(f"Loading existing radar dataset from {numpy_path} with memory mapping")
+        train_data = RadarDataset(
+            datapath=numpy_path, 
+            training=True, 
+            drawfig=visualize_progress,
+            use_memory_mapping=True  # Enable memory mapping
+        )
+    elif os.path.exists(data_path):
+        # Determine loading method based on file extension
+        if data_path.endswith('.h5') and use_lazy_loading:
+            print(f"Loading existing radar dataset from {data_path} with lazy loading")
+            train_data = RadarDataset(
+                datapath=data_path, 
+                training=True, 
+                drawfig=visualize_progress,
+                use_lazy_loading=True,
+                cache_size=cache_size
+            )
+        elif data_path.endswith('.npy'):
+            print(f"Loading existing radar dataset from {data_path} with memory mapping")
+            train_data = RadarDataset(
+                datapath=data_path, 
+                training=True, 
+                drawfig=visualize_progress,
+                use_memory_mapping=True
+            )
+        else:
+            print(f"Loading existing radar dataset from {data_path} with standard loading")
+            train_data = RadarDataset(
+                datapath=data_path, 
+                training=True, 
+                drawfig=visualize_progress
+            )
     else:
         print(f"Generating new radar dataset with {num_samples} samples using {signal_type} signal type")
         print(f"Data will be saved in {data_format} format")
@@ -641,16 +684,16 @@ def train_radar_modelv2(output_dir,
             training=True, 
             drawfig=visualize_progress, 
             save_data=True,
-            savedataformat = data_format,# Use the specified data format
+            savedataformat=data_format,
             # Updated SDR parameters to match real device
-            sample_rate=3e6,             # 3 MHz sampling rate
-            chirp_duration=500e-6,       # 500 microsecond chirp
-            num_chirps=12,               # 12 chirps per frame to match Doppler bins
-            bandwidth=500e6,             # 500 MHz bandwidth
-            center_freq=2.1e9,           # 2.1 GHz center frequency
-            num_rx=4,                    # 4 receive antennas
-            num_tx=1,                    # 1 transmit antenna
-            signal_type=signal_type     # Use the specified signal type          
+            sample_rate=3e6,
+            chirp_duration=500e-6,
+            num_chirps=12,
+            bandwidth=500e6,
+            center_freq=2.1e9,
+            num_rx=4,
+            num_tx=1,
+            signal_type=signal_type
         )
 
     # Check if time-domain data is available
@@ -1150,8 +1193,8 @@ def visualize_detection(input_data, target, prediction, save_path):
 #         model_path=model_path,
 #         output_dir=output_dir
 #     )
-    
-if __name__ == '__main__':
+
+def train_val():
     # Set output directories for training and results
     output_dir = 'data/radar_training'
     results_dir = 'data/radar_results'
@@ -1340,3 +1383,538 @@ if __name__ == '__main__':
     
     print(f"Performance summary saved to {os.path.join(results_dir, 'performance_summary.pdf')}")
     print("\nRadar detection model training and evaluation complete!")
+
+def compare_signal_types(
+    output_dir='data/radar_comparison',
+    data_dir='data/radar',
+    num_samples=10000,
+    batch_size=32,
+    num_epochs=50,
+    learning_rate=0.001,
+    use_time_domain=True,
+    visualize_progress=True,
+    snr_test_levels=None
+):
+    """
+    Train and compare radar detection models using different signal types (FMCW, OFDM, Sine)
+    
+    Args:
+        output_dir: Directory to save comparison results
+        data_dir: Directory containing radar data
+        num_samples: Number of samples to generate if no dataset exists
+        batch_size: Batch size for training
+        num_epochs: Number of training epochs
+        learning_rate: Initial learning rate
+        use_time_domain: Whether to use time-domain data
+        visualize_progress: Whether to visualize training progress
+        snr_test_levels: List of SNR levels to test (in dB), defaults to [0, 5, 10, 15, 20, 25]
+    """
+    import os
+    import time
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import FormatStrFormatter
+    import pandas as pd
+    import seaborn as sns
+    from tqdm import tqdm
+    
+    # Create output directories
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(os.path.join(output_dir, 'models'), exist_ok=True)
+    os.makedirs(os.path.join(output_dir, 'visualizations'), exist_ok=True)
+    
+    # Define signal types to compare
+    signal_types = ['FMCW', 'OFDM', 'Sine']
+    
+    # Define SNR test levels if not provided
+    if snr_test_levels is None:
+        snr_test_levels = [0, 5, 10, 15, 20, 25]
+    
+    # Dictionary to store results
+    results = {
+        'signal_type': [],
+        'snr': [],
+        'detection_accuracy': [],
+        'false_alarm_rate': [],
+        'missed_detection_rate': [],
+        'training_time': [],
+        'val_loss': []
+    }
+    
+    # Dictionary to store training histories
+    histories = {}
+    
+    # Train models for each signal type
+    for signal_type in signal_types:
+        print("\n" + "=" * 80)
+        print(f"TRAINING MODEL FOR {signal_type} SIGNAL")
+        print("=" * 80)
+        
+        # Record training start time
+        start_time = time.time()
+        
+        # Train model
+        model_dir = os.path.join(output_dir, 'models', signal_type.lower())
+        os.makedirs(model_dir, exist_ok=True)
+        
+        model, history = train_radar_modelv2(
+            output_dir=model_dir,
+            num_samples=num_samples,
+            batch_size=batch_size,
+            num_epochs=num_epochs,
+            learning_rate=learning_rate,
+            use_time_domain=use_time_domain,
+            visualize_progress=visualize_progress,
+            signal_type=signal_type,
+            data_dir=data_dir
+        )
+        
+        # Record training end time
+        training_time = time.time() - start_time
+        
+        # Store training history
+        histories[signal_type] = history
+        
+        # Save training time and final validation loss
+        results['signal_type'].append(signal_type)
+        results['snr'].append('Overall')  # Placeholder for overall metrics
+        results['training_time'].append(training_time)
+        results['val_loss'].append(history['val_loss'][-1])
+        results['detection_accuracy'].append(history['detection_accuracy'][-1])
+        results['false_alarm_rate'].append(None)  # Will be filled in during testing
+        results['missed_detection_rate'].append(None)  # Will be filled in during testing
+        
+        print(f"Training completed for {signal_type} in {training_time:.2f} seconds")
+    
+    # Test models at different SNR levels
+    print("\n" + "=" * 80)
+    print("TESTING MODELS AT DIFFERENT SNR LEVELS")
+    print("=" * 80)
+    
+    # Dictionary to store performance metrics by SNR
+    snr_performance = {
+        signal_type: {
+            'snr': [],
+            'detection_accuracy': [],
+            'false_alarm_rate': [],
+            'missed_detection_rate': []
+        } for signal_type in signal_types
+    }
+    
+    # Test each model at different SNR levels
+    for signal_type in signal_types:
+        print(f"\nTesting {signal_type} model at different SNR levels...")
+        
+        # Load the trained model
+        model_path = os.path.join(output_dir, 'models', signal_type.lower(), 'best_radar_model.pth')
+        
+        for snr in tqdm(snr_test_levels, desc=f"Testing {signal_type}"):
+            # Create test dataset with specific SNR
+            test_dataset = RadarDataset(
+                num_samples=100,  # Smaller test set for each SNR level
+                training=False,
+                drawfig=False,
+                # Real device parameters
+                sample_rate=3e6,
+                chirp_duration=500e-6,
+                num_chirps=128,
+                bandwidth=500e6,
+                center_freq=2.1e9,
+                num_rx=4,
+                num_tx=1,
+                snr_min=snr,
+                snr_max=snr,  # Fixed SNR for this test
+                signal_type=signal_type
+            )
+            
+            # Test the model
+            detection_accuracy, false_alarm_rate, missed_detection_rate = test_radar_model(
+                model_path=model_path,
+                test_data_path=None,  # Use the dataset we just created
+                output_dir=None  # Don't save visualizations for each SNR test
+            )
+            
+            # Store results
+            results['signal_type'].append(signal_type)
+            results['snr'].append(snr)
+            results['detection_accuracy'].append(detection_accuracy)
+            results['false_alarm_rate'].append(false_alarm_rate)
+            results['missed_detection_rate'].append(missed_detection_rate)
+            results['training_time'].append(None)  # Only relevant for overall results
+            results['val_loss'].append(None)  # Only relevant for overall results
+            
+            # Store in SNR performance dictionary
+            snr_performance[signal_type]['snr'].append(snr)
+            snr_performance[signal_type]['detection_accuracy'].append(detection_accuracy)
+            snr_performance[signal_type]['false_alarm_rate'].append(false_alarm_rate)
+            snr_performance[signal_type]['missed_detection_rate'].append(missed_detection_rate)
+    
+    # Create DataFrame for results
+    results_df = pd.DataFrame(results)
+    
+    # Save results to CSV
+    results_df.to_csv(os.path.join(output_dir, 'signal_type_comparison_results.csv'), index=False)
+    
+    # Generate comparison visualizations
+    print("\n" + "=" * 80)
+    print("GENERATING COMPARISON VISUALIZATIONS")
+    print("=" * 80)
+    
+    # 1. Training Loss Comparison
+    plt.figure(figsize=(12, 8))
+    for signal_type in signal_types:
+        plt.plot(histories[signal_type]['train_loss'], linestyle='-', label=f'{signal_type} Train')
+        plt.plot(histories[signal_type]['val_loss'], linestyle='--', label=f'{signal_type} Val')
+    
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title('Training and Validation Loss Comparison')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(os.path.join(output_dir, 'visualizations', 'loss_comparison.pdf'))
+    plt.close()
+    
+    # 2. Detection Accuracy vs SNR
+    plt.figure(figsize=(12, 8))
+    for signal_type in signal_types:
+        plt.plot(
+            snr_performance[signal_type]['snr'],
+            snr_performance[signal_type]['detection_accuracy'],
+            marker='o',
+            label=signal_type
+        )
+    
+    plt.xlabel('SNR (dB)')
+    plt.ylabel('Detection Accuracy')
+    plt.title('Detection Accuracy vs SNR')
+    plt.legend()
+    plt.grid(True)
+    plt.ylim(0, 1)
+    plt.savefig(os.path.join(output_dir, 'visualizations', 'accuracy_vs_snr.pdf'))
+    plt.close()
+    
+    # 3. False Alarm Rate vs SNR
+    plt.figure(figsize=(12, 8))
+    for signal_type in signal_types:
+        plt.plot(
+            snr_performance[signal_type]['snr'],
+            snr_performance[signal_type]['false_alarm_rate'],
+            marker='o',
+            label=signal_type
+        )
+    
+    plt.xlabel('SNR (dB)')
+    plt.ylabel('False Alarm Rate')
+    plt.title('False Alarm Rate vs SNR')
+    plt.legend()
+    plt.grid(True)
+    plt.ylim(0, 1)
+    plt.savefig(os.path.join(output_dir, 'visualizations', 'false_alarm_vs_snr.pdf'))
+    plt.close()
+    
+    # 4. Missed Detection Rate vs SNR
+    plt.figure(figsize=(12, 8))
+    for signal_type in signal_types:
+        plt.plot(
+            snr_performance[signal_type]['snr'],
+            snr_performance[signal_type]['missed_detection_rate'],
+            marker='o',
+            label=signal_type
+        )
+    
+    plt.xlabel('SNR (dB)')
+    plt.ylabel('Missed Detection Rate')
+    plt.title('Missed Detection Rate vs SNR')
+    plt.legend()
+    plt.grid(True)
+    plt.ylim(0, 1)
+    plt.savefig(os.path.join(output_dir, 'visualizations', 'missed_detection_vs_snr.pdf'))
+    plt.close()
+    
+    # 5. Combined Performance Metrics
+    fig, axes = plt.subplots(3, 1, figsize=(12, 15), sharex=True)
+    
+    # Detection Accuracy
+    for signal_type in signal_types:
+        axes[0].plot(
+            snr_performance[signal_type]['snr'],
+            snr_performance[signal_type]['detection_accuracy'],
+            marker='o',
+            label=signal_type
+        )
+    
+    axes[0].set_ylabel('Detection Accuracy')
+    axes[0].set_title('Detection Performance vs SNR')
+    axes[0].legend()
+    axes[0].grid(True)
+    axes[0].set_ylim(0, 1)
+    
+    # False Alarm Rate
+    for signal_type in signal_types:
+        axes[1].plot(
+            snr_performance[signal_type]['snr'],
+            snr_performance[signal_type]['false_alarm_rate'],
+            marker='o',
+            label=signal_type
+        )
+    
+    axes[1].set_ylabel('False Alarm Rate')
+    axes[1].legend()
+    axes[1].grid(True)
+    axes[1].set_ylim(0, 1)
+    
+    # Missed Detection Rate
+    for signal_type in signal_types:
+        axes[2].plot(
+            snr_performance[signal_type]['snr'],
+            snr_performance[signal_type]['missed_detection_rate'],
+            marker='o',
+            label=signal_type
+        )
+    
+    axes[2].set_xlabel('SNR (dB)')
+    axes[2].set_ylabel('Missed Detection Rate')
+    axes[2].legend()
+    axes[2].grid(True)
+    axes[2].set_ylim(0, 1)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'visualizations', 'combined_performance_vs_snr.pdf'))
+    plt.close()
+    
+    # 6. Create a radar chart for overall performance comparison
+    # Filter for overall metrics
+    overall_df = results_df[results_df['snr'] == 'Overall'].copy()
+    
+    # Create radar chart
+    plt.figure(figsize=(10, 10))
+    
+    # Number of variables
+    categories = ['Detection Accuracy', 'Training Time (normalized)', 'Validation Loss (normalized)']
+    N = len(categories)
+    
+    # Normalize training time (lower is better)
+    max_time = overall_df['training_time'].max()
+    overall_df['training_time_normalized'] = 1 - (overall_df['training_time'] / max_time)
+    
+    # Normalize validation loss (lower is better)
+    max_loss = overall_df['val_loss'].max()
+    overall_df['val_loss_normalized'] = 1 - (overall_df['val_loss'] / max_loss)
+    
+    # What will be the angle of each axis in the plot
+    angles = [n / float(N) * 2 * np.pi for n in range(N)]
+    angles += angles[:1]  # Close the loop
+    
+    # Initialize the plot
+    ax = plt.subplot(111, polar=True)
+    
+    # Draw one axis per variable and add labels
+    plt.xticks(angles[:-1], categories, size=12)
+    
+    # Draw ylabels
+    ax.set_rlabel_position(0)
+    plt.yticks([0.25, 0.5, 0.75], ["0.25", "0.5", "0.75"], color="grey", size=10)
+    plt.ylim(0, 1)
+    
+    # Plot each signal type
+    for i, signal_type in enumerate(signal_types):
+        values = overall_df[overall_df['signal_type'] == signal_type]
+        stats = [
+            values['detection_accuracy'].values[0],
+            values['training_time_normalized'].values[0],
+            values['val_loss_normalized'].values[0]
+        ]
+        stats += stats[:1]  # Close the loop
+        
+        # Plot values
+        ax.plot(angles, stats, linewidth=2, linestyle='solid', label=signal_type)
+        ax.fill(angles, stats, alpha=0.1)
+    
+    # Add legend
+    plt.legend(loc='upper right', bbox_to_anchor=(0.1, 0.1))
+    plt.title('Overall Performance Comparison', size=15)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'visualizations', 'radar_chart_comparison.pdf'))
+    plt.close()
+    
+    # 7. Create detailed SNR vs Performance heatmaps
+    # Prepare data for heatmaps
+    snr_metrics = results_df[results_df['snr'] != 'Overall'].copy()
+    
+    # Pivot tables for each metric
+    accuracy_pivot = snr_metrics.pivot(index='signal_type', columns='snr', values='detection_accuracy')
+    false_alarm_pivot = snr_metrics.pivot(index='signal_type', columns='snr', values='false_alarm_rate')
+    missed_detection_pivot = snr_metrics.pivot(index='signal_type', columns='snr', values='missed_detection_rate')
+    
+    # Create heatmaps
+    plt.figure(figsize=(15, 15))
+    
+    # Detection Accuracy Heatmap
+    plt.subplot(3, 1, 1)
+    sns.heatmap(accuracy_pivot, annot=True, cmap='viridis', vmin=0, vmax=1, fmt='.3f')
+    plt.title('Detection Accuracy by Signal Type and SNR')
+    plt.ylabel('Signal Type')
+    
+    # False Alarm Rate Heatmap
+    plt.subplot(3, 1, 2)
+    sns.heatmap(false_alarm_pivot, annot=True, cmap='coolwarm_r', vmin=0, vmax=1, fmt='.3f')
+    plt.title('False Alarm Rate by Signal Type and SNR')
+    plt.ylabel('Signal Type')
+    
+    # Missed Detection Rate Heatmap
+    plt.subplot(3, 1, 3)
+    sns.heatmap(missed_detection_pivot, annot=True, cmap='coolwarm_r', vmin=0, vmax=1, fmt='.3f')
+    plt.title('Missed Detection Rate by Signal Type and SNR')
+    plt.ylabel('Signal Type')
+    plt.xlabel('SNR (dB)')
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'visualizations', 'performance_heatmaps.pdf'))
+    plt.close()
+    
+    # 8. Create a 3D visualization comparing all three signal types
+    from mpl_toolkits.mplot3d import Axes3D
+    
+    fig = plt.figure(figsize=(15, 10))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Plot each signal type
+    markers = ['o', '^', 's']
+    for i, signal_type in enumerate(signal_types):
+        snr = snr_performance[signal_type]['snr']
+        accuracy = snr_performance[signal_type]['detection_accuracy']
+        false_alarm = snr_performance[signal_type]['false_alarm_rate']
+        
+        ax.scatter(
+            snr, 
+            accuracy, 
+            false_alarm, 
+            marker=markers[i], 
+            s=100, 
+            label=signal_type,
+            alpha=0.7
+        )
+        
+        # Add connecting lines
+        ax.plot(
+            snr, 
+            accuracy, 
+            false_alarm, 
+            linestyle='-', 
+            alpha=0.5
+        )
+    
+    ax.set_xlabel('SNR (dB)')
+    ax.set_ylabel('Detection Accuracy')
+    ax.set_zlabel('False Alarm Rate')
+    ax.set_title('3D Performance Comparison')
+    
+    # Set axis limits
+    ax.set_ylim(0, 1)
+    ax.set_zlim(0, 1)
+    
+    # Add legend
+    ax.legend()
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'visualizations', '3d_performance_comparison.pdf'))
+    plt.close()
+    
+    # 9. Create ROC-like curves (Detection Accuracy vs False Alarm Rate)
+    plt.figure(figsize=(12, 8))
+    
+    for signal_type in signal_types:
+        plt.plot(
+            snr_performance[signal_type]['false_alarm_rate'],
+            snr_performance[signal_type]['detection_accuracy'],
+            marker='o',
+            label=signal_type
+        )
+        
+        # Add SNR annotations
+        for i, snr in enumerate(snr_performance[signal_type]['snr']):
+            plt.annotate(
+                f"{snr} dB",
+                (snr_performance[signal_type]['false_alarm_rate'][i], 
+                 snr_performance[signal_type]['detection_accuracy'][i]),
+                textcoords="offset points",
+                xytext=(0, 10),
+                ha='center'
+            )
+    
+    plt.xlabel('False Alarm Rate')
+    plt.ylabel('Detection Accuracy')
+    plt.title('Detection Accuracy vs False Alarm Rate (ROC-like curve)')
+    plt.legend()
+    plt.grid(True)
+    plt.xlim(0, 1)
+    plt.ylim(0, 1)
+    plt.savefig(os.path.join(output_dir, 'visualizations', 'roc_like_curves.pdf'))
+    plt.close()
+    
+    # 10. Create a summary table visualization
+    # Prepare summary data
+    summary_data = []
+    
+    for signal_type in signal_types:
+        # Get best SNR performance
+        best_snr_idx = np.argmax(snr_performance[signal_type]['detection_accuracy'])
+        best_snr = snr_performance[signal_type]['snr'][best_snr_idx]
+        best_accuracy = snr_performance[signal_type]['detection_accuracy'][best_snr_idx]
+        
+        # Get worst SNR performance
+        worst_snr_idx = np.argmin(snr_performance[signal_type]['detection_accuracy'])
+        worst_snr = snr_performance[signal_type]['snr'][worst_snr_idx]
+        worst_accuracy = snr_performance[signal_type]['detection_accuracy'][worst_snr_idx]
+        
+        # Get training time
+        training_time = overall_df[overall_df['signal_type'] == signal_type]['training_time'].values[0]
+        
+        summary_data.append([
+            signal_type,
+            best_accuracy,
+            best_snr,
+            worst_accuracy,
+            worst_snr,
+            training_time / 60  # Convert to minutes
+        ])
+    
+    # Create summary table
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.axis('tight')
+    ax.axis('off')
+    
+    table = ax.table(
+        cellText=summary_data,
+        colLabels=['Signal Type', 'Best Accuracy', 'Best SNR (dB)', 'Worst Accuracy', 'Worst SNR (dB)', 'Training Time (min)'],
+        loc='center',
+        cellLoc='center'
+    )
+    
+    table.auto_set_font_size(False)
+    table.set_fontsize(12)
+    table.scale(1.2, 1.5)
+    
+    plt.title('Performance Summary by Signal Type', fontsize=16, pad=20)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'visualizations', 'summary_table.pdf'))
+    plt.close()
+    
+    print(f"Comparison completed. Results saved to {output_dir}")
+    return results_df, histories, snr_performance
+
+# Add this to the main function to run the comparison
+if __name__ == '__main__':
+    # Uncomment to run the signal type comparison
+    compare_signal_types(
+        output_dir='/Users/kaikailiu/Documents/MyRepo/radarsensing/data/radar_comparison',
+        data_dir='/Users/kaikailiu/Documents/MyRepo/radarsensing/data/radar',
+        num_samples=10000,
+        batch_size=32,
+        num_epochs=20,  # Reduced for faster comparison
+        snr_test_levels=[0, 5, 10, 15, 20, 25]  # Test at these SNR levels
+    )
+
+# if __name__ == '__main__':
+#     train_val()
