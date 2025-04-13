@@ -161,17 +161,26 @@ class RadarTimeNet(nn.Module):
     
     def learnable_fft(self, x):
         """Apply learnable FFT-like transform to time domain data"""
-        # x shape: [batch, 1, num_chirps, samples_per_chirp, 2]
-        batch_size = x.shape[0]
+        # x shape: [batch, 1, num_chirps, samples_per_chirp, 2] or [batch, 1, num_chirps, samples_per_chirp, 1]
+        batch_size = x.shape[0] #[32, 1, 12, 64, 1]
+        
+        # Check if we have complex data (last dimension size 2) or just real data (last dimension size 1)
+        has_complex = x.shape[-1] == 2
         
         # Extract real and imaginary parts
-        x_real = x[:, 0, :, :, 0]  # [batch, num_chirps, samples_per_chirp]
-        x_imag = x[:, 0, :, :, 1]  # [batch, num_chirps, samples_per_chirp]
+        if has_complex:
+            x_real = x[:, 0, :, :, 0]  # [batch, num_chirps, samples_per_chirp]
+            x_imag = x[:, 0, :, :, 1]  # [batch, num_chirps, samples_per_chirp]
+        else:
+            # If we only have real data, set imaginary part to zeros
+            x_real = x[:, 0, :, :, 0]  # [batch, num_chirps, samples_per_chirp]
+            x_imag = torch.zeros_like(x_real)  # [batch, num_chirps, samples_per_chirp]
         
+        # Rest of the method remains the same
         # Apply range FFT weights
         range_real = torch.zeros(batch_size, self.num_chirps, self.out_range_bins, device=x.device)
         range_imag = torch.zeros(batch_size, self.num_chirps, self.out_range_bins, device=x.device)
-        
+
         for b in range(batch_size):
             for c in range(self.num_chirps):
                 for r in range(self.out_range_bins):
@@ -223,32 +232,32 @@ class RadarTimeNet(nn.Module):
         Returns:
             Detection map of shape [batch, out_doppler_bins, out_range_bins, 1]
         """
-        batch_size = x.shape[0]
+        batch_size = x.shape[0] #torch.Size([32, 4, 12, 1500, 2]
         
         # Permute input to put channels (I/Q) first
         # [batch, num_rx, num_chirps, samples_per_chirp, 2] -> [batch, 2, num_rx, num_chirps, samples_per_chirp]
-        x = x.permute(0, 4, 1, 2, 3)
+        x = x.permute(0, 4, 1, 2, 3) #torch.Size([32, 2, 4, 12, 1500])
         
         # Apply 3D convolutions to process time samples
         x = self.time_conv(x)  # [batch, 32, num_rx, num_chirps, samples_per_chirp]
-        
+        #[32, 32, 4, 12, 1500]
         # Process across receivers
-        x = self.rx_conv(x)  # [batch, 32, 1, num_chirps, samples_per_chirp]
-        x = x.squeeze(2)  # [batch, 32, num_chirps, samples_per_chirp]
+        x = self.rx_conv(x)  # [batch, 32, 1, num_chirps, samples_per_chirp] [32, 32, 1, 12, 1500]
+        x = x.squeeze(2)  # [batch, 32, num_chirps, samples_per_chirp] [32, 32, 12, 1500]
         
         # Reshape to process chirps
-        x = x.reshape(batch_size, -1, self.samples_per_chirp)  # [batch, 32*num_chirps, samples_per_chirp]
-        x = x.unsqueeze(-1)  # [batch, 32*num_chirps, samples_per_chirp, 1]
-        x = x.permute(0, 1, 3, 2)  # [batch, 32*num_chirps, 1, samples_per_chirp]
+        x = x.reshape(batch_size, -1, self.samples_per_chirp)  # [batch, 32*num_chirps, samples_per_chirp] [32, 384, 1500]
+        x = x.unsqueeze(-1)  # [batch, 32*num_chirps, samples_per_chirp, 1] [32, 384, 1500, 1]
+        x = x.permute(0, 1, 3, 2)  # [batch, 32*num_chirps, 1, samples_per_chirp] [32, 384, 1, 1500]
         
         # Apply 2D convolutions for further processing
-        x = self.chirp_conv(x)  # [batch, 64, 1, samples_per_chirp]
+        x = self.chirp_conv(x)  # [batch, 64, 1, samples_per_chirp] [32, 64, 1, 1500]
         
         # Process for range-Doppler information
-        x = self.rd_conv(x)  # [batch, 128, 1, samples_per_chirp]
+        x = self.rd_conv(x)  # [batch, 128, 1, samples_per_chirp] [32, 128, 1, 1500]
         
         # Upsample to match output dimensions
-        x = self.upsample(x)  # [batch, 1, out_doppler_bins, out_range_bins]
+        x = self.upsample(x)  # [batch, 1, out_doppler_bins, out_range_bins] [32, 1, 12, 64]
         
         # Optional: Add learnable FFT output
         if hasattr(self, 'fft_weights_range') and hasattr(self, 'fft_weights_doppler'):
@@ -263,6 +272,150 @@ class RadarTimeNet(nn.Module):
         x = x.permute(0, 2, 3, 1)  # [batch, out_doppler_bins, out_range_bins, 1]
         
         return x
+
+class RadarTimeToFreqNet(nn.Module):
+    def __init__(self, num_rx=2, num_chirps=12, samples_per_chirp=20, out_doppler_bins=12, out_range_bins=64):
+        """
+        Neural network that converts time-domain radar data to frequency domain
+        and then uses RadarNet for detection
+        
+        Args:
+            num_rx: Number of receiver antennas
+            num_chirps: Number of chirps in a frame
+            samples_per_chirp: Number of time samples per chirp
+            out_doppler_bins: Number of Doppler bins in output
+            out_range_bins: Number of range bins in output
+        """
+        super(RadarTimeToFreqNet, self).__init__()
+        
+        # Store dimensions
+        self.num_rx = num_rx
+        self.num_chirps = num_chirps
+        self.samples_per_chirp = samples_per_chirp
+        self.out_doppler_bins = out_doppler_bins
+        self.out_range_bins = out_range_bins
+        
+        # Create the RadarNet model for processing range-Doppler maps
+        self.radar_net = RadarNet(in_channels=2, out_channels=1)
+        
+        # Learnable FFT weights for range dimension
+        self.range_fft_weights = nn.Parameter(
+            torch.randn(samples_per_chirp, out_range_bins, 2)
+        )
+        
+        # Learnable FFT weights for Doppler dimension
+        self.doppler_fft_weights = nn.Parameter(
+            torch.randn(num_chirps, out_doppler_bins, 2)
+        )
+        
+        # Optional: Add convolutional layers to preprocess time-domain data
+        self.time_preprocess = nn.Sequential(
+            nn.Conv3d(2, 8, kernel_size=(1, 1, 3), padding=(0, 0, 1)),
+            nn.BatchNorm3d(8),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(8, 2, kernel_size=(1, 1, 3), padding=(0, 0, 1)),
+            nn.BatchNorm3d(2),
+            nn.ReLU(inplace=True)
+        )
+    
+    def complex_multiply(self, a_real, a_imag, b_real, b_imag):
+        """Complex multiplication: (a_real + j*a_imag) * (b_real + j*b_imag)"""
+        real_part = a_real * b_real - a_imag * b_imag
+        imag_part = a_real * b_imag + a_imag * b_real
+        return real_part, imag_part
+    
+    def time_to_frequency(self, x):
+        """
+        Convert time-domain data to frequency domain (range-Doppler map)
+        
+        Args:
+            x: Time-domain data [batch, num_rx, num_chirps, samples_per_chirp, 2]
+                where the last dimension contains I/Q data
+        
+        Returns:
+            Range-Doppler map [batch, 2, out_doppler_bins, out_range_bins]
+                where the first dimension contains real/imaginary parts
+        """
+        batch_size = x.shape[0]
+        
+        # Optional: Preprocess time-domain data
+        # Permute to [batch, 2, num_rx, num_chirps, samples_per_chirp]
+        x_processed = x.permute(0, 4, 1, 2, 3)
+        x_processed = self.time_preprocess(x_processed)
+        # Permute back to [batch, num_rx, num_chirps, samples_per_chirp, 2]
+        x_processed = x_processed.permute(0, 2, 3, 4, 1)
+        
+        # Sum across receivers for simplicity (could be more sophisticated)
+        x_summed = x_processed.sum(dim=1)  # [batch, num_chirps, samples_per_chirp, 2]
+        
+        # Extract real and imaginary parts
+        x_real = x_summed[:, :, :, 0]  # [batch, num_chirps, samples_per_chirp]
+        x_imag = x_summed[:, :, :, 1]  # [batch, num_chirps, samples_per_chirp]
+        
+        # Apply range FFT (first dimension)
+        range_real = torch.zeros(batch_size, self.num_chirps, self.out_range_bins, device=x.device)
+        range_imag = torch.zeros(batch_size, self.num_chirps, self.out_range_bins, device=x.device)
+        
+        # For each batch and chirp, compute range FFT
+        for b in range(batch_size):
+            for c in range(self.num_chirps):
+                for r in range(self.out_range_bins):
+                    # Get FFT weights for this range bin
+                    w_real = self.range_fft_weights[:, r, 0]
+                    w_imag = self.range_fft_weights[:, r, 1]
+                    
+                    # Apply weights (complex multiplication)
+                    real_sum, imag_sum = self.complex_multiply(
+                        x_real[b, c], x_imag[b, c], w_real, w_imag
+                    )
+                    
+                    # Sum to get FFT result
+                    range_real[b, c, r] = real_sum.sum()
+                    range_imag[b, c, r] = imag_sum.sum()
+        
+        # Apply Doppler FFT (second dimension)
+        rd_real = torch.zeros(batch_size, self.out_doppler_bins, self.out_range_bins, device=x.device)
+        rd_imag = torch.zeros(batch_size, self.out_doppler_bins, self.out_range_bins, device=x.device)
+        
+        # For each batch, compute Doppler FFT
+        for b in range(batch_size):
+            for d in range(self.out_doppler_bins):
+                for r in range(self.out_range_bins):
+                    # Get FFT weights for this Doppler bin
+                    w_real = self.doppler_fft_weights[:, d, 0]
+                    w_imag = self.doppler_fft_weights[:, d, 1]
+                    
+                    # Apply weights (complex multiplication)
+                    real_sum, imag_sum = self.complex_multiply(
+                        range_real[b, :, r], range_imag[b, :, r], w_real, w_imag
+                    )
+                    
+                    # Sum to get FFT result
+                    rd_real[b, d, r] = real_sum.sum()
+                    rd_imag[b, d, r] = imag_sum.sum()
+        
+        # Stack real and imaginary parts
+        rd_map = torch.stack([rd_real, rd_imag], dim=1)  # [batch, 2, out_doppler_bins, out_range_bins]
+        
+        return rd_map
+    
+    def forward(self, x):
+        """
+        Forward pass
+        
+        Args:
+            x: Time-domain data [batch, num_rx, num_chirps, samples_per_chirp, 2]
+        
+        Returns:
+            Detection map [batch, out_doppler_bins, out_range_bins, 1]
+        """
+        # Convert time-domain data to frequency domain
+        rd_map = self.time_to_frequency(x)
+        
+        # Apply RadarNet for detection
+        detection = self.radar_net(rd_map)
+        
+        return detection
 
 def get_device(gpuid='0', useamp=False):
     if torch.cuda.is_available():
@@ -531,14 +684,22 @@ def train_radar_modelv2(output_dir,
         # For time-domain data, we need a different model architecture
         # Get the shape of time-domain data
         time_shape = train_data[0]['time_domain'].shape  # [num_rx, num_chirps, samples_per_chirp, 2]
-        model = RadarTimeNet(
+        # model = RadarTimeNet(
+        #     num_rx=time_shape[0],
+        #     num_chirps=time_shape[1],
+        #     samples_per_chirp=time_shape[2],
+        #     out_doppler_bins=train_data[0]['labels'].shape[0],
+        #     out_range_bins=train_data[0]['labels'].shape[1]
+        # ).to(device)
+        # print("Using RadarTimeNet model for time-domain data")
+        model = RadarTimeToFreqNet(
             num_rx=time_shape[0],
             num_chirps=time_shape[1],
             samples_per_chirp=time_shape[2],
             out_doppler_bins=train_data[0]['labels'].shape[0],
             out_range_bins=train_data[0]['labels'].shape[1]
         ).to(device)
-        print("Using RadarTimeNet model for time-domain data")
+        print("Using RadarTimeToFreqNet model for time-domain data")
     else:
         # Use the standard RadarNet for range-Doppler maps
         model = RadarNet(in_channels=2, out_channels=1).to(device)
@@ -1013,7 +1174,7 @@ if __name__ == '__main__':
         batch_size=32,              # Mini-batch size for SGD
         num_epochs=50,              # Number of training epochs
         learning_rate=0.001,        # Initial learning rate
-        use_time_domain=False,      # Use range-Doppler maps instead of time domain
+        use_time_domain=True,      # Use range-Doppler maps instead of time domain
         visualize_progress=True,    # Generate visualizations during training
         signal_type=signal_type,     # Use the specified signal type
         data_dir=data_dir
