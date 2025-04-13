@@ -72,3 +72,26 @@ The overall system architecture is shown here:
    - [radarappwdevice3.py](sdradi/radarappwdevice3.py) Latest main entrance file for Radar device
 
 
+## Current work in progress
+### Radar Dataset and Training
+
+- [x] radar_dataset.py: create class RadarDataset, generate radar simulation data and use it for training. 
+   - [x] Update the RadarDataset class to generate time-domain data suitable for software-defined radio devices (new parameters for SDR configuration), and add functions to convert this time-domain data to the range-doppler domain.
+      - Generates FMCW chirp signals
+      - Simulates target reflections with appropriate time delays and Doppler shifts
+      - Handles multiple RX antennas with spatial diversity
+      - Stores I/Q data in the format [batch, num_rx, num_chirps, samples_per_chirp, 2]
+      - Range-Doppler processing: Converts time-domain data to range-Doppler maps using FFT; Provides both single-sample and batch processing functions
+      - Shows time-domain signals alongside range-Doppler maps for visualization, displays detailed target information, visualizes both I and Q components.
+   - [ ] Generate more realistic radar data with moving targets: class RealisticRadarDataset
+- [] create a training script for the radar target detection model: radar_train.py; create a script to test the trained radar model: radar_test.py
+
+- [ ] Added class Transmiter() and class NNChannelEstimator based on Pytorch inside the AIsim_main2.py to support multiple transmitters
+- [ ] Add class TransformerChannelEstimator in AI_Channel.py and add more comprehensive simulation data-based training and evaluation
+- [ ] complete the trainmain function by implementing a neural network model for OFDM signal processing in AIsim_maindataset2.py
+- [ ] create a new OFDMNet class in AIsim_maindataset3.py that uses transformer architecture and provide better feature extraction and modeling of complex relationships in OFDM signals. Test the Range_doppler plot function.
+- [ ] add a flexible transformer model in AIcomm_radar_models.py that can handle both OFDM communication and radar signal processing: Standard self-attention for OFDM, Range and Doppler attention for radar processing, Learnable positional embeddings, Separate output activations for each mode: 1) Sigmoid for OFDM symbol detection; 2) Tanh for radar target detection. For OFDM communication: Initialize with mode='comm'. For Radar processing: Initialize with mode='radar'
+
+- [ ] AIsionna_radar.py: modify the radar reflection simulation code to use NumPy instead of TensorFlow and create a function that allows users to set up multiple targets with custom parameters.
+- [ ] train_multitask.py: a training script for the DualPurposeTransformer model that handles both OFDM communication and radar sensing tasks. The script will include training, evaluation, and visualization components.
+- [ ] AImodels_joint.py
