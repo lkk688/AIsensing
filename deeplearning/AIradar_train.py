@@ -341,6 +341,7 @@ class RadarTimeToFreqNet(nn.Module):
         # Optional: Preprocess time-domain data
         # Permute to [batch, 2, num_rx, num_chirps, samples_per_chirp]
         x_processed = x.permute(0, 4, 1, 2, 3)
+        x_processed = x_processed.float()
         x_processed = self.time_preprocess(x_processed)
         # Permute back to [batch, num_rx, num_chirps, samples_per_chirp, 2]
         x_processed = x_processed.permute(0, 2, 3, 4, 1)
@@ -1215,7 +1216,7 @@ def train_val():
         output_dir=output_dir, #os.path.join(output_dir, signal_type.lower()),
         num_samples=10000,          # Number of synthetic samples to generate
         batch_size=32,              # Mini-batch size for SGD
-        num_epochs=50,              # Number of training epochs
+        num_epochs=10,              # Number of training epochs
         learning_rate=0.001,        # Initial learning rate
         use_time_domain=True,      # Use range-Doppler maps instead of time domain
         visualize_progress=True,    # Generate visualizations during training
@@ -1906,15 +1907,16 @@ def compare_signal_types(
 
 # Add this to the main function to run the comparison
 if __name__ == '__main__':
+    train_val()
     # Uncomment to run the signal type comparison
-    compare_signal_types(
-        output_dir='data/radar_comparison',
-        data_dir='data/radar',
-        num_samples=10000,
-        batch_size=32,
-        num_epochs=20,  # Reduced for faster comparison
-        snr_test_levels=[0, 5, 10, 15, 20, 25]  # Test at these SNR levels
-    )
+    # compare_signal_types(
+    #     output_dir='data/radar_comparison',
+    #     data_dir='data/radar',
+    #     num_samples=10000,
+    #     batch_size=32,
+    #     num_epochs=20,  # Reduced for faster comparison
+    #     snr_test_levels=[0, 5, 10, 15, 20, 25]  # Test at these SNR levels
+    # )
 
 # if __name__ == '__main__':
 #     train_val()

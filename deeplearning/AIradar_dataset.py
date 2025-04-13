@@ -572,9 +572,21 @@ class RadarDataset(Dataset):
 
     def _visualize_sample(self, idx):
         """Visualize a sample range-Doppler map, time domain signal, and target mask"""
+        # Check if the required attributes exist
+        if not hasattr(self, 'range_doppler_maps') or idx >= len(self.range_doppler_maps):
+            print(f"Warning: Cannot visualize sample {idx}. Range-Doppler maps not available.")
+            return
+            
         rd_map = self.range_doppler_maps[idx]
+        
+        if not hasattr(self, 'target_masks') or idx >= len(self.target_masks):
+            print(f"Warning: Cannot visualize sample {idx}. Target masks not available.")
+            return
+            
         target_mask = self.target_masks[idx, :, :, 0]
-        time_data = self.time_domain_data[idx]
+        
+        # Check if time domain data is available
+        has_time_data = hasattr(self, 'time_domain_data') and self.time_domain_data is not None and idx < len(self.time_domain_data)
         
         # Calculate magnitude from real and imaginary parts
         rd_magnitude = np.sqrt(rd_map[0]**2 + rd_map[1]**2)
@@ -597,34 +609,49 @@ class RadarDataset(Dataset):
         plt.xlabel('Range Bin')
         plt.ylabel('Doppler Bin')
         
-        # Plot time domain signal (first RX, first chirp)
+        # Plot time domain signal if available
         plt.subplot(2, 2, 3)
-        t = np.arange(self.samples_per_chirp) / self.sample_rate * 1e6  # Convert to microseconds
-        plt.plot(t, time_data[0, 0, :, 0], label='I')
-        plt.plot(t, time_data[0, 0, :, 1], label='Q')
-        plt.xlabel('Time (μs)')
-        plt.ylabel('Amplitude')
-        plt.title(f'Time Domain Signal (RX 0, Chirp 0)')
-        plt.legend()
-        plt.grid(True)
+        if has_time_data:
+            time_data = self.time_domain_data[idx]
+            t = np.arange(self.samples_per_chirp) / self.sample_rate * 1e6  # Convert to microseconds
+            plt.plot(t, time_data[0, 0, :, 0], label='I')
+            plt.plot(t, time_data[0, 0, :, 1], label='Q')
+            plt.xlabel('Time (μs)')
+            plt.ylabel('Amplitude')
+            plt.title(f'Time Domain Signal (RX 0, Chirp 0)')
+            plt.legend()
+            plt.grid(True)
+        else:
+            plt.text(0.5, 0.5, 'Time domain data not available', 
+                    horizontalalignment='center', verticalalignment='center')
+            plt.axis('off')
         
-        # Plot target information
+        # Plot target information if available
         plt.subplot(2, 2, 4)
         ax = plt.gca()
         ax.axis('off')
-        target_text = "Target Information:\n"
-        for i, target in enumerate(self.target_info[idx]):
-            target_text += f"Target {i+1}:\n"
-            target_text += f"  Distance: {target['distance']:.2f} m\n"
-            target_text += f"  Velocity: {target['velocity']:.2f} m/s\n"
-            target_text += f"  Range Bin: {target['range_bin']}\n"
-            target_text += f"  Doppler Bin: {target['doppler_bin']}\n"
-            #target_text += f"  SNR: {target['snr']:.2f} dB\n"
-            if 'snr' in target:
-                target_text += f"  SNR: {target['snr']:.2f} dB\n"
-            elif 'rcs' in target:
-                target_text += f"  RCS: {target['rcs']:.2f}\n"
-        plt.text(0, 1, target_text, fontsize=9, verticalalignment='top')
+        
+        # Check if target_info exists and has data for this index
+        has_target_info = (hasattr(self, 'target_info') and 
+                          self.target_info is not None and 
+                          idx < len(self.target_info))
+        
+        if has_target_info:
+            target_text = "Target Information:\n"
+            for i, target in enumerate(self.target_info[idx]):
+                target_text += f"Target {i+1}:\n"
+                target_text += f"  Distance: {target['distance']:.2f} m\n"
+                target_text += f"  Velocity: {target['velocity']:.2f} m/s\n"
+                target_text += f"  Range Bin: {target['range_bin']}\n"
+                target_text += f"  Doppler Bin: {target['doppler_bin']}\n"
+                if 'snr' in target:
+                    target_text += f"  SNR: {target['snr']:.2f} dB\n"
+                elif 'rcs' in target:
+                    target_text += f"  RCS: {target['rcs']:.2f}\n"
+            plt.text(0, 1, target_text, fontsize=9, verticalalignment='top')
+        else:
+            plt.text(0.5, 0.5, 'Target information not available yet', 
+                    horizontalalignment='center', verticalalignment='center')
         
         plt.tight_layout()
         os.makedirs('data/radar', exist_ok=True)
