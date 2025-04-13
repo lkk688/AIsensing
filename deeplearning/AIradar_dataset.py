@@ -11,8 +11,7 @@ from tqdm import tqdm
 IMG_FORMAT=".pdf" #".png"
 import h5py
 
-class RadarDataset(Dataset):
-    def __init__(self, 
+def __init__(self, 
                  datapath=None,
                  num_samples=10000, 
                  num_range_bins=64, 
@@ -37,7 +36,9 @@ class RadarDataset(Dataset):
                  signal_freq=1e6,        # Signal frequency for FMCW modulation (Hz)
                  use_lazy_loading=False,  # Enable lazy loading for HDF5 files
                  use_memory_mapping=False, # Enable memory mapping for NumPy files
-                 cache_size=100):        # Number of samples to cache when using lazy loading
+                 cache_size=100,         # Number of samples to cache when using lazy loading
+                 apply_realistic_effects=True,  # Apply realistic RF impairments
+                 recalculate_rd_map=True):       # Recalculate RD map after applying effects
         """
         Dataset for radar range-Doppler data
         
@@ -62,9 +63,12 @@ class RadarDataset(Dataset):
             num_rx: Number of RX antennas
             num_tx: Number of TX antennas
             signal_type: Type of radar signal ('FMCW', 'OFDM', or 'Sine')
+            signal_freq: Signal frequency for FMCW modulation (Hz)
             use_lazy_loading: Whether to use lazy loading for HDF5 files
             use_memory_mapping: Whether to use memory mapping for NumPy files
             cache_size: Number of samples to cache when using lazy loading
+            apply_realistic_effects: Whether to apply realistic RF impairments
+            recalculate_rd_map: Whether to recalculate RD map after applying effects
         """
         # Store parameters
         self.training = training
@@ -75,6 +79,7 @@ class RadarDataset(Dataset):
         self.snr_max = snr_max
         self.max_targets = max_targets
         self.save_path = save_path
+        
         # Store SDR parameters
         self.sample_rate = sample_rate
         self.chirp_duration = chirp_duration
@@ -85,22 +90,19 @@ class RadarDataset(Dataset):
         self.signal_freq = signal_freq
         self.num_rx = num_rx
         self.num_tx = num_tx
-
-        self.speed_of_light = 3e8  # m/s
+        
+        # Store realistic effects parameters
+        self.apply_realistic_effects = apply_realistic_effects
+        self.recalculate_rd_map = recalculate_rd_map
         
         # Calculate derived parameters
         self.samples_per_chirp = int(self.sample_rate * self.chirp_duration)
         self.range_resolution = 3e8 / (2 * self.bandwidth)  # c / (2 * B)
         self.max_range = self.range_resolution * self.num_range_bins
-
-        # Calculate velocity resolution
-        self.wavelength = self.speed_of_light / self.center_freq
-        self.prf = 1 / self.chirp_duration  # Pulse repetition frequency
-        self.velocity_resolution = self.wavelength / (2 * self.num_chirps * self.chirp_duration)
-        
-        # Calculate maximum unambiguous velocity
         self.velocity_resolution = 3e8 / (2 * self.center_freq * self.chirp_duration * self.num_chirps)
         self.max_velocity = self.velocity_resolution * (self.num_doppler_bins // 2)
+        self.wavelength = 3e8 / self.center_freq  # Wavelength in meters
+        self.speed_of_light = 3e8  # Speed of light in m/s
         
         # Initialize lazy loading parameters
         self.use_lazy_loading = use_lazy_loading
@@ -945,8 +947,264 @@ class RadarDataset(Dataset):
                 time_noise = np.random.normal(0, noise_level, sample['time_domain'].shape)
                 sample['time_domain'] = sample['time_domain'] + time_noise
         
+        # Apply realistic RF impairments to time domain data if available
+        if 'time_domain' in sample and hasattr(self, 'apply_realistic_effects') and self.apply_realistic_effects:
+            sample['time_domain'] = self._apply_realistic_rf_effects(sample['time_domain'], sample.get('target_info'))
+            
+            # Recalculate range-Doppler map from the modified time domain data
+            if self.recalculate_rd_map:
+                # Convert I/Q format back to complex
+                complex_data = sample['time_domain'][..., 0] + 1j * sample['time_domain'][..., 1]
+                
+                # Process using the range-Doppler processing chain
+                rd_map = self._time_to_range_doppler(complex_data)
+                
+                # Update the feature_2d with the new range-Doppler map
+                sample['feature_2d'][0, :, :] = np.real(rd_map)
+                sample['feature_2d'][1, :, :] = np.imag(rd_map)
+        
         return sample
     
+    def _apply_realistic_rf_effects(self, time_data, target_info=None):
+        """Apply realistic RF impairments to time domain data
+        
+        Args:
+            time_data: Time domain data with shape [num_rx, num_chirps, samples_per_chirp, 2]
+            target_info: Optional target information for more accurate path loss modeling
+            
+        Returns:
+            Modified time domain data with realistic impairments
+        """
+        # Make a copy to avoid modifying the original data
+        modified_data = time_data.copy()
+        
+        # Convert I/Q format to complex for easier processing
+        complex_data = modified_data[..., 0] + 1j * modified_data[..., 1]
+        
+        # 1. Apply frequency-dependent path loss
+        # Path loss increases with frequency: PL = 20*log10(4*pi*d/λ)
+        if target_info is not None:
+            for target in target_info:
+                # Extract target distance
+                distance = target.get('distance', 10.0)  # Default to 10m if not specified
+                
+                # Calculate wavelength (λ) from center frequency
+                wavelength = 3e8 / self.center_freq
+                
+                # Calculate path loss in dB
+                path_loss_db = 20 * np.log10(4 * np.pi * distance / wavelength)
+                
+                # Convert to linear scale
+                path_loss_factor = 10 ** (-path_loss_db / 20)
+                
+                # Apply distance-dependent attenuation
+                # This is a simplified model - in reality, the attenuation would be
+                # applied to specific parts of the signal corresponding to this target
+                complex_data *= path_loss_factor
+        
+        # 2. Add phase noise (common in real oscillators)
+        # Phase noise is typically higher at lower frequency offsets
+        phase_noise_level = 0.05  # radians
+        phase_noise = np.random.normal(0, phase_noise_level, complex_data.shape)
+        complex_data *= np.exp(1j * phase_noise)
+        
+        # 3. Add I/Q imbalance (common in real receivers)
+        # I/Q imbalance causes amplitude and phase mismatch between I and Q channels
+        amplitude_imbalance = np.random.uniform(0.9, 1.1)  # 10% amplitude imbalance
+        phase_imbalance = np.random.uniform(-0.1, 0.1)     # 0.1 radians phase imbalance
+        
+        # Apply I/Q imbalance
+        i_component = np.real(complex_data)
+        q_component = np.imag(complex_data)
+        
+        # Imbalanced I/Q
+        i_imbalanced = i_component
+        q_imbalanced = amplitude_imbalance * q_component * np.exp(1j * phase_imbalance)
+        
+        # Recombine
+        complex_data = i_imbalanced + 1j * np.imag(q_imbalanced)
+        
+        # 4. Add antenna crosstalk between RX channels
+        if complex_data.shape[0] > 1:  # Only if we have multiple RX antennas
+            crosstalk_level = 0.05  # 5% crosstalk between adjacent channels
+            
+            # Create a copy of the original data for crosstalk calculation
+            original_data = complex_data.copy()
+            
+            # Apply crosstalk between adjacent RX antennas
+            for rx_idx in range(complex_data.shape[0]):
+                # Left neighbor
+                if rx_idx > 0:
+                    complex_data[rx_idx] += crosstalk_level * original_data[rx_idx-1]
+                
+                # Right neighbor
+                if rx_idx < complex_data.shape[0] - 1:
+                    complex_data[rx_idx] += crosstalk_level * original_data[rx_idx+1]
+        
+        # 5. Add TX to RX leakage (direct coupling between TX and RX antennas)
+        # This creates a strong return at zero range
+        tx_leakage_level = 0.1  # 10% of TX signal leaks directly to RX
+        
+        # Generate a simplified TX leakage signal (strongest at the beginning of the chirp)
+        leakage_profile = np.exp(-np.arange(complex_data.shape[2]) / (complex_data.shape[2] / 5))
+        
+        # Apply to all RX antennas and all chirps
+        for rx_idx in range(complex_data.shape[0]):
+            for chirp_idx in range(complex_data.shape[1]):
+                complex_data[rx_idx, chirp_idx] += tx_leakage_level * leakage_profile
+        
+        # 6. Add frequency-dependent receiver gain variation
+        # Real receivers don't have flat frequency response
+        freq_response = 1 + 0.2 * np.sin(np.linspace(0, 2*np.pi, complex_data.shape[2]))
+        
+        # Apply to all RX antennas and all chirps
+        for rx_idx in range(complex_data.shape[0]):
+            for chirp_idx in range(complex_data.shape[1]):
+                complex_data[rx_idx, chirp_idx] *= freq_response
+        
+        # 7. Add thermal noise (increases with temperature and bandwidth)
+        # Thermal noise power = kTB where k is Boltzmann's constant, T is temperature, B is bandwidth
+        # We'll use a simplified model with a temperature-dependent noise level
+        temperature_kelvin = 290  # Room temperature in Kelvin
+        boltzmann_constant = 1.38e-23  # Boltzmann's constant
+        noise_power = boltzmann_constant * temperature_kelvin * self.bandwidth
+        
+        # Scale to make it visible in the simulation
+        noise_scale = 1e10  # Scaling factor to make noise visible
+        thermal_noise_level = np.sqrt(noise_power * noise_scale)
+        
+        # Generate complex Gaussian noise
+        thermal_noise = (np.random.normal(0, thermal_noise_level, complex_data.shape) + 
+                        1j * np.random.normal(0, thermal_noise_level, complex_data.shape))
+        
+        # Add thermal noise to the signal
+        complex_data += thermal_noise
+        
+        # 8. Add ADC quantization effects
+        # Real ADCs have limited bit depth, causing quantization noise
+        adc_bits = 12  # Typical for radar systems
+        
+        # Find the maximum amplitude for scaling
+        max_amplitude = np.max(np.abs(complex_data))
+        
+        # Calculate the quantization step size
+        quant_step = max_amplitude / (2**(adc_bits-1))
+        
+        # Quantize the real and imaginary parts separately
+        real_part = np.real(complex_data)
+        imag_part = np.imag(complex_data)
+        
+        # Apply quantization
+        real_part_quantized = np.round(real_part / quant_step) * quant_step
+        imag_part_quantized = np.round(imag_part / quant_step) * quant_step
+        
+        # Recombine
+        complex_data = real_part_quantized + 1j * imag_part_quantized
+        
+        # 9. Add occasional phase jumps (common in real PLLs)
+        # With a small probability, add a phase jump to simulate PLL glitches
+        if np.random.random() < 0.1:  # 10% chance of a phase jump
+            jump_location = np.random.randint(0, complex_data.shape[2])
+            jump_angle = np.random.uniform(-np.pi/4, np.pi/4)  # Random phase jump
+            
+            # Apply the phase jump to all samples after the jump location
+            for rx_idx in range(complex_data.shape[0]):
+                for chirp_idx in range(complex_data.shape[1]):
+                    complex_data[rx_idx, chirp_idx, jump_location:] *= np.exp(1j * jump_angle)
+        
+        # Convert back to I/Q format
+        modified_data[..., 0] = np.real(complex_data)
+        modified_data[..., 1] = np.imag(complex_data)
+        
+        return modified_data
+
+    def visualize_realistic_effects(self, idx=0):
+        """Visualize the effects of realistic RF impairments on a sample
+        
+        Args:
+            idx: Index of the sample to visualize
+        """
+        if not hasattr(self, 'apply_realistic_effects') or not self.apply_realistic_effects:
+            print("Realistic effects are not enabled. Please set apply_realistic_effects=True")
+            return
+        
+        # Get the original sample
+        original_sample = self[idx]
+        
+        # Temporarily disable realistic effects
+        self.apply_realistic_effects = False
+        clean_sample = self[idx]
+        
+        # Re-enable realistic effects
+        self.apply_realistic_effects = True
+        
+        # Create visualization
+        plt.figure(figsize=(15, 12))
+        
+        # 1. Compare time domain signals (first RX, first chirp)
+        plt.subplot(3, 2, 1)
+        t = np.arange(self.samples_per_chirp) / self.sample_rate * 1e6  # Convert to microseconds
+        plt.plot(t, clean_sample['time_domain'][0, 0, :, 0], 'b-', label='Clean I')
+        plt.plot(t, clean_sample['time_domain'][0, 0, :, 1], 'r-', label='Clean Q')
+        plt.xlabel('Time (μs)')
+        plt.ylabel('Amplitude')
+        plt.title('Clean Time Domain Signal (RX 0, Chirp 0)')
+        plt.legend()
+        plt.grid(True)
+        
+        plt.subplot(3, 2, 2)
+        plt.plot(t, original_sample['time_domain'][0, 0, :, 0], 'b-', label='Realistic I')
+        plt.plot(t, original_sample['time_domain'][0, 0, :, 1], 'r-', label='Realistic Q')
+        plt.xlabel('Time (μs)')
+        plt.ylabel('Amplitude')
+        plt.title('Realistic Time Domain Signal (RX 0, Chirp 0)')
+        plt.legend()
+        plt.grid(True)
+        
+        # 2. Compare range-Doppler maps
+        # Calculate magnitude from real and imaginary parts
+        clean_rd_magnitude = np.sqrt(clean_sample['feature_2d'][0]**2 + clean_sample['feature_2d'][1]**2)
+        realistic_rd_magnitude = np.sqrt(original_sample['feature_2d'][0]**2 + original_sample['feature_2d'][1]**2)
+        
+        plt.subplot(3, 2, 3)
+        plt.imshow(20*np.log10(clean_rd_magnitude + 1e-10), aspect='auto', cmap='jet')
+        plt.colorbar(label='Magnitude (dB)')
+        plt.title('Clean Range-Doppler Map')
+        plt.xlabel('Range Bin')
+        plt.ylabel('Doppler Bin')
+        
+        plt.subplot(3, 2, 4)
+        plt.imshow(20*np.log10(realistic_rd_magnitude + 1e-10), aspect='auto', cmap='jet')
+        plt.colorbar(label='Magnitude (dB)')
+        plt.title('Realistic Range-Doppler Map')
+        plt.xlabel('Range Bin')
+        plt.ylabel('Doppler Bin')
+        
+        # 3. Show the difference
+        difference = 20*np.log10(realistic_rd_magnitude + 1e-10) - 20*np.log10(clean_rd_magnitude + 1e-10)
+        
+        plt.subplot(3, 2, 5)
+        plt.imshow(difference, aspect='auto', cmap='coolwarm')
+        plt.colorbar(label='Difference (dB)')
+        plt.title('Difference (Realistic - Clean)')
+        plt.xlabel('Range Bin')
+        plt.ylabel('Doppler Bin')
+        
+        # 4. Show the target mask
+        plt.subplot(3, 2, 6)
+        plt.imshow(original_sample['labels'][:, :, 0], aspect='auto', cmap='gray')
+        plt.colorbar(label='Target Presence')
+        plt.title('Target Mask')
+        plt.xlabel('Range Bin')
+        plt.ylabel('Doppler Bin')
+        
+        plt.tight_layout()
+        os.makedirs('data/radar/realistic_effects', exist_ok=True)
+        plt.savefig(f'data/radar/realistic_effects/comparison_{idx}{IMG_FORMAT}')
+        plt.close()
+        
+        print(f"Visualization saved to data/radar/realistic_effects/comparison_{idx}{IMG_FORMAT}")
+
     def __del__(self):
         # Close the HDF5 file when the dataset is deleted
         if hasattr(self, 'h5_file') and self.h5_file is not None:
@@ -1222,7 +1480,45 @@ def test_radar_dataset():
     
 #     print("Data validation complete!")
 
+def test_realistic_effects():
+    """Test the realistic RF impairments functionality"""
+    print("Testing realistic RF impairments...")
+    
+    # Create a small test dataset with realistic effects enabled
+    test_dataset = RadarDataset(
+        num_samples=5,               # Small number for testing
+        num_range_bins=64,           
+        num_doppler_bins=12,         
+        snr_min=10,                  
+        snr_max=25,                  
+        max_targets=3,               
+        training=False,              
+        drawfig=True,                
+        save_data=False,             
+        sample_rate=3e6,             
+        chirp_duration=500e-6,       
+        num_chirps=12,               
+        bandwidth=500e6,             
+        center_freq=2.1e9,           
+        num_rx=4,                    
+        num_tx=1,                    
+        signal_type='FMCW',          
+        apply_realistic_effects=True,  # Enable realistic effects
+        recalculate_rd_map=True       # Recalculate RD map after applying effects
+    )
+    
+    # Visualize the effects on each sample
+    for i in range(len(test_dataset)):
+        test_dataset.visualize_realistic_effects(i)
+    
+    print("Realistic effects test completed!")
+    return test_dataset
+
+    
+
 if __name__ == '__main__':
+    test_realistic_effects()
+
     # Run the test function with different signal types
     signal_types = ['FMCW', 'OFDM', 'Sine']
     test_datasets = {}
