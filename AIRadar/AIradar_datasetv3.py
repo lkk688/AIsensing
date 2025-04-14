@@ -565,42 +565,61 @@ class RadarDataset(Dataset):
 
     def _save_hdf5(self):
         """Save dataset to HDF5 format"""
-        print(f"Saving dataset to {self.save_path}/radar_data.h5")
+        file_path = f"{self.save_path}/radar_data.h5"
+        print(f"Saving dataset to {file_path}")
+        # Close any existing open file handle to this file
+        if hasattr(self, 'h5_file') and self.h5_file is not None:
+            try:
+                self.h5_file.close()
+                print("Closed previously open HDF5 file")
+            except Exception as e:
+                print(f"Warning when closing existing file: {e}")
         
-        with h5py.File(f"{self.save_path}/radar_data.h5", 'w') as f:
-            # Create datasets
-            f.create_dataset('time_domain_data', data=self.time_domain_data, 
-                            dtype=self.precision, compression='gzip')
-            f.create_dataset('range_doppler_maps', data=self.range_doppler_maps, 
-                            dtype=self.precision, compression='gzip')
-            f.create_dataset('target_masks', data=self.target_masks, 
-                            dtype=self.precision, compression='gzip')
+        # Make sure the file doesn't exist before creating it
+        if os.path.exists(file_path):
+            # Try alternative approach - create a new filename
+            file_path = f"{self.save_path}/radar_data_{int(time.time())}.h5"
+            print(f"File already exist, using alternative filename: {file_path}")
+
+        try:
+            with h5py.File(file_path, 'w') as f:
+                # Create datasets
+                f.create_dataset('time_domain_data', data=self.time_domain_data, 
+                                dtype=self.precision, compression='gzip')
+                f.create_dataset('range_doppler_maps', data=self.range_doppler_maps, 
+                                dtype=self.precision, compression='gzip')
+                f.create_dataset('target_masks', data=self.target_masks, 
+                                dtype=self.precision, compression='gzip')
+                
+                # Store target information as attributes
+                for i, targets in enumerate(self.target_info):
+                    target_group = f.create_group(f'target_info/{i}')
+                    for j, target in enumerate(targets):
+                        target_subgroup = target_group.create_group(f'{j}')
+                        for key, value in target.items():
+                            target_subgroup.attrs[key] = value
+                
+                # Store dataset parameters
+                params = f.create_group('parameters')
+                params.attrs['num_samples'] = self.num_samples
+                params.attrs['num_range_bins'] = self.num_range_bins
+                params.attrs['num_doppler_bins'] = self.num_doppler_bins
+                params.attrs['sample_rate'] = self.sample_rate
+                params.attrs['chirp_duration'] = self.chirp_duration
+                params.attrs['num_chirps'] = self.num_chirps
+                params.attrs['bandwidth'] = self.bandwidth
+                params.attrs['center_freq'] = self.center_freq
+                params.attrs['num_rx'] = self.num_rx
+                params.attrs['num_tx'] = self.num_tx
+                params.attrs['signal_type'] = self.signal_type
+                params.attrs['range_resolution'] = self.range_resolution
+                params.attrs['velocity_resolution'] = self.velocity_resolution
+                params.attrs['max_range'] = self.max_range
+                params.attrs['max_velocity'] = self.max_velocity
             
-            # Store target information as attributes
-            for i, targets in enumerate(self.target_info):
-                target_group = f.create_group(f'target_info/{i}')
-                for j, target in enumerate(targets):
-                    target_subgroup = target_group.create_group(f'{j}')
-                    for key, value in target.items():
-                        target_subgroup.attrs[key] = value
-            
-            # Store dataset parameters
-            params = f.create_group('parameters')
-            params.attrs['num_samples'] = self.num_samples
-            params.attrs['num_range_bins'] = self.num_range_bins
-            params.attrs['num_doppler_bins'] = self.num_doppler_bins
-            params.attrs['sample_rate'] = self.sample_rate
-            params.attrs['chirp_duration'] = self.chirp_duration
-            params.attrs['num_chirps'] = self.num_chirps
-            params.attrs['bandwidth'] = self.bandwidth
-            params.attrs['center_freq'] = self.center_freq
-            params.attrs['num_rx'] = self.num_rx
-            params.attrs['num_tx'] = self.num_tx
-            params.attrs['signal_type'] = self.signal_type
-            params.attrs['range_resolution'] = self.range_resolution
-            params.attrs['velocity_resolution'] = self.velocity_resolution
-            params.attrs['max_range'] = self.max_range
-            params.attrs['max_velocity'] = self.max_velocity
+            print(f"Successfully saved dataset to {file_path}")
+        except Exception as e:
+            print(f"Error saving HDF5 file: {e}")
 
     def _save_numpy(self):
         """Save dataset to NumPy format"""
