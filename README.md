@@ -83,8 +83,15 @@ The overall system architecture is shown here:
       - Stores I/Q data in the format [batch, num_rx, num_chirps, samples_per_chirp, 2]
       - Range-Doppler processing: Converts time-domain data to range-Doppler maps using FFT; Provides both single-sample and batch processing functions
       - Shows time-domain signals alongside range-Doppler maps for visualization, displays detailed target information, visualizes both I and Q components.
+   - [x] Update the RadarDataset class to generate range-Doppler data suitable for software-defined radio devices (new parameters for SDR configuration), and add functions to convert this range-Doppler data to the time-domain domain.
+      - Generates FMCW chirp signals
+      - Simulates target reflections with appropriate time delays and Doppler shifts
+      - Handles multiple RX antennas with spatial diversity
+      - Stores I/Q data in the format [batch, num_rx, num_chirps, samples_per_chirp, 2]
+      - Range-Doppler processing: Converts time-domain data to range-Doppler maps using FFT; Provides both single-sample and batch processing functions
+   - [x] Generate two new data types: 1) OFDM_FMCW : Combines OFDM modulation (within the AD9361's 56 MHz bandwidth limit) with the CN0566 phaser's 500 MHz frequency sweep at 10 GHz; 2) Sine_FMCW : Combines a sine wave carrier (from the AD9361) with the CN0566 phaser's 500 MHz frequency sweep.
    - [ ] Generate more realistic radar data with moving targets: class RealisticRadarDataset
-- [] create a training script for the radar target detection model: radar_train.py; create a script to test the trained radar model: radar_test.py
+- [x] create a training script for the radar target detection model: radar_train.py; create a script to test the trained radar model: radar_test.py
 
 - [ ] Added class Transmiter() and class NNChannelEstimator based on Pytorch inside the AIsim_main2.py to support multiple transmitters
 - [ ] Add class TransformerChannelEstimator in AI_Channel.py and add more comprehensive simulation data-based training and evaluation
