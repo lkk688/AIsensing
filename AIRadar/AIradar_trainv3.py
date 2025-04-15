@@ -29,11 +29,9 @@ except ImportError:
     sns = type('Sns', (), {'heatmap': heatmap})()
 #from tqdm import tqdm
 
-from AIradar_datasetv3 import RadarDataset, print_dataset_info
+from AIradar_datasetv3 import RadarDataset, compare_signal_types
 from AIradar_processing import RadarProcessing
 
-import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
 class ConvBlock(nn.Module):
@@ -359,8 +357,6 @@ class RadarTimeToFreqNet(nn.Module):
             Range-Doppler map [batch, 2, out_doppler_bins, out_range_bins]
                 where the first dimension contains real/imaginary parts
         """
-        # Import the dataset module to use its processing functions
-        from AIradar_datasetv2 import RadarDataset
         
         batch_size = x.shape[0]
         device = x.device
@@ -580,45 +576,38 @@ def custom_collate_fn(batch):
 
 
 #Support for time-domain data with the use_time_domain parameter
-def train_radar_modelv2(output_dir, 
-                     num_samples=10000,
-                     batch_size=32,
-                     num_epochs=50,
-                     saved_model_path=None,
-                     use_time_domain=False,
-                     visualize_progress=True,
-                     learning_rate=0.001,
-                     signal_type='OFDM',
-                     data_format='hdf5',
-                     data_dir='data/radar',
-                     num_workers=4,
-                     prefetch_factor=2,
-                     use_lazy_loading=True,  # New parameter to control lazy loading
-                     cache_size=100):        # Cache size for lazy loading
+def train_radar_modelv2(output_dir, num_samples=5000, batch_size=32, num_epochs=10, 
+                      learning_rate=0.001, use_time_domain=True, visualize_progress=True,
+                      signal_type='FMCW', data_dir=None, dataset_params=None, 
+                      saved_model_path=None, data_format='hdf5', use_lazy_loading=True,
+                      cache_size=100):
     """
-    Train a radar target detection model
+    Train a radar detection model with enhanced support for different signal types
+    and improved data handling.
     
     Args:
         output_dir: Directory to save model and results
-        num_samples: Number of samples to generate if no dataset exists
-        batch_size: Batch size for training
+        num_samples: Number of samples to generate
+        batch_size: Mini-batch size for training
         num_epochs: Number of training epochs
-        saved_model_path: Path to a saved model to continue training
-        use_time_domain: Whether to use time-domain data instead of range-Doppler maps
-        visualize_progress: Whether to visualize training progress
         learning_rate: Initial learning rate
-        signal_type: Type of radar signal to use ('FMCW', 'OFDM', or 'Sine')
-        data_format: Format to save/load data ('numpy' or 'hdf5')
-        data_dir: Directory containing radar data
-        num_workers: Number of worker processes for data loading
-        prefetch_factor: Number of batches to prefetch
+        use_time_domain: Whether to use time-domain data (True) or range-Doppler maps (False)
+        visualize_progress: Whether to generate visualizations during training
+        signal_type: Type of radar signal ('FMCW', 'OFDM', 'Sine', 'OFDM_FMCW', 'Sine_FMCW')
+        data_dir: Directory containing existing radar data
+        dataset_params: Dictionary of parameters for dataset creation
+        saved_model_path: Path to a saved model for continued training
+        data_format: Format to save/load data ('hdf5' or 'numpy')
         use_lazy_loading: Whether to use lazy loading for HDF5 files
-        cache_size: Number of samples to keep in memory cache for lazy loading
+        cache_size: Size of cache for lazy loading
+        
+    Returns:
+        model: Trained radar detection model
+        history: Training history
     """
-    # Create output directory
+    # Create output directory and visualization subdirectory
     os.makedirs(output_dir, exist_ok=True)
-    os.makedirs(os.path.join(output_dir, signal_type.lower()), exist_ok=True)
-    os.makedirs(os.path.join(output_dir, signal_type.lower(), 'visualizations'), exist_ok=True)
+    os.makedirs(os.path.join(output_dir, 'visualizations'), exist_ok=True)
     
     # Set device
     device, useamp = get_device(gpuid='0', useamp=False)
@@ -632,7 +621,7 @@ def train_radar_modelv2(output_dir,
     numpy_path = os.path.join(data_dir, f'radar_simulation_data_{signal_type.lower()}.npy')
     hdf5_path = os.path.join(data_dir, f'radar_simulation_data_{signal_type.lower()}.h5')
     
-        # Load dataset with appropriate method based on file type
+    # Load dataset with appropriate method based on file type
     if os.path.exists(hdf5_path) or os.path.exists(numpy_path) or os.path.exists(data_path):
         # Determine which file exists and use the appropriate loading method
         if os.path.exists(hdf5_path) and use_lazy_loading:
@@ -676,14 +665,19 @@ def train_radar_modelv2(output_dir,
         print(f"Generating new radar dataset with {num_samples} samples using {signal_type} signal type")
         print(f"Data will be saved in {data_format} format")
         
+        # Create save path for the dataset
+        dataset_save_path = os.path.join(data_dir, signal_type.lower())
+        os.makedirs(dataset_save_path, exist_ok=True)
+        
         # Check if dataset_params was provided as a parameter
-        if 'dataset_params' in locals() and dataset_params is not None:
+        if dataset_params is not None:
             # Use the provided dataset parameters
             train_data = RadarDataset(
                 num_samples=num_samples, 
                 training=True, 
                 drawfig=visualize_progress, 
                 save_data=True,
+                save_path=dataset_save_path,
                 savedataformat=data_format,
                 signal_type=signal_type,
                 **dataset_params  # Unpack the dataset parameters
@@ -695,6 +689,7 @@ def train_radar_modelv2(output_dir,
                 training=True, 
                 drawfig=visualize_progress, 
                 save_data=True,
+                save_path=dataset_save_path,
                 savedataformat=data_format,
                 # Updated SDR parameters to match real device
                 sample_rate=3e6,
@@ -714,7 +709,7 @@ def train_radar_modelv2(output_dir,
         use_time_domain = False
     
     # Print dataset information
-    print(f"Dataset size: {len(train_data)}") #10000
+    print(f"Dataset size: {len(train_data)}")
     print(f"Range-Doppler map shape: {train_data[0]['feature_2d'].shape}")
     if has_time_domain:
         print(f"Time-domain data shape: {train_data[0]['time_domain'].shape}")
@@ -724,9 +719,6 @@ def train_radar_modelv2(output_dir,
     val_size = len(train_data) - train_size
     train_set, val_set = torch.utils.data.random_split(train_data, [train_size, val_size])
 
-    # Create data loaders
-    # train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    # val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
     # Create data loaders with custom collate function
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, 
                              num_workers=4, pin_memory=True, collate_fn=custom_collate_fn)
@@ -738,14 +730,8 @@ def train_radar_modelv2(output_dir,
         # For time-domain data, we need a different model architecture
         # Get the shape of time-domain data
         time_shape = train_data[0]['time_domain'].shape  # [num_rx, num_chirps, samples_per_chirp, 2]
-        # model = RadarTimeNet(
-        #     num_rx=time_shape[0],
-        #     num_chirps=time_shape[1],
-        #     samples_per_chirp=time_shape[2],
-        #     out_doppler_bins=train_data[0]['labels'].shape[0],
-        #     out_range_bins=train_data[0]['labels'].shape[1]
-        # ).to(device)
-        # print("Using RadarTimeNet model for time-domain data")
+        
+        # Use the RadarTimeToFreqNet model which has learnable FFT layers
         model = RadarTimeToFreqNet(
             num_rx=time_shape[0],
             num_chirps=time_shape[1],
@@ -782,20 +768,24 @@ def train_radar_modelv2(output_dir,
         'train_loss': [],
         'val_loss': [],
         'detection_accuracy': [],
-        'learning_rate': []
+        'learning_rate': [],
+        'false_alarm_rate': [],
+        'missed_detection_rate': []
     }
     
     # Create CSV file for training history
     history_file = os.path.join(output_dir, 'training_history.csv')
     with open(history_file, 'w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(['epoch', 'train_loss', 'val_loss', 'detection_accuracy', 'learning_rate'])
+        writer.writerow(['epoch', 'train_loss', 'val_loss', 'detection_accuracy', 
+                         'false_alarm_rate', 'missed_detection_rate', 'learning_rate'])
     
     # Training loop
     best_val_loss = float('inf')
     for epoch in range(start_epoch, start_epoch + num_epochs):
         model.train()
         train_loss = 0.0
+        batch_count = 0
         
         # Training phase
         for batch in tqdm(train_loader, desc=f'Epoch {epoch+1}/{start_epoch+num_epochs}'):
@@ -824,6 +814,7 @@ def train_radar_modelv2(output_dir,
                 optimizer.step()
                 
                 train_loss += loss.item()
+                batch_count += 1
             except RuntimeError as e:
                 if "each element in list of batch should be of equal size" in str(e):
                     # Skip this batch due to inconsistent sizes
@@ -833,7 +824,7 @@ def train_radar_modelv2(output_dir,
                     # Re-raise other runtime errors
                     raise e
         
-        avg_train_loss = train_loss / len(train_loader)
+        avg_train_loss = train_loss / max(1, batch_count)
         
         # Validation phase
         model.eval()
@@ -841,6 +832,7 @@ def train_radar_modelv2(output_dir,
         detection_accuracy = 0.0
         false_alarm_rate = 0.0
         missed_detection_rate = 0.0
+        val_batch_count = 0
         
         # Store predictions for visualization
         val_inputs = []
@@ -852,10 +844,16 @@ def train_radar_modelv2(output_dir,
                 try:
                     # Select input data based on mode
                     if use_time_domain:
+                        if isinstance(batch['time_domain'], list):
+                            continue
                         inputs = batch['time_domain'].to(device)
                     else:
+                        if isinstance(batch['feature_2d'], list):
+                            continue
                         inputs = batch['feature_2d'].to(device)
                         
+                    if isinstance(batch['labels'], list):
+                        continue
                     targets = batch['labels'].to(device)
                     
                     outputs = model(inputs)
@@ -873,6 +871,7 @@ def train_radar_modelv2(output_dir,
                     
                     false_alarm_rate += false_alarms
                     missed_detection_rate += missed_detections
+                    val_batch_count += 1
                     
                     # Store first batch for visualization
                     if len(val_inputs) == 0 and visualize_progress:
@@ -893,10 +892,10 @@ def train_radar_modelv2(output_dir,
                         raise e
         
         # Calculate average metrics
-        avg_val_loss = val_loss / len(val_loader)
-        avg_detection_accuracy = detection_accuracy / len(val_loader)
-        avg_false_alarm_rate = false_alarm_rate / len(val_loader)
-        avg_missed_detection_rate = missed_detection_rate / len(val_loader)
+        avg_val_loss = val_loss / max(1, val_batch_count)
+        avg_detection_accuracy = detection_accuracy / max(1, val_batch_count)
+        avg_false_alarm_rate = false_alarm_rate / max(1, val_batch_count)
+        avg_missed_detection_rate = missed_detection_rate / max(1, val_batch_count)
         
         # Update learning rate
         current_lr = optimizer.param_groups[0]['lr']
@@ -906,12 +905,15 @@ def train_radar_modelv2(output_dir,
         history['train_loss'].append(avg_train_loss)
         history['val_loss'].append(avg_val_loss)
         history['detection_accuracy'].append(avg_detection_accuracy)
+        history['false_alarm_rate'].append(avg_false_alarm_rate)
+        history['missed_detection_rate'].append(avg_missed_detection_rate)
         history['learning_rate'].append(current_lr)
         
         # Save history to CSV
         with open(history_file, 'a', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow([epoch+1, avg_train_loss, avg_val_loss, avg_detection_accuracy, current_lr])
+            writer.writerow([epoch+1, avg_train_loss, avg_val_loss, avg_detection_accuracy, 
+                             avg_false_alarm_rate, avg_missed_detection_rate, current_lr])
         
         # Save best model
         if avg_val_loss < best_val_loss:
@@ -922,6 +924,7 @@ def train_radar_modelv2(output_dir,
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_loss': best_val_loss,
                 'use_time_domain': use_time_domain,
+                'signal_type': signal_type,
             }, os.path.join(output_dir, 'best_radar_model.pth'))
             print(f"Saved best model with validation loss: {best_val_loss:.4f}")
         
@@ -936,11 +939,11 @@ def train_radar_modelv2(output_dir,
         print('-' * 60)
         
         # Visualize training progress
-        if visualize_progress: # and epoch % 5 == 0:
+        if visualize_progress:
             # Plot loss curves
-            plt.figure(figsize=(15, 5))
+            plt.figure(figsize=(15, 10))
             
-            plt.subplot(131)
+            plt.subplot(231)
             plt.plot(history['train_loss'], label='Train Loss')
             plt.plot(history['val_loss'], label='Val Loss')
             plt.xlabel('Epoch')
@@ -949,14 +952,23 @@ def train_radar_modelv2(output_dir,
             plt.legend()
             plt.grid(True)
             
-            plt.subplot(132)
+            plt.subplot(232)
             plt.plot(history['detection_accuracy'], label='Accuracy')
             plt.xlabel('Epoch')
             plt.ylabel('Accuracy')
             plt.title('Detection Accuracy')
             plt.grid(True)
             
-            plt.subplot(133)
+            plt.subplot(233)
+            plt.plot(history['false_alarm_rate'], label='False Alarm Rate')
+            plt.plot(history['missed_detection_rate'], label='Missed Detection Rate')
+            plt.xlabel('Epoch')
+            plt.ylabel('Rate')
+            plt.title('Error Rates')
+            plt.legend()
+            plt.grid(True)
+            
+            plt.subplot(234)
             plt.plot(history['learning_rate'], label='LR')
             plt.xlabel('Epoch')
             plt.ylabel('Learning Rate')
@@ -964,11 +976,25 @@ def train_radar_modelv2(output_dir,
             plt.yscale('log')
             plt.grid(True)
             
+            # Visualize FFT weights if using time-domain model
+            if use_time_domain and isinstance(model, RadarTimeToFreqNet):
+                plt.subplot(235)
+                range_fft_weights = model.range_fft.weight.detach().cpu().numpy()
+                range_fft_mag = np.abs(range_fft_weights[0, 0])
+                sns.heatmap(range_fft_mag, cmap='viridis', ax=plt.gca())
+                plt.title('Range FFT Weights')
+                
+                plt.subplot(236)
+                doppler_fft_weights = model.doppler_fft.weight.detach().cpu().numpy()
+                doppler_fft_mag = np.abs(doppler_fft_weights[0, 0])
+                sns.heatmap(doppler_fft_mag, cmap='viridis', ax=plt.gca())
+                plt.title('Doppler FFT Weights')
+            
             plt.tight_layout()
             # Ensure visualization directory exists
             vis_dir = os.path.join(output_dir, 'visualizations')
             os.makedirs(vis_dir, exist_ok=True)
-            plt.savefig(os.path.join(output_dir, 'visualizations', f'training_progress_epoch_{epoch+1}.pdf'))
+            plt.savefig(os.path.join(vis_dir, f'training_progress_epoch_{epoch+1}{IMG_FORMAT}'))
             plt.close()
             
             # Visualize predictions
@@ -978,7 +1004,7 @@ def train_radar_modelv2(output_dir,
                         val_inputs[0][i],
                         val_targets[0][i],
                         val_outputs[0][i],
-                        os.path.join(output_dir, 'visualizations', f'prediction_epoch_{epoch+1}_sample_{i}.pdf')
+                        os.path.join(vis_dir, f'prediction_epoch_{epoch+1}_sample_{i}{IMG_FORMAT}')
                     )
     
     # Save final model
@@ -988,14 +1014,15 @@ def train_radar_modelv2(output_dir,
         'optimizer_state_dict': optimizer.state_dict(),
         'val_loss': avg_val_loss,
         'use_time_domain': use_time_domain,
+        'signal_type': signal_type,
     }, os.path.join(output_dir, 'final_radar_model.pth'))
     
     print(f"Training completed. Final model saved to {os.path.join(output_dir, 'final_radar_model.pth')}")
     
     # Plot final training curves
-    plt.figure(figsize=(15, 5))
+    plt.figure(figsize=(15, 10))
     
-    plt.subplot(131)
+    plt.subplot(231)
     plt.plot(history['train_loss'], label='Train Loss')
     plt.plot(history['val_loss'], label='Val Loss')
     plt.xlabel('Epoch')
@@ -1004,14 +1031,23 @@ def train_radar_modelv2(output_dir,
     plt.legend()
     plt.grid(True)
     
-    plt.subplot(132)
+    plt.subplot(232)
     plt.plot(history['detection_accuracy'], label='Accuracy')
     plt.xlabel('Epoch')
     plt.ylabel('Accuracy')
     plt.title('Detection Accuracy')
     plt.grid(True)
     
-    plt.subplot(133)
+    plt.subplot(233)
+    plt.plot(history['false_alarm_rate'], label='False Alarm Rate')
+    plt.plot(history['missed_detection_rate'], label='Missed Detection Rate')
+    plt.xlabel('Epoch')
+    plt.ylabel('Rate')
+    plt.title('Error Rates')
+    plt.legend()
+    plt.grid(True)
+    
+    plt.subplot(234)
     plt.plot(history['learning_rate'], label='LR')
     plt.xlabel('Epoch')
     plt.ylabel('Learning Rate')
@@ -1019,8 +1055,22 @@ def train_radar_modelv2(output_dir,
     plt.yscale('log')
     plt.grid(True)
     
+    # Visualize final FFT weights if using time-domain model
+    if use_time_domain and isinstance(model, RadarTimeToFreqNet):
+        plt.subplot(235)
+        range_fft_weights = model.range_fft.weight.detach().cpu().numpy()
+        range_fft_mag = np.abs(range_fft_weights[0, 0])
+        sns.heatmap(range_fft_mag, cmap='viridis', ax=plt.gca())
+        plt.title('Range FFT Weights')
+        
+        plt.subplot(236)
+        doppler_fft_weights = model.doppler_fft.weight.detach().cpu().numpy()
+        doppler_fft_mag = np.abs(doppler_fft_weights[0, 0])
+        sns.heatmap(doppler_fft_mag, cmap='viridis', ax=plt.gca())
+        plt.title('Doppler FFT Weights')
+    
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'training_summary.pdf'))
+    plt.savefig(os.path.join(output_dir, f'training_summary{IMG_FORMAT}'))
     plt.close()
     
     return model, history
@@ -1213,9 +1263,9 @@ def train_val():
     Train and validate radar detection models with updated dataset and processing classes
     """
     # Set output directories for training and results
-    output_dir = 'data/radar_training2'
-    results_dir = 'data/radar_results2'
-    data_dir = 'data/radar'
+    output_dir = 'data/radarv3/training2'
+    results_dir = 'data/radarv3/results2'
+    data_dir = 'data/radarv3'
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(results_dir, exist_ok=True)
     
@@ -1227,12 +1277,14 @@ def train_val():
     print(f"STEP 1: COMPARING DIFFERENT RADAR SIGNAL TYPES")
     print("=" * 80)
     
-    # Use the updated compare_signal_types function
+    # Use the new compare_signal_types function from AIradar_datasetv3.py
+    comparison_dir = os.path.join(data_dir, 'radar_comparison')
+    os.makedirs(comparison_dir, exist_ok=True)
+    
+    # Call the new comparison function that handles multiple signal types
     datasets = compare_signal_types(
-        base_path='data/radar_comparison',
-        signal_types=signal_types,
-        num_samples=50,
-        visualize_samples=5
+        save_path=comparison_dir,
+        num_samples=50
     )
     
     # Step 2: Train models for each signal type
@@ -1261,13 +1313,19 @@ def train_val():
             visualize_progress=True,   # Generate visualizations during training
             signal_type=signal_type,   # Use the specified signal type
             data_dir=data_dir,
-            # Remove the radar parameters that aren't accepted by train_radar_modelv2
+            # Updated radar parameters to match the new dataset implementation
             dataset_params={
-                'sample_rate': 3e6,           # 3 MHz sampling rate
-                'chirp_duration': 50e-6,      # 50 μs chirp duration
-                'num_chirps': 12,             # 12 chirps per frame
-                'bandwidth': 150e6,           # 150 MHz bandwidth
-                'center_freq': 77e9           # 77 GHz center frequency (automotive radar)
+                'sample_rate': 15e6,           # 15 MHz sampling rate
+                'chirp_duration': 1e-3,        # 1 ms chirp duration
+                'num_chirps': 32,              # 32 chirps per frame
+                'bandwidth': 500e6,            # 500 MHz bandwidth
+                'center_freq': 10e9,           # 10 GHz center frequency
+                'num_rx': 4,                   # 4 receive antennas
+                'num_tx': 1,                   # 1 transmit antenna
+                'max_targets': 3,              # Maximum 3 targets per frame
+                'snr_min': 10,                 # Minimum SNR in dB
+                'snr_max': 25,                 # Maximum SNR in dB
+                'apply_realistic_effects': True # Apply realistic radar effects
             }
         )
         
@@ -1293,12 +1351,11 @@ def train_val():
         signal_results_dir = os.path.join(results_dir, signal_type.lower())
         os.makedirs(signal_results_dir, exist_ok=True)
         
-        # Test the model
+        # Test the model with the new test_radar_model function
         accuracy, false_alarm, missed_detection = test_radar_model(
             model_path=model_path,
             output_dir=signal_results_dir,
-            # Create test data with the same signal type
-            test_data_path=None  # Generate new test data
+            signal_type=signal_type  # Pass the signal type to use the correct test data
         )
         
         # Store metrics
@@ -1365,7 +1422,7 @@ def train_val():
     plt.grid(True, axis='y')
     
     plt.tight_layout()
-    plt.savefig(os.path.join(comparison_dir, 'model_comparison.pdf'))
+    plt.savefig(os.path.join(comparison_dir, f'model_comparison{IMG_FORMAT}'))
     plt.close()
     
     # Step 5: Generate real-world test case with the best model
@@ -1379,27 +1436,28 @@ def train_val():
     
     print(f"Best model is {best_signal_type} with accuracy: {detection_accuracies[best_signal_type]:.4f}")
     
-    # Create a test dataset with realistic automotive radar parameters
+    # Create a test dataset with realistic automotive radar parameters using the new dataset class
     realistic_test_dataset = RadarDataset(
         num_samples=20,
         training=False,
         drawfig=True,
         # Realistic automotive radar parameters
-        sample_rate=3e6,             # 3 MHz sampling rate
-        chirp_duration=50e-6,        # 50 μs chirp duration
-        num_chirps=12,               # 12 chirps per frame
-        bandwidth=150e6,             # 150 MHz bandwidth
-        center_freq=77e9,            # 77 GHz center frequency
+        sample_rate=15e6,            # 15 MHz sampling rate
+        chirp_duration=1e-3,         # 1 ms chirp duration
+        num_chirps=32,               # 32 chirps per frame
+        bandwidth=500e6,             # 500 MHz bandwidth
+        center_freq=10e9,            # 10 GHz center frequency
         num_rx=4,                    # 4 receive antennas
-        num_tx=2,                    # 2 transmit antennas
+        num_tx=1,                    # 1 transmit antenna
         max_targets=3,               # Maximum 3 targets per frame
-        snr_min=0,                   # Minimum SNR in dB (more challenging)
-        snr_max=15,                  # Maximum SNR in dB
+        snr_min=5,                   # Minimum SNR in dB (more challenging)
+        snr_max=20,                  # Maximum SNR in dB
         signal_type=best_signal_type,
-        apply_realistic_effects=True  # Apply realistic radar effects
+        apply_realistic_effects=True, # Apply realistic radar effects
+        save_path=os.path.join(results_dir, 'realistic_test_data')
     )
     
-    # Create radar processor for the best signal type
+    # Create radar processor for the best signal type using the updated RadarProcessing class
     processor = RadarProcessing(
         num_range_bins=realistic_test_dataset.num_range_bins,
         num_doppler_bins=realistic_test_dataset.num_doppler_bins,
@@ -1438,7 +1496,7 @@ def train_val():
     realistic_dir = os.path.join(results_dir, 'realistic_test')
     os.makedirs(realistic_dir, exist_ok=True)
     
-    # Process and visualize each sample
+    # Process and visualize each sample using the new visualization functions
     for i in range(min(10, len(realistic_test_dataset))):
         sample = realistic_test_dataset[i]
         
@@ -1453,25 +1511,26 @@ def train_val():
             output = model(model_input)
             prediction = (output > 0.5).float()[0].cpu().numpy()
         
-        # Get conventional radar processing result
+        # Get conventional radar processing result using the updated processor
         complex_data = sample['time_domain'][:, :, :, 0] + 1j * sample['time_domain'][:, :, :, 1]
         rd_map = processor.time_to_range_doppler(complex_data)
         detected_targets = processor.detect_targets(rd_map, threshold=0.15, min_area=2)
         
-        # Create visualization comparing ML vs conventional detection
+        # Create enhanced visualization comparing ML vs conventional detection
         plt.figure(figsize=(15, 10))
         
-        # Plot range-Doppler map
+        # Plot range-Doppler map with improved colormap and scaling
         plt.subplot(221)
         rd_magnitude = np.sqrt(sample['feature_2d'][0]**2 + sample['feature_2d'][1]**2)
         rd_db = 20 * np.log10(rd_magnitude + 1e-10)
-        plt.imshow(rd_db, aspect='auto', cmap='jet')
+        vmin = np.max(rd_db) - 40  # Dynamic range of 40dB
+        plt.imshow(rd_db, aspect='auto', cmap='jet', vmin=vmin)
         plt.colorbar(label='Magnitude (dB)')
         plt.title('Range-Doppler Map')
         plt.xlabel('Range Bin')
         plt.ylabel('Doppler Bin')
         
-        # Plot ground truth
+        # Plot ground truth with target annotations
         plt.subplot(222)
         plt.imshow(sample['labels'][:,:,0], aspect='auto', cmap='gray')
         plt.colorbar(label='Target Presence')
@@ -1479,7 +1538,7 @@ def train_val():
         plt.xlabel('Range Bin')
         plt.ylabel('Doppler Bin')
         
-        # Add target markers
+        # Add target markers and information
         for target in realistic_test_dataset.target_info[i]:
             range_bin = int(target['distance'] / realistic_test_dataset.range_resolution)
             doppler_bin = int(realistic_test_dataset.num_doppler_bins/2 + target['velocity'] / realistic_test_dataset.velocity_resolution)
@@ -1488,18 +1547,18 @@ def train_val():
                 0 <= doppler_bin < realistic_test_dataset.num_doppler_bins):
                 plt.plot(range_bin, doppler_bin, 'ro', markersize=8)
                 plt.text(range_bin + 1, doppler_bin + 1, 
-                      f"R: {target['distance']:.1f}m\nV: {target['velocity']:.1f}m/s", 
+                      f"R: {target['distance']:.1f}m\nV: {target['velocity']:.1f}m/s\nRCS: {target['rcs']:.2f}", 
                       color='white', fontsize=8, backgroundcolor='black')
         
-        # Plot ML detection
+        # Plot ML detection with confidence heatmap
         plt.subplot(223)
-        plt.imshow(prediction[:,:,0], aspect='auto', cmap='gray')
-        plt.colorbar(label='ML Detection')
+        plt.imshow(prediction[:,:,0], aspect='auto', cmap='hot')
+        plt.colorbar(label='ML Detection Confidence')
         plt.title(f'ML Detection ({best_signal_type} Model)')
         plt.xlabel('Range Bin')
         plt.ylabel('Doppler Bin')
         
-        # Plot conventional detection
+        # Plot conventional detection with detected targets
         plt.subplot(224)
         conventional_mask = np.zeros((realistic_test_dataset.num_doppler_bins, realistic_test_dataset.num_range_bins))
         for target in detected_targets:
@@ -1510,351 +1569,21 @@ def train_val():
         plt.xlabel('Range Bin')
         plt.ylabel('Doppler Bin')
         
-        # Add detected targets
+        # Add detected targets with range and velocity information
         for target in detected_targets:
             plt.plot(target['range_bin'], target['doppler_bin'], 'bo', markersize=8)
+            range_m = target['range_bin'] * realistic_test_dataset.range_resolution
+            velocity_mps = (target['doppler_bin'] - realistic_test_dataset.num_doppler_bins/2) * realistic_test_dataset.velocity_resolution
             plt.text(target['range_bin'] + 1, target['doppler_bin'] + 1, 
-                  f"R: {target['range_bin'] * realistic_test_dataset.range_resolution:.1f}m\nV: {(target['doppler_bin'] - realistic_test_dataset.num_doppler_bins/2) * realistic_test_dataset.velocity_resolution:.1f}m/s", 
+                  f"R: {range_m:.1f}m\nV: {velocity_mps:.1f}m/s\nSNR: {target['snr']:.1f}dB", 
                   color='white', fontsize=8, backgroundcolor='black')
         
         plt.tight_layout()
-        plt.savefig(os.path.join(realistic_dir, f'realistic_test_sample_{i}.pdf'))
+        plt.savefig(os.path.join(realistic_dir, f'realistic_test_sample_{i}{IMG_FORMAT}'))
         plt.close()
     
     print(f"Realistic test results saved to {realistic_dir}")
     print("\nRadar detection model training, evaluation, and comparison complete!")
-
-def compare_signal_types(base_path='data/radar_comparison', 
-                         signal_types=['FMCW', 'OFDM', 'Sine'],
-                         num_samples=50,
-                         visualize_samples=5):
-    """
-    Generate and compare different radar signal types
-    
-    Args:
-        base_path: Base path to save comparison data
-        signal_types: List of signal types to compare
-        num_samples: Number of samples to generate for each type
-        visualize_samples: Number of samples to visualize
-    """
-    
-    print(f"Comparing {len(signal_types)} different radar signal types...")
-    
-    # Create base directory
-    os.makedirs(base_path, exist_ok=True)
-    
-    # Common parameters for all datasets
-    common_params = {
-        'num_samples': num_samples,
-        'num_range_bins': 64,
-        'num_doppler_bins': 12,
-        'sample_rate': 3e6,
-        'chirp_duration': 50e-6,  # 50 μs
-        'num_chirps': 12,
-        'bandwidth': 150e6,  # 150 MHz
-        'center_freq': 77e9,  # 77 GHz (automotive radar)
-        'num_rx': 4,
-        'num_tx': 2,
-        'max_targets': 5,
-        'snr_min': 5,
-        'snr_max': 20,
-        'apply_realistic_effects': True,
-        'drawfig': True
-    }
-    
-    # Generate datasets for each signal type
-    datasets = {}
-    for signal_type in signal_types:
-        print(f"\nGenerating dataset for {signal_type} radar...")
-        
-        # Create dataset with this signal type
-        save_path = f"{base_path}/{signal_type.lower()}"
-        dataset = RadarDataset(
-            **common_params,
-            signal_type=signal_type,
-            signal_freq=1e6,
-            save_path=save_path
-        )
-        
-        # Store dataset
-        datasets[signal_type] = dataset
-        
-        # Print dataset information
-        print_dataset_info(dataset)
-    
-    # Compare range-Doppler maps
-    compare_range_doppler_maps(datasets, base_path, visualize_samples)
-    
-    # Compare detection performance
-    compare_detection_performance(datasets, base_path)
-    
-    # Compare processing time
-    compare_processing_time(datasets, base_path)
-    
-    print(f"\nComparison complete. Results saved to {base_path}")
-    
-    return datasets
-
-def compare_range_doppler_maps(datasets, base_path, num_samples=5):
-    """Compare range-Doppler maps from different signal types"""
-    print("\nComparing range-Doppler maps...")
-    
-    # Create directory for comparison figures
-    os.makedirs(f"{base_path}/comparison", exist_ok=True)
-    
-    # Get signal types
-    signal_types = list(datasets.keys())
-    
-    # Select random samples to visualize
-    sample_indices = np.random.choice(datasets[signal_types[0]].num_samples, 
-                                     size=min(num_samples, datasets[signal_types[0]].num_samples), 
-                                     replace=False)
-    
-    # Compare each sample
-    for idx in sample_indices:
-        # Create figure
-        fig, axs = plt.subplots(len(signal_types), 2, figsize=(15, 5*len(signal_types)))
-        
-        # Process each signal type
-        for i, signal_type in enumerate(signal_types):
-            dataset = datasets[signal_type]
-            
-            # Get range-Doppler map
-            rd_map = dataset.range_doppler_maps[idx]
-            rd_magnitude = np.sqrt(rd_map[0]**2 + rd_map[1]**2)
-            
-            # Get target mask
-            target_mask = dataset.target_masks[idx, :, :, 0]
-            
-            # Get target info
-            target_info = dataset.target_info[idx]
-            
-            # Plot range-Doppler map
-            if len(signal_types) == 1:
-                ax1, ax2 = axs
-            else:
-                ax1, ax2 = axs[i]
-                
-            # Plot range-Doppler map
-            rd_db = 20 * np.log10(rd_magnitude + 1e-10)
-            im1 = ax1.imshow(rd_db, aspect='auto', cmap='jet')
-            ax1.set_title(f'{signal_type} Range-Doppler Map')
-            ax1.set_xlabel('Range Bin')
-            ax1.set_ylabel('Doppler Bin')
-            plt.colorbar(im1, ax=ax1)
-            
-            # Plot target mask
-            im2 = ax2.imshow(target_mask, aspect='auto', cmap='hot')
-            ax2.set_title(f'{signal_type} Target Mask')
-            ax2.set_xlabel('Range Bin')
-            ax2.set_ylabel('Doppler Bin')
-            plt.colorbar(im2, ax=ax2)
-            
-            # Add target annotations
-            for target in target_info:
-                range_bin = int(target['distance'] / dataset.range_resolution)
-                doppler_bin = int(dataset.num_doppler_bins/2 + target['velocity'] / dataset.velocity_resolution)
-                
-                if (0 <= range_bin < dataset.num_range_bins and 
-                    0 <= doppler_bin < dataset.num_doppler_bins):
-                    # Add markers to both plots
-                    ax1.plot(range_bin, doppler_bin, 'wo', markersize=8, markeredgecolor='black')
-                    ax2.plot(range_bin, doppler_bin, 'wo', markersize=8, markeredgecolor='black')
-                    
-                    # Add target information text
-                    ax1.text(range_bin + 2, doppler_bin, 
-                          f"R: {target['distance']:.1f}m\nV: {target['velocity']:.1f}m/s", 
-                          color='white', fontsize=8, backgroundcolor='black')
-        
-        # Add sample information
-        plt.suptitle(f'Sample {idx}: Comparison of Different Radar Signal Types')
-        
-        # Adjust layout and save
-        plt.tight_layout()
-        plt.savefig(f"{base_path}/comparison/sample_{idx}_comparison{IMG_FORMAT}")
-        plt.close()
-    
-    print(f"Range-Doppler map comparison saved to {base_path}/comparison/")
-
-def compare_detection_performance(datasets, base_path):
-    """Compare target detection performance for different signal types"""
-    print("\nComparing target detection performance...")
-    
-    # Create directory for results
-    os.makedirs(f"{base_path}/results", exist_ok=True)
-    
-    # Get signal types
-    signal_types = list(datasets.keys())
-    
-    # Initialize metrics
-    detection_rates = {}
-    false_alarms = {}
-    
-    # Process each signal type
-    for signal_type in signal_types:
-        dataset = datasets[signal_type]
-        
-        # Create radar processor with same parameters
-        processor = RadarProcessing(
-            num_range_bins=dataset.num_range_bins,
-            num_doppler_bins=dataset.num_doppler_bins,
-            sample_rate=dataset.sample_rate,
-            chirp_duration=dataset.chirp_duration,
-            num_chirps=dataset.num_chirps,
-            bandwidth=dataset.bandwidth,
-            center_freq=dataset.center_freq,
-            signal_type=signal_type
-        )
-        
-        # Process all samples
-        true_positives = 0
-        false_positives = 0
-        false_negatives = 0
-        
-        for i in range(dataset.num_samples):
-            # Get complex data
-            complex_data = dataset.time_domain_data[i, :, :, :, 0] + 1j * dataset.time_domain_data[i, :, :, :, 1]
-            
-            # Process to range-Doppler map
-            rd_map = processor.time_to_range_doppler(complex_data)
-            
-            # Detect targets
-            detected_targets = processor.detect_targets(rd_map, threshold=0.15, min_area=2)
-            
-            # Get ground truth targets
-            true_targets = dataset.target_info[i]
-            
-            # Count matches (using a distance threshold)
-            matched_targets = 0
-            for true_target in true_targets:
-                # Convert to range/doppler bins
-                true_range_bin = int(true_target['distance'] / dataset.range_resolution)
-                true_doppler_bin = int(dataset.num_doppler_bins/2 + true_target['velocity'] / dataset.velocity_resolution)
-                
-                # Check if any detected target matches
-                found_match = False
-                for detected_target in detected_targets:
-                    # Calculate distance in bin space
-                    range_diff = abs(detected_target['range_bin'] - true_range_bin)
-                    doppler_diff = abs(detected_target['doppler_bin'] - true_doppler_bin)
-                    bin_distance = np.sqrt(range_diff**2 + doppler_diff**2)
-                    
-                    # If close enough, count as match
-                    if bin_distance < 3:  # Threshold of 3 bins
-                        found_match = True
-                        break
-                
-                if found_match:
-                    matched_targets += 1
-                else:
-                    false_negatives += 1
-            
-            # Count false positives
-            false_positives += max(0, len(detected_targets) - matched_targets)
-            true_positives += matched_targets
-        
-        # Calculate metrics
-        if true_positives + false_negatives > 0:
-            detection_rate = true_positives / (true_positives + false_negatives)
-        else:
-            detection_rate = 0
-            
-        if true_positives + false_positives > 0:
-            precision = true_positives / (true_positives + false_positives)
-        else:
-            precision = 0
-            
-        # Store metrics
-        detection_rates[signal_type] = detection_rate
-        false_alarms[signal_type] = false_positives / dataset.num_samples
-        
-        # Print results
-        print(f"{signal_type} Detection Rate: {detection_rate:.2f}")
-        print(f"{signal_type} Precision: {precision:.2f}")
-        print(f"{signal_type} False Alarms per Frame: {false_alarms[signal_type]:.2f}")
-    
-    # Plot comparison
-    plt.figure(figsize=(10, 6))
-    
-    # Plot detection rates
-    plt.subplot(1, 2, 1)
-    plt.bar(signal_types, [detection_rates[st] for st in signal_types])
-    plt.title('Detection Rate Comparison')
-    plt.ylabel('Detection Rate')
-    plt.ylim(0, 1)
-    
-    # Plot false alarm rates
-    plt.subplot(1, 2, 2)
-    plt.bar(signal_types, [false_alarms[st] for st in signal_types])
-    plt.title('False Alarms per Frame')
-    plt.ylabel('False Alarms')
-    
-    plt.tight_layout()
-    plt.savefig(f"{base_path}/results/detection_performance{IMG_FORMAT}")
-    plt.close()
-    
-    print(f"Detection performance comparison saved to {base_path}/results/")
-
-def compare_processing_time(datasets, base_path):
-    """Compare processing time for different signal types"""
-    print("\nComparing processing time...")
-    
-    # Get signal types
-    signal_types = list(datasets.keys())
-    
-    # Initialize timing results
-    processing_times = {}
-    
-    # Process each signal type
-    for signal_type in signal_types:
-        dataset = datasets[signal_type]
-        
-        # Create radar processor with same parameters
-        processor = RadarProcessing(
-            num_range_bins=dataset.num_range_bins,
-            num_doppler_bins=dataset.num_doppler_bins,
-            sample_rate=dataset.sample_rate,
-            chirp_duration=dataset.chirp_duration,
-            num_chirps=dataset.num_chirps,
-            bandwidth=dataset.bandwidth,
-            center_freq=dataset.center_freq,
-            signal_type=signal_type
-        )
-        
-        # Measure processing time for 10 samples
-        num_test_samples = min(10, dataset.num_samples)
-        total_time = 0
-        
-        for i in range(num_test_samples):
-            # Get complex data
-            complex_data = dataset.time_domain_data[i, :, :, :, 0] + 1j * dataset.time_domain_data[i, :, :, :, 1]
-            
-            # Measure processing time
-            start_time = time.time()
-            _ = processor.time_to_range_doppler(complex_data)
-            end_time = time.time()
-            
-            # Add to total
-            total_time += (end_time - start_time)
-        
-        # Calculate average
-        avg_time = total_time / num_test_samples
-        processing_times[signal_type] = avg_time
-        
-        print(f"{signal_type} Average Processing Time: {avg_time*1000:.2f} ms per frame")
-    
-    # Plot comparison
-    plt.figure(figsize=(8, 5))
-    plt.bar(signal_types, [processing_times[st]*1000 for st in signal_types])
-    plt.title('Processing Time Comparison')
-    plt.ylabel('Processing Time (ms)')
-    plt.grid(axis='y', linestyle='--', alpha=0.7)
-    
-    plt.tight_layout()
-    plt.savefig(f"{base_path}/results/processing_time{IMG_FORMAT}")
-    plt.close()
-    
-    print(f"Processing time comparison saved to {base_path}/results/")
 
 # Add this to the main function to run the comparison
 if __name__ == '__main__':

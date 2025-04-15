@@ -10,13 +10,16 @@ class RadarProcessing:
     Class for radar signal processing functions
     """
     def __init__(self, 
-                 num_range_bins=64, 
-                 num_doppler_bins=12,
-                 sample_rate=3e6,
-                 chirp_duration=500e-6,
-                 num_chirps=12,
+                 num_range_bins=128, #64, 
+                 num_doppler_bins=16, #12,
+                 sample_rate=15e6,
+                 chirp_duration=1e-3, #500e-6,
+                 num_chirps=32, #12,
+                 num_subcarriers = 64, #OFDM subcarriers
+                 subcarrier_spacing = 50e3, #OFDM subcarrier spacing
                  bandwidth=500e6,
-                 center_freq=2.1e9,
+                 transceiver_bandwidth=30e6, #AD9361 bandwidth limitation (~56MHz)
+                 transceiver_center_freq=2.1e9,
                  output_freq=10e9,  # Added output frequency (CN0566)
                  signal_type='FMCW',
                  signal_freq=1e6):
@@ -24,24 +27,42 @@ class RadarProcessing:
         Initialize radar processing parameters
         
         Args:
-            num_range_bins: Number of range bins
-            num_doppler_bins: Number of Doppler bins
-            sample_rate: Sample rate in Hz
-            chirp_duration: Chirp duration in seconds
-            num_chirps: Number of chirps
-            bandwidth: Bandwidth in Hz
-            center_freq: Center frequency in Hz (AD9361 frequency)
-            output_freq: Output frequency in Hz (CN0566 frequency)
-            signal_type: Type of radar signal ('FMCW', 'OFDM', 'Sine', etc.)
-            signal_freq: Signal frequency for modulation (Hz)
+            num_range_bins: Number of range bins that determines range resolution granularity. Higher values provide finer range discrimination at the cost of increased processing time.
+            
+            num_doppler_bins: Number of Doppler bins that determines velocity resolution granularity. Higher values enable detection of smaller velocity differences but require more processing.
+            
+            sample_rate: Sample rate in Hz that defines how frequently the signal is sampled. Higher rates capture more signal details but increase data volume and memory usage. Limited by AD9361 capabilities.
+            
+            chirp_duration: Chirp duration in seconds that affects both maximum unambiguous range and velocity resolution. Longer durations improve SNR and range but reduce maximum detectable velocity.
+            
+            num_chirps: Number of chirps per frame that directly impacts Doppler resolution and coherent processing gain. More chirps improve velocity resolution and SNR but increase frame time.
+            
+            num_subcarriers: Number of OFDM subcarriers used when signal_type is 'OFDM' or 'OFDM_FMCW'. Affects frequency diversity and multipath resilience.
+            
+            subcarrier_spacing: Spacing between OFDM subcarriers in Hz. Impacts OFDM symbol duration and multipath handling capability.
+            
+            bandwidth: Signal bandwidth in Hz that directly determines range resolution. Higher bandwidth provides finer range resolution (c/2B). Limited by CN0566 capabilities.
+            
+            transceiver_bandwidth: AD9361 bandwidth limitation in Hz. Constrains the effective signal bandwidth that can be processed after demodulation.
+            
+            transceiver_center_freq: Center frequency of the AD9361 transceiver in Hz. Used in the two-step demodulation process.
+            
+            output_freq: CN0566 output frequency in Hz. Determines the wavelength used for velocity calculations and affects maximum unambiguous velocity.
+            
+            signal_type: Type of radar signal ('FMCW', 'OFDM', 'Sine', 'OFDM_FMCW', 'Sine_FMCW'). Determines the processing pipeline and signal generation method.
+            
+            signal_freq: Signal frequency for modulation in Hz. Used primarily for sine wave modulation and filtering.
         """
+        #Range-Doppler map with shape [num_doppler_bins, num_range_bins]
         self.num_range_bins = num_range_bins
         self.num_doppler_bins = num_doppler_bins
         self.sample_rate = sample_rate
         self.chirp_duration = chirp_duration
         self.num_chirps = num_chirps
+        self.num_subcarriers = num_subcarriers
+        self.subcarrier_spacing = subcarrier_spacing #OFDM subcarrier spacing
         self.bandwidth = bandwidth
-        self.center_freq = center_freq
+        self.transceiver_center_freq = transceiver_center_freq
         self.output_freq = output_freq  # CN0566 output frequency
         self.signal_type = signal_type
         self.signal_freq = signal_freq
@@ -54,7 +75,7 @@ class RadarProcessing:
         self.max_velocity = self._calculate_max_velocity()
         
         # Hardware-specific parameters
-        self.ad9361_bandwidth = 56e6  # AD9361 bandwidth limitation (~56MHz)
+        self.ad9361_bandwidth = transceiver_bandwidth  # AD9361 bandwidth limitation (~56MHz)
         self.cn0566_center_freq = output_freq  # CN0566 center frequency (10GHz)
     
 
@@ -68,7 +89,7 @@ class RadarProcessing:
         """Calculate velocity resolution based on parameters"""
         # Velocity resolution = wavelength / (2 * total_observation_time)
         speed_of_light = 3e8  # m/s
-        wavelength = speed_of_light / self.center_freq
+        wavelength = speed_of_light / self.output_freq
         total_observation_time = self.num_chirps * self.chirp_duration
         return wavelength / (2 * total_observation_time)
     
@@ -90,7 +111,7 @@ class RadarProcessing:
         # Apply practical constraints based on signal power
         # Radar equation: R_max^4 = (P_t * G^2 * λ^2 * σ) / ((4π)^3 * S_min)
         # We'll use a simplified version with reasonable defaults for radar parameters
-        wavelength = speed_of_light / self.center_freq
+        wavelength = speed_of_light / self.output_freq
         
         # Typical values for a short-range radar system
         tx_power_watts = 0.1  # 100 mW transmit power
@@ -118,7 +139,7 @@ class RadarProcessing:
         """Calculate maximum unambiguous velocity"""
         # Max velocity = wavelength / (4 * chirp_duration)
         speed_of_light = 3e8  # m/s
-        wavelength = speed_of_light / self.center_freq
+        wavelength = speed_of_light / self.output_freq
         return wavelength / (4 * self.chirp_duration)
     
     def simulate_hardware_demodulation(self, complex_data):
@@ -293,10 +314,10 @@ class RadarProcessing:
                 # For OFDM, we need to extract the OFDM signal from the data
                 
                 # Assuming OFDM parameters
-                num_subcarriers = 64
+                #num_subcarriers = 64
                 
                 # Reshape data to match OFDM structure
-                ofdm_data = np.zeros((num_rx, num_chirps, num_subcarriers), dtype=np.complex64)
+                ofdm_data = np.zeros((num_rx, num_chirps, self.num_subcarriers), dtype=np.complex64)
                 
                 for rx in range(num_rx):
                     for chirp in range(num_chirps):
@@ -308,7 +329,7 @@ class RadarProcessing:
                         symbol_data = ofdm_symbol[cp_length:]
                         
                         # FFT to get frequency domain
-                        freq_data = np.fft.fft(symbol_data, n=num_subcarriers)
+                        freq_data = np.fft.fft(symbol_data, n=self.num_subcarriers)
                         ofdm_data[rx, chirp] = freq_data
         
         # Apply CFAR detection to enhance targets
@@ -431,8 +452,8 @@ class RadarProcessing:
             Filtered signal
         """
         # OFDM parameters
-        num_subcarriers = 64
-        subcarrier_spacing = 50e3  # 50 kHz
+        #num_subcarriers = 64
+        subcarrier_spacing = self.subcarrier_spacing #50e3  # 50 kHz
         
         # FFT to frequency domain
         signal_fft = np.fft.fftshift(np.fft.fft(signal))
@@ -442,9 +463,9 @@ class RadarProcessing:
         mask = np.zeros_like(freq, dtype=bool)
         
         # Mark subcarrier regions
-        for k in range(num_subcarriers):
+        for k in range(self.num_subcarriers):
             # Subcarrier frequency
-            f_k = (k - num_subcarriers//2) * subcarrier_spacing
+            f_k = (k - self.num_subcarriers//2) * subcarrier_spacing
             
             # Find closest frequency bin
             idx = np.argmin(np.abs(freq - f_k))
@@ -838,7 +859,7 @@ class RadarProcessing:
             doppler_data = np.mean(target_data, axis=1)
         
         # Calculate wavelength
-        wavelength = 3e8 / self.center_freq
+        wavelength = 3e8 / self.output_freq
         
         # Calculate antenna spacing (typically λ/2)
         d = wavelength / 2
