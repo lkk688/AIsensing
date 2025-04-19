@@ -10,7 +10,7 @@ from scipy.signal import chirp
 from tqdm import tqdm
 from AIradar_processing import RadarProcessing
 IMG_FORMAT=".pdf" #".png"
-
+import time
 
 class RadarDataset(Dataset):
     # In the RadarDataset class initialization, update the default parameters
@@ -18,9 +18,9 @@ class RadarDataset(Dataset):
                  num_samples=100,
                  num_range_bins=128,  # Increased from 64 for better range resolution
                  num_doppler_bins=16,  # Increased from 12 for better velocity resolution
-                 sample_rate=15e6,    # Adjusted to match hardware constraints
+                 sample_rate=1.5e6,    # reduce from 15MHz to 1.5MHz Adjusted to match hardware constraints
                  transceiver_bandwidth=30e6,  # AD9361 bandwidth limitation
-                 chirp_duration=1e-3,  # Increased to 1ms for better SNR (from 500μs)
+                 chirp_duration=1e-4,  # reduce from 1ms to 0.1ms Increased to 1ms for better SNR (from 500μs)
                  num_chirps=32,       # Increased from 12 for better integration gain
                  bandwidth=500e6,     # Fixed by CN0566 capabilities
                  transceiver_center_freq=2.1e9,  # AD9361 center frequency
@@ -133,6 +133,7 @@ class RadarDataset(Dataset):
         )
         
         # Calculate derived parameters
+        #1.5e6 * 1e-4 = 150
         self.samples_per_chirp = int(self.sample_rate * self.chirp_duration)
         self.range_resolution = self.radar_processor.range_resolution
         self.max_range = self.radar_processor.max_range
@@ -204,7 +205,7 @@ class RadarDataset(Dataset):
                 # Add target to received signal
                 #_add_target calls _generate_chirp
                 rx_signal = self._add_target(rx_signal, distance, velocity, rcs)
-                #(4, 32, 15000) complex
+                #(4, 32, 150) complex
                 # Store target information
                 sample_targets.append({
                     'distance': distance,
@@ -565,7 +566,7 @@ class RadarDataset(Dataset):
         doppler_phase_per_chirp = 2 * np.pi * doppler_freq * self.chirp_duration
         
         # Generate the chirp signal
-        tx_chirp = self._generate_chirp() #(150,)
+        tx_chirp = self._generate_chirp() #(15000,)
         
         # Calculate signal power based on radar equation and RCS
         # Using realistic power levels similar to the real device
@@ -597,7 +598,7 @@ class RadarDataset(Dataset):
                     # Scale by amplitude and add to received signal
                     rx_signal[rx, chirp] += signal_amplitude * delayed_signal
         
-        return rx_signal
+        return rx_signal #(4, 32, 15000)
 
     def _add_noise(self, rx_signal, snr_db):
         """Add complex Gaussian noise to the received signal
