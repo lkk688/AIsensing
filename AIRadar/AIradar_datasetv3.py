@@ -177,6 +177,11 @@ class RadarDataset(Dataset):
         if save_data:
             os.makedirs(self.save_path, exist_ok=True)
         
+        # Generate a test TX signal to ensure samples_per_chirp is correctly calculated
+        test_tx_signal = self._generate_tx_signal()
+        # Update samples_per_chirp based on the actual signal length
+        self.samples_per_chirp = test_tx_signal.shape[1]
+
         # Initialize arrays to store data
         self.time_domain_data = np.zeros((self.num_samples, self.num_rx, self.num_chirps, 
                                          self.samples_per_chirp, 2), dtype=self.precision)
@@ -196,7 +201,7 @@ class RadarDataset(Dataset):
         # Generate samples
         for i in tqdm(range(self.num_samples), desc="Generating samples"):
             # Randomly select signal parameters for this sample
-            self._randomize_signal_parameters()
+            #self._randomize_signal_parameters()
             
             # Generate random TX power for this sample
             tx_power = np.random.uniform(0.5, 1.5)
@@ -266,12 +271,13 @@ class RadarDataset(Dataset):
             rx_signal = self._add_noise(rx_signal, snr_db)
             
             # Process the received signal to generate range-Doppler map
-            rd_map = self.radar_processor.generate_range_doppler_map(rx_signal)
-            
+            #rd_map = self.radar_processor.generate_range_doppler_map(rx_signal)
+            rd_map = self.radar_processor.time_to_range_doppler(rx_signal)
+
             # Create target mask
             target_mask = self._create_target_mask(sample_targets)
             
-            # Store data
+            # Store data (100, 4, 32, 150, 2) (4, 32, 176)
             self.time_domain_data[i, :, :, :, 0] = np.real(rx_signal)
             self.time_domain_data[i, :, :, :, 1] = np.imag(rx_signal)
             self.range_doppler_maps[i, 0] = np.real(rd_map)
@@ -586,6 +592,11 @@ class RadarDataset(Dataset):
         # Create time vector for one chirp
         t = np.arange(0, self.chirp_duration, 1/self.sample_rate)
         self.samples_per_chirp = len(t)
+
+        # Update samples_per_chirp only if it's the first time (during initialization)
+        if not hasattr(self, '_tx_signal_initialized'):
+            self.samples_per_chirp = len(t)
+            self._tx_signal_initialized = True
         
         # Initialize transmit signal array
         tx_signal = np.zeros((self.num_chirps, self.samples_per_chirp), dtype=np.complex64)
@@ -2724,6 +2735,17 @@ def visualize_signal_processing_steps(dataset, sample_idx=0):
     # Generate and plot target mask for visualization
     target_mask = np.zeros((dataset.num_doppler_bins, dataset.num_range_bins, 1), dtype=np.float32)
     
+        # Initialize metrics dictionary for this function
+    metrics = {
+        'snr_improvement': [],
+        'detection_accuracy': []
+    }
+    
+    # Calculate noise floor
+    rd_magnitude = np.abs(rd_map)
+    noise_floor = np.median(rd_magnitude)
+
+    detected = 0
     # Create mask based on target information
     for target in target_info:
         range_bin = int(target['distance'] / dataset.range_resolution)
@@ -2744,9 +2766,34 @@ def visualize_signal_processing_steps(dataset, sample_idx=0):
         detection_accuracies.append(detected / len(target_info) if target_info else 1.0)
     
     # Average the metrics
-    metrics['snr_improvement'].append(np.mean(snr_improvements) if snr_improvements else 0)
+    # Calculate detection accuracy
+    detection_accuracy = detected / len(target_info) if target_info else 1.0
+    metrics['detection_accuracy'].append(detection_accuracy)
+    
+    # Calculate SNR improvement
+    target_peaks = []
+    for target in target_info:
+        range_bin = int(target['distance'] / dataset.range_resolution)
+        doppler_bin = int(dataset.num_doppler_bins/2 + target['velocity'] / dataset.velocity_resolution)
+        
+        if (0 <= range_bin < dataset.num_range_bins and 
+            0 <= doppler_bin < dataset.num_doppler_bins):
+            # Get 3x3 region around target
+            region = rd_magnitude[
+                max(0, doppler_bin-1):min(dataset.num_doppler_bins, doppler_bin+2),
+                max(0, range_bin-1):min(dataset.num_range_bins, range_bin+2)
+            ]
+            target_peaks.append(np.max(region))
+    
+    if target_peaks:
+        avg_peak = np.mean(target_peaks)
+        snr_improvement = 20 * np.log10(avg_peak / noise_floor)
+        metrics['snr_improvement'].append(snr_improvement)
+    else:
+        metrics['snr_improvement'].append(0)
+    # metrics['snr_improvement'].append(np.mean(snr_improvements) if snr_improvements else 0)
     metrics['processing_time'].append(np.mean(processing_times))
-    metrics['detection_accuracy'].append(np.mean(detection_accuracies))
+    #metrics['detection_accuracy'].append(np.mean(detection_accuracies))
 
     # Visualize samples for each signal type
     for i in range(min(visualize_samples, num_samples)):
@@ -2835,7 +2882,7 @@ def visualize_signal_processing_steps(dataset, sample_idx=0):
     print(f"Signal type comparison completed and saved to {comparison_dir}/")
     
     return datasets, metrics
-    
+
 def compare_signal_types(save_path, num_samples=100, signal_types=None, visualize_samples=5, 
                         radar_params=None, apply_realistic_effects=True):
     """Compare the performance of different signal types in signal processing steps
@@ -2847,6 +2894,9 @@ def compare_signal_types(save_path, num_samples=100, signal_types=None, visualiz
         visualize_samples: Number of samples to visualize for each signal type
         radar_params: Dictionary of radar parameters to use for all signal types
         apply_realistic_effects: Whether to apply realistic radar effects
+        
+    Returns:
+        tuple: (datasets, metrics) containing the generated datasets and performance metrics
     """
     # Create directory for comparison figures
     comparison_dir = os.path.join(save_path, "signal_comparison")
@@ -2873,7 +2923,11 @@ def compare_signal_types(save_path, num_samples=100, signal_types=None, visualiz
             'snr_min': 15,
             'snr_max': 25,
             'apply_realistic_effects': apply_realistic_effects,
-            'drawfig': False
+            'drawfig': False,
+            'use_lazy_loading': True,  # Enable lazy loading for better memory management
+            'cache_size': 20,          # Cache size for lazy loading
+            'savedataformat': 'chunked_hdf5',  # Use chunked format for better I/O performance
+            'max_samples_per_file': 50  # Number of samples per chunk
         }
     
     # Metrics to track
@@ -2895,7 +2949,6 @@ def compare_signal_types(save_path, num_samples=100, signal_types=None, visualiz
         dataset = RadarDataset(
             signal_type=signal_type,
             save_path=signal_save_path,
-            savedataformat='hdf5',
             **radar_params
         )
         
@@ -2919,8 +2972,14 @@ def compare_signal_types(save_path, num_samples=100, signal_types=None, visualiz
             # Convert time domain data to complex
             complex_data = time_domain[:, :, :, 0] + 1j * time_domain[:, :, :, 1]
             
+            # Get TX signal if available
+            if hasattr(dataset, 'tx_signals') and dataset.tx_signals and i < len(dataset.tx_signals):
+                tx_signal = dataset.tx_signals[i]
+            else:
+                # Generate a TX signal if not available
+                tx_signal = dataset._generate_tx_signal()
+            
             # Measure processing time
-            import time
             start_time = time.time()
             rd_map = dataset.radar_processor.time_to_range_doppler(complex_data)
             processing_times.append(time.time() - start_time)
@@ -2966,10 +3025,21 @@ def compare_signal_types(save_path, num_samples=100, signal_types=None, visualiz
             
             if target_info:
                 detection_accuracies.append(detected / len(target_info))
+            
+            # Use the comprehensive visualization if available
+            if hasattr(dataset, '_visualize_comprehensive_signal'):
+                # Use comprehensive visualization
+                dataset._visualize_comprehensive_signal(
+                    tx_signal=tx_signal,
+                    rx_signal=complex_data,
+                    title=f"{signal_type} Sample {i}: {len(target_info)} Targets",
+                    target_info=target_info,
+                    save_path=f"{comparison_dir}/{signal_type}_sample_{i}_comprehensive{IMG_FORMAT}"
+                )
         
-        metrics['snr_improvement'].append(np.mean(snr_improvements))
+        metrics['snr_improvement'].append(np.mean(snr_improvements) if snr_improvements else 0)
         metrics['processing_time'].append(np.mean(processing_times))
-        metrics['detection_accuracy'].append(np.mean(detection_accuracies) * 100)  # Convert to percentage
+        metrics['detection_accuracy'].append(np.mean(detection_accuracies) * 100 if detection_accuracies else 0)  # Convert to percentage
     
     # Create comparison plots
     plt.figure(figsize=(15, 10))
@@ -3036,6 +3106,9 @@ def compare_signal_types(save_path, num_samples=100, signal_types=None, visualiz
         # Convert to complex
         complex_data = time_data[:, :, :, 0] + 1j * time_data[:, :, :, 1]
         
+        # Generate TX signal for this scenario
+        tx_signal = dataset._generate_tx_signal()
+        
         # Process to get range profile (first RX, first chirp)
         rx_idx, chirp_idx = 0, 0
         
@@ -3088,6 +3161,9 @@ def compare_signal_types(save_path, num_samples=100, signal_types=None, visualiz
         
         # Convert to complex
         complex_data = time_data[:, :, :, 0] + 1j * time_data[:, :, :, 1]
+        
+        # Generate TX signal for this scenario
+        tx_signal = dataset._generate_tx_signal()
         
         # Process to get range-Doppler map
         rd_map = dataset.radar_processor.time_to_range_doppler(complex_data)
@@ -3151,10 +3227,10 @@ def compare_signal_types(save_path, num_samples=100, signal_types=None, visualiz
             f.write(f'- **{param}**: {formatted_value}\n')
         
         f.write('\n## Detection Performance\n\n')
-        f.write('| Signal Type | Accuracy | False Alarm Rate | Missed Detection Rate |\n')
-        f.write('|------------|----------|------------------|----------------------|\n')
+        f.write('| Signal Type | Accuracy | SNR Improvement | Processing Time |\n')
+        f.write('|------------|----------|-----------------|----------------|\n')
         for i, signal_type in enumerate(signal_types):
-            f.write(f'| {signal_type} | {metrics["detection_accuracy"][i]:.4f} | N/A | N/A |\n')
+            f.write(f'| {signal_type} | {metrics["detection_accuracy"][i]:.2f}% | {metrics["snr_improvement"][i]:.2f} dB | {metrics["processing_time"][i]*1000:.2f} ms |\n')
         
         f.write('\n## Signal Characteristics\n\n')
         f.write('### Time-Domain Properties\n\n')
@@ -3179,7 +3255,7 @@ def compare_signal_types(save_path, num_samples=100, signal_types=None, visualiz
         f.write('\n## Conclusion\n\n')
         best_signal_type = signal_types[np.argmax(metrics['detection_accuracy'])]
         f.write(f'Based on the detection accuracy, **{best_signal_type}** shows the best overall performance ')
-        f.write(f'with an accuracy of {np.max(metrics["detection_accuracy"]):.4f}.\n\n')
+        f.write(f'with an accuracy of {np.max(metrics["detection_accuracy"]):.2f}%.\n\n')
         
         f.write('### Recommendations\n\n')
         f.write('- For applications requiring highest detection accuracy, use **' + best_signal_type + '**\n')
@@ -3187,11 +3263,29 @@ def compare_signal_types(save_path, num_samples=100, signal_types=None, visualiz
                 signal_types[np.argmin(metrics['range_resolution'])] + '**\n')
         f.write('- For applications requiring best velocity resolution, use **' + 
                 signal_types[np.argmin(metrics['velocity_resolution'])] + '**\n')
+        
+        # Add information about TX signal characteristics
+        f.write('\n## TX Signal Analysis\n\n')
+        f.write('The transmit signal characteristics significantly impact radar performance:\n\n')
+        for signal_type in signal_types:
+            f.write(f'### {signal_type}\n\n')
+            if "FMCW" in signal_type:
+                f.write('- **TX Signal**: Linear frequency sweep from f₀ to f₀+B\n')
+                f.write('- **Bandwidth Utilization**: Efficiently uses entire allocated bandwidth\n')
+                f.write('- **Peak-to-Average Power Ratio**: Low (≈1), enabling efficient power amplifier operation\n\n')
+            elif "OFDM" in signal_type:
+                f.write('- **TX Signal**: Multiple orthogonal subcarriers with digital modulation\n')
+                f.write('- **Bandwidth Utilization**: Highly efficient with flexible subcarrier allocation\n')
+                f.write('- **Peak-to-Average Power Ratio**: High, requiring power back-off in amplifiers\n\n')
+            elif "Sine" in signal_type:
+                f.write('- **TX Signal**: Single-tone sinusoidal signal\n')
+                f.write('- **Bandwidth Utilization**: Limited (narrow bandwidth)\n')
+                f.write('- **Peak-to-Average Power Ratio**: Optimal (=1)\n\n')
     
     print(f"Comparison complete. Results saved to {comparison_dir}")
     print(f"Generated comparison report: {os.path.join(comparison_dir, 'signal_comparison_report.md')}")
     
-    return datasets
+    return datasets, metrics
 
 
 # Update the main execution to include the new comparison function
