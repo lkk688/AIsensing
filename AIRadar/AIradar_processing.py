@@ -75,8 +75,8 @@ class RadarProcessing:
         self.max_velocity = self._calculate_max_velocity()
         
         # Hardware-specific parameters
-        self.ad9361_bandwidth = transceiver_bandwidth  # AD9361 bandwidth limitation (~56MHz)
-        self.cn0566_center_freq = output_freq  # CN0566 center frequency (10GHz)
+        self.transceiver_bandwidth = transceiver_bandwidth  # AD9361 bandwidth limitation (~56MHz)
+        self.output_freq = output_freq  # CN0566 center frequency (10GHz)
     
 
     def _calculate_range_resolution(self):
@@ -142,49 +142,137 @@ class RadarProcessing:
         wavelength = speed_of_light / self.output_freq
         return wavelength / (4 * self.chirp_duration)
     
-    def simulate_hardware_demodulation(self, complex_data):
+    def simulate_hardware_modulation(self, baseband_signal, signal_type='FMCW'):
         """
-        Simulate the hardware demodulation process from CN0566 to AD9361
-        
-        This simulates the CN0566 to AD9361 demodulation that happens in hardware
-        before digital processing.
+        Simulate the hardware modulation process (inverse of demodulation)
+        This simulates the two-step hardware solution:
+        1. AD9361 generates baseband signal (OFDM or Sine) at ~2.1GHz
+        2. CN0566 performs frequency sweep to achieve full bandwidth at ~10GHz
         
         Args:
-            complex_data: Complex time domain data [num_rx, num_chirps, samples_per_chirp]
+            baseband_signal: Complex baseband signal [num_rx, num_chirps, samples_per_chirp]
+            signal_type: Type of signal ('FMCW', 'OFDM_FMCW', 'Sine_FMCW')
             
         Returns:
-            Demodulated complex data [num_rx, num_chirps, samples_per_chirp]
+            Modulated complex signal
         """
-        # Create time vector
-        t = np.arange(self.samples_per_chirp) / self.sample_rate
+        # Create a copy of the input signal to avoid modifying the original
+        modulated_signal = np.copy(baseband_signal)
         
-        # Generate the FMCW sweep component that was used in CN0566
-        k = self.bandwidth / self.chirp_duration  # Chirp rate for 500MHz bandwidth
+        # Create time vector for one chirp
+        t = np.arange(0, self.chirp_duration, 1/self.sample_rate)
+        samples_per_chirp = len(t)
         
-        # For each RX and chirp, demodulate the signal
+        # Only apply special modulation for two-step hardware solutions
+        if signal_type in ['OFDM_FMCW', 'Sine_FMCW']:
+            # For each RX and chirp, apply the CN0566 frequency sweep
+            for rx_idx in range(modulated_signal.shape[0]):
+                for chirp_idx in range(modulated_signal.shape[1]):
+                    # Generate CN0566 frequency sweep component
+                    k = self.bandwidth / self.chirp_duration  # Chirp rate for bandwidth
+                    
+                    # Phase calculation for the frequency sweep
+                    # Starting at output_freq - bandwidth/2 and sweeping to output_freq + bandwidth/2
+                    sweep_phase = 2 * np.pi * (self.output_freq * t + 0.5 * k * t**2)
+                    fmcw_sweep = np.exp(1j * sweep_phase)
+                    
+                    # Apply the frequency sweep to the baseband signal
+                    # This simulates the baseband signal being upconverted and swept by CN0566
+                    modulated_signal[rx_idx, chirp_idx] = modulated_signal[rx_idx, chirp_idx] * fmcw_sweep
+        
+        # For standard FMCW, the modulation is already handled in the signal generation
+        
+        return modulated_signal
+
+    def simulate_hardware_demodulation(self, complex_data):
+        """Simulate hardware demodulation from 10 GHz to 2.1 GHz
+
+        This simulates the CN0566 to AD9361 signal path:
+        1. Received signal at 10 GHz (CN0566 output frequency)
+        2. Mixing with local oscillator to downconvert to 2.1 GHz (AD9361 center frequency)
+        3. Filtering to match AD9361 bandwidth limitations
+        4. Compensating for system delay if calibrated
+
+        Args:
+            complex_data: Complex signal array [num_rx, num_chirps, samples_per_chirp]
+            
+        Returns:
+            Demodulated complex signal array [num_rx, num_chirps, samples_per_chirp]
+        """
+        # Get dimensions
+        num_rx, num_chirps, samples_per_chirp = complex_data.shape
+
+        # Initialize output array
         demodulated_data = np.zeros_like(complex_data)
-        
-        for rx in range(complex_data.shape[0]):
-            for chirp in range(complex_data.shape[1]):
-                # Generate the conjugate of the sweep signal used in CN0566
-                # This simulates the downconversion/mixing process
-                phase = 2 * np.pi * (self.cn0566_center_freq * t + 0.5 * k * t**2)
-                fmcw_sweep_conj = np.exp(-1j * phase)  # Conjugate for demodulation
+
+        # Time vector for one chirp
+        t = np.arange(0, self.chirp_duration, 1/self.sample_rate)
+
+        # Frequency difference between output and transceiver
+        freq_diff = self.output_freq - self.transceiver_center_freq
+
+        # Check if system delay has been calibrated
+        if hasattr(self, 'system_delay') and self.system_delay is not None:
+            # Calculate delay in samples
+            delay_samples = int(self.system_delay * self.sample_rate)
+            print(f"Applying calibrated system delay: {self.system_delay*1e9:.2f} ns ({delay_samples} samples)")
+        else:
+            delay_samples = 0
+
+        # For each RX and chirp, perform time-domain demodulation
+        for rx in range(num_rx):
+            for chirp in range(num_chirps):
+                # Get the received signal
+                rx_signal = complex_data[rx, chirp]
                 
-                # Demodulate by multiplying with conjugate of the sweep
-                # This brings the signal from 10GHz back to 2.1GHz (AD9361 frequency)
-                demodulated_data[rx, chirp] = complex_data[rx, chirp] * fmcw_sweep_conj
+                # Generate local oscillator signal at the difference frequency
+                lo_signal = np.exp(-1j * 2 * np.pi * freq_diff * t)
                 
-                # Apply low-pass filtering to simulate hardware filtering
-                # Using a simple moving average filter for demonstration
-                window_size = 5
-                demodulated_data[rx, chirp] = np.convolve(
-                    demodulated_data[rx, chirp], 
-                    np.ones(window_size)/window_size, 
-                    mode='same'
-                )
-        
+                # Mix the received signal with the local oscillator (time-domain multiplication)
+                mixed_signal = rx_signal * lo_signal
+                
+                # Apply bandpass filter to simulate AD9361 bandwidth limitation
+                mixed_signal = self._apply_bandpass_filter(mixed_signal)
+                
+                # Compensate for system delay if calibrated
+                if delay_samples > 0:
+                    # Shift signal to compensate for system delay
+                    compensated_signal = np.zeros_like(mixed_signal)
+                    compensated_signal[:-delay_samples] = mixed_signal[delay_samples:]
+                    mixed_signal = compensated_signal
+                
+                # Store the demodulated signal
+                demodulated_data[rx, chirp] = mixed_signal
+
         return demodulated_data
+
+    def _apply_bandpass_filter(self, signal):
+        """Apply bandpass filter to simulate AD9361 bandwidth limitation
+        
+        Args:
+            signal: Complex signal array
+            
+        Returns:
+            Filtered complex signal array
+        """
+        # Convert to frequency domain
+        signal_fft = np.fft.fftshift(np.fft.fft(signal))
+        
+        # Create frequency vector
+        freqs = np.fft.fftshift(np.fft.fftfreq(len(signal), 1/self.sample_rate))
+        
+        # Create bandpass filter centered at 0 (after downconversion)
+        # with bandwidth matching the transceiver_bandwidth
+        half_bw = self.transceiver_bandwidth / 2
+        bandpass = np.abs(freqs) <= half_bw
+        
+        # Apply filter
+        filtered_fft = signal_fft * bandpass
+        
+        # Convert back to time domain
+        filtered_signal = np.fft.ifft(np.fft.ifftshift(filtered_fft))
+        
+        return filtered_signal
 
     def time_to_range_doppler(self, complex_data):
         """
@@ -1293,3 +1381,78 @@ class RadarProcessing:
         plt.grid(True)
         
         plt.tight_layout()
+    
+    def detect_crosstalk_timing(self, rx_signal):
+        """
+        Detect the transmitter-receiver crosstalk to estimate system timing
+        
+        Args:
+            rx_signal: Complex received signal array [num_rx, num_chirps, samples_per_chirp]
+            
+        Returns:
+            Estimated delay in samples and seconds
+        """
+        # Get dimensions
+        num_rx, num_chirps, samples_per_chirp = rx_signal.shape
+        
+        # Initialize arrays to store detected delays
+        delays_samples = np.zeros((num_rx, num_chirps), dtype=int)
+        delays_seconds = np.zeros((num_rx, num_chirps), dtype=float)
+        
+        # For each RX and chirp, detect the crosstalk
+        for rx_idx in range(num_rx):
+            for chirp_idx in range(num_chirps):
+                # Get the signal for this RX and chirp
+                signal = rx_signal[rx_idx, chirp_idx]
+                
+                # Method 1: Energy detection
+                # Calculate signal energy
+                signal_energy = np.abs(signal)**2
+                
+                # Apply moving average to smooth
+                window_size = int(self.sample_rate * 1e-6)  # 1 μs window
+                window_size = max(1, window_size)  # Ensure window size is at least 1
+                energy_smooth = np.convolve(signal_energy, np.ones(window_size)/window_size, mode='same')
+                
+                # Find the first significant rise in energy
+                # This is likely the crosstalk from TX to RX
+                energy_diff = np.diff(energy_smooth)
+                threshold = 0.3 * np.max(energy_diff)  # Adjust threshold as needed
+                
+                # Find the first point where energy rises significantly
+                rise_points = np.where(energy_diff > threshold)[0]
+                
+                if len(rise_points) > 0:
+                    # The first significant rise is likely the crosstalk
+                    first_rise = rise_points[0]
+                    delays_samples[rx_idx, chirp_idx] = first_rise
+                    delays_seconds[rx_idx, chirp_idx] = first_rise / self.sample_rate
+                else:
+                    # Fallback if no clear rise is detected
+                    delays_samples[rx_idx, chirp_idx] = 0
+                    delays_seconds[rx_idx, chirp_idx] = 0
+        
+        # Calculate median delay across all RX and chirps for robustness
+        median_delay_samples = np.median(delays_samples)
+        median_delay_seconds = np.median(delays_seconds)
+        
+        return int(median_delay_samples), median_delay_seconds
+
+    def estimate_system_delay_from_crosstalk(self, rx_signal):
+        """
+        Estimate the system delay using the crosstalk between TX and RX
+        
+        Args:
+            rx_signal: Complex received signal array [num_rx, num_chirps, samples_per_chirp]
+            
+        Returns:
+            Estimated system delay in seconds
+        """
+        # Detect the crosstalk timing
+        crosstalk_samples, crosstalk_seconds = self.detect_crosstalk_timing(rx_signal)
+        
+        # The crosstalk represents the internal delay of the system
+        # Store this as the system delay
+        self.system_delay = crosstalk_seconds
+        
+        return self.system_delay
