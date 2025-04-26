@@ -6,78 +6,308 @@ from scipy.signal import chirp
 import cv2
 
 class RadarProcessing:
-    """
-    Class for radar signal processing functions
-    """
-    def __init__(self, 
-                 num_range_bins=128, #64, 
-                 num_doppler_bins=16, #12,
-                 sample_rate=15e6,
-                 chirp_duration=1e-3, #500e-6,
-                 num_chirps=32, #12,
-                 num_subcarriers = 64, #OFDM subcarriers
-                 subcarrier_spacing = 50e3, #OFDM subcarrier spacing
-                 bandwidth=500e6,
-                 transceiver_bandwidth=30e6, #AD9361 bandwidth limitation (~56MHz)
-                 transceiver_center_freq=2.1e9,
-                 output_freq=10e9,  # Added output frequency (CN0566)
-                 signal_type='FMCW',
+    def __init__(self, num_range_bins=64, num_doppler_bins=12, sample_rate=3e6, 
+                 chirp_duration=500e-6, num_chirps=1, bandwidth=500e6, center_freq=2.1e9,
+                 signal_type='FMCW', num_subcarriers=128, subcarrier_spacing=30e3,
+                 transceiver_bandwidth=None, transceiver_center_freq=None, output_freq=None,
                  signal_freq=1e6):
         """
-        Initialize radar processing parameters
+        Initialize radar signal processing class
         
         Args:
-            num_range_bins: Number of range bins that determines range resolution granularity. Higher values provide finer range discrimination at the cost of increased processing time.
-            
-            num_doppler_bins: Number of Doppler bins that determines velocity resolution granularity. Higher values enable detection of smaller velocity differences but require more processing.
-            
-            sample_rate: Sample rate in Hz that defines how frequently the signal is sampled. Higher rates capture more signal details but increase data volume and memory usage. Limited by AD9361 capabilities.
-            
-            chirp_duration: Chirp duration in seconds that affects both maximum unambiguous range and velocity resolution. Longer durations improve SNR and range but reduce maximum detectable velocity.
-            
-            num_chirps: Number of chirps per frame that directly impacts Doppler resolution and coherent processing gain. More chirps improve velocity resolution and SNR but increase frame time.
-            
-            num_subcarriers: Number of OFDM subcarriers used when signal_type is 'OFDM' or 'OFDM_FMCW'. Affects frequency diversity and multipath resilience.
-            
-            subcarrier_spacing: Spacing between OFDM subcarriers in Hz. Impacts OFDM symbol duration and multipath handling capability.
-            
-            bandwidth: Signal bandwidth in Hz that directly determines range resolution. Higher bandwidth provides finer range resolution (c/2B). Limited by CN0566 capabilities.
-            
-            transceiver_bandwidth: AD9361 bandwidth limitation in Hz. Constrains the effective signal bandwidth that can be processed after demodulation.
-            
-            transceiver_center_freq: Center frequency of the AD9361 transceiver in Hz. Used in the two-step demodulation process.
-            
-            output_freq: CN0566 output frequency in Hz. Determines the wavelength used for velocity calculations and affects maximum unambiguous velocity.
-            
-            signal_type: Type of radar signal ('FMCW', 'OFDM', 'Sine', 'OFDM_FMCW', 'Sine_FMCW'). Determines the processing pipeline and signal generation method.
-            
-            signal_freq: Signal frequency for modulation in Hz. Used primarily for sine wave modulation and filtering.
+            num_range_bins: Number of range bins
+            num_doppler_bins: Number of Doppler bins
+            sample_rate: Sample rate in Hz
+            chirp_duration: Chirp duration in seconds
+            num_chirps: Number of chirps per frame
+            bandwidth: Signal bandwidth in Hz
+            center_freq: Center frequency in Hz
+            signal_type: Type of radar signal ('FMCW', 'OFDM', 'Sine', 'OFDM_FMCW', 'Sine_FMCW')
+            num_subcarriers: Number of subcarriers for OFDM
+            subcarrier_spacing: Subcarrier spacing for OFDM in Hz
+            transceiver_bandwidth: Transceiver bandwidth in Hz (if different from signal bandwidth)
+            transceiver_center_freq: Transceiver center frequency in Hz (if different from center_freq)
+            output_freq: Output frequency in Hz (for hardware implementation)
+            signal_freq: Signal frequency for FMCW modulation (Hz)
         """
-        #Range-Doppler map with shape [num_doppler_bins, num_range_bins]
+        # Store parameters
         self.num_range_bins = num_range_bins
         self.num_doppler_bins = num_doppler_bins
         self.sample_rate = sample_rate
         self.chirp_duration = chirp_duration
         self.num_chirps = num_chirps
-        self.num_subcarriers = num_subcarriers
-        self.subcarrier_spacing = subcarrier_spacing #OFDM subcarrier spacing
         self.bandwidth = bandwidth
-        self.transceiver_center_freq = transceiver_center_freq
-        self.output_freq = output_freq  # CN0566 output frequency
+        self.center_freq = center_freq
         self.signal_type = signal_type
+        self.num_subcarriers = num_subcarriers
+        self.subcarrier_spacing = subcarrier_spacing
+        self.transceiver_bandwidth = transceiver_bandwidth if transceiver_bandwidth else bandwidth
+        self.transceiver_center_freq = transceiver_center_freq if transceiver_center_freq else center_freq
+        self.output_freq = output_freq if output_freq else center_freq
         self.signal_freq = signal_freq
         
         # Calculate derived parameters
-        self.samples_per_chirp = int(self.sample_rate * self.chirp_duration)
-        self.range_resolution = self._calculate_range_resolution()
-        self.velocity_resolution = self._calculate_velocity_resolution()
-        self.max_range = self._calculate_max_range()
-        self.max_velocity = self._calculate_max_velocity()
+        self.speed_of_light = 3e8  # Speed of light in m/s
+        self.wavelength = self.speed_of_light / self.center_freq
         
-        # Hardware-specific parameters
-        self.transceiver_bandwidth = transceiver_bandwidth  # AD9361 bandwidth limitation (~56MHz)
-        self.output_freq = output_freq  # CN0566 center frequency (10GHz)
+        # Calculate radar performance metrics
+        self.calculate_performance_metrics()
+        
+        # # Calculate derived parameters
+        # self.samples_per_chirp = int(self.sample_rate * self.chirp_duration)
+        # self.range_resolution = self._calculate_range_resolution()
+        # self.velocity_resolution = self._calculate_velocity_resolution()
+        # self.max_range = self._calculate_max_range()
+        # self.max_velocity = self._calculate_max_velocity()
+        
+        # # Hardware-specific parameters
+        # self.transceiver_bandwidth = transceiver_bandwidth  # AD9361 bandwidth limitation (~56MHz)
+        # self.output_freq = output_freq  # CN0566 center frequency (10GHz)
     
+    def calculate_performance_metrics(self):
+        """
+        Calculate radar performance metrics based on signal parameters
+        
+        This method calculates key radar performance metrics including:
+        - Range resolution
+        - Maximum range
+        - Velocity resolution
+        - Maximum velocity
+        - Angular resolution (if applicable)
+        - Chirp slope (for FMCW)
+        - Optimal chirp duration (based on bandwidth and center frequency)
+        
+        The relationships between parameters and metrics are documented for each calculation.
+        """
+        # Range resolution (determined by bandwidth)
+        # Higher bandwidth provides better range resolution
+        self.range_resolution = self.speed_of_light / (2 * self.bandwidth)
+        
+        # Maximum unambiguous range (determined by chirp duration and sample rate)
+        # Longer chirp duration or higher sample rate increases maximum range
+        self.max_range = self.range_resolution * self.num_range_bins
+        
+        # Velocity resolution (determined by center frequency, chirp duration, and number of chirps)
+        # Higher center frequency, longer total measurement time (chirp_duration * num_chirps) improves velocity resolution
+        self.velocity_resolution = self.wavelength / (2 * self.chirp_duration * self.num_chirps)
+        
+        # Maximum unambiguous velocity (determined by center frequency and chirp duration)
+        # Higher PRF (1/chirp_duration) increases maximum velocity
+        self.max_velocity = self.velocity_resolution * (self.num_doppler_bins // 2)
+        
+        # Calculate chirp slope for FMCW (bandwidth / chirp_duration)
+        # Steeper slope improves range resolution but requires higher sampling rate
+        if self.signal_type in ['FMCW', 'OFDM_FMCW', 'Sine_FMCW']:
+            self.chirp_slope = self.bandwidth / self.chirp_duration
+        else:
+            self.chirp_slope = None
+            
+        # Calculate optimal chirp duration based on bandwidth and center frequency
+        # This is a theoretical optimal value that balances range and velocity resolution
+        # For automotive radar applications, typical values range from 10-100 μs
+        self.optimal_chirp_duration = self.calculate_optimal_chirp_duration()
+        
+        # Calculate SNR requirements for detection at maximum range
+        # This is a simplified model based on the radar equation
+        self.min_snr_for_max_range = self.calculate_min_snr_for_detection()
+        
+        # For OFDM signals, calculate additional metrics
+        if self.signal_type in ['OFDM', 'OFDM_FMCW']:
+            # OFDM symbol duration (without cyclic prefix)
+            self.ofdm_symbol_duration = 1 / self.subcarrier_spacing
+            # OFDM bandwidth
+            self.ofdm_bandwidth = self.num_subcarriers * self.subcarrier_spacing
+        
+    def calculate_optimal_chirp_duration(self):
+        """
+        Calculate the optimal chirp duration based on bandwidth and center frequency
+        
+        The optimal chirp duration balances:
+        1. Range resolution (requires high bandwidth)
+        2. Velocity resolution (requires longer measurement time)
+        3. Hardware limitations (maximum chirp slope)
+        
+        Returns:
+            Optimal chirp duration in seconds
+        """
+        # For automotive radar (77 GHz), typical chirp durations are 50-100 μs
+        # For lower frequency radars, longer chirp durations are often used
+        
+        # This is a simplified model that scales chirp duration based on bandwidth and frequency
+        # Higher bandwidth requires shorter chirps to maintain reasonable slopes
+        # Higher frequencies allow for shorter chirps while maintaining velocity resolution
+        
+        # Base chirp duration for a 77 GHz radar with 150 MHz bandwidth
+        base_chirp_duration = 50e-6  # 50 μs
+        
+        # Scale based on bandwidth (inversely proportional)
+        bandwidth_factor = 150e6 / self.bandwidth
+        
+        # Scale based on center frequency (inversely proportional)
+        frequency_factor = 77e9 / self.center_freq
+        
+        # Calculate optimal duration with constraints
+        optimal_duration = base_chirp_duration * bandwidth_factor * frequency_factor
+        
+        # Apply practical constraints (minimum and maximum values)
+        min_duration = 10e-6  # 10 μs minimum for practical hardware
+        max_duration = 500e-6  # 500 μs maximum to avoid excessive range-Doppler coupling
+        
+        return max(min_duration, min(optimal_duration, max_duration))
+    
+    def calculate_min_snr_for_detection(self, detection_probability=0.9, false_alarm_rate=1e-6):
+        """
+        Calculate the minimum SNR required for target detection at maximum range
+        
+        Args:
+            detection_probability: Desired probability of detection
+            false_alarm_rate: Acceptable false alarm rate
+            
+        Returns:
+            Minimum SNR in dB
+        """
+        # This is a simplified model based on the Neyman-Pearson detector
+        # In practice, this depends on the specific detection algorithm (e.g., CFAR)
+        
+        # For a typical radar with coherent integration of multiple pulses
+        # Higher detection probability or lower false alarm rate requires higher SNR
+        
+        # Simplified calculation based on detection theory
+        # For non-fluctuating target (Swerling 0)
+        import numpy as np
+        from scipy.stats import norm
+        
+        # Calculate detection threshold for given false alarm rate
+        threshold = -np.log(false_alarm_rate)
+        
+        # Calculate required SNR for given detection probability
+        # This is a simplified approximation
+        min_snr_linear = threshold / (1 - detection_probability)
+        
+        # Convert to dB
+        min_snr_db = 10 * np.log10(min_snr_linear)
+        
+        return min_snr_db
+    
+    def get_performance_metrics_summary(self):
+        """
+        Get a summary of radar performance metrics and parameter relationships
+        
+        Returns:
+            Dictionary containing performance metrics and explanations
+        """
+        metrics = {
+            "range_resolution": {
+                "value": self.range_resolution,
+                "unit": "m",
+                "description": "Minimum distance between two targets that can be separated",
+                "dependencies": "Inversely proportional to bandwidth. Higher bandwidth gives better resolution.",
+                "formula": "c / (2 * bandwidth)"
+            },
+            "max_range": {
+                "value": self.max_range,
+                "unit": "m",
+                "description": "Maximum unambiguous range that can be measured",
+                "dependencies": "Proportional to sample rate and chirp duration. Limited by signal attenuation.",
+                "formula": "range_resolution * num_range_bins"
+            },
+            "velocity_resolution": {
+                "value": self.velocity_resolution,
+                "unit": "m/s",
+                "description": "Minimum velocity difference between targets that can be separated",
+                "dependencies": "Inversely proportional to total observation time (chirp_duration * num_chirps) and center frequency",
+                "formula": "wavelength / (2 * chirp_duration * num_chirps)"
+            },
+            "max_velocity": {
+                "value": self.max_velocity,
+                "unit": "m/s",
+                "description": "Maximum unambiguous velocity that can be measured",
+                "dependencies": "Proportional to PRF (1/chirp_duration) and wavelength. Higher PRF allows higher velocities.",
+                "formula": "velocity_resolution * (num_doppler_bins // 2)"
+            }
+        }
+        
+        # Add signal-type specific metrics
+        if self.signal_type in ['FMCW', 'OFDM_FMCW', 'Sine_FMCW']:
+            metrics["chirp_slope"] = {
+                "value": self.chirp_slope,
+                "unit": "Hz/s",
+                "description": "Rate of frequency change in the FMCW chirp",
+                "dependencies": "Ratio of bandwidth to chirp duration. Higher slopes require better hardware.",
+                "formula": "bandwidth / chirp_duration"
+            }
+            
+            metrics["optimal_chirp_duration"] = {
+                "value": self.optimal_chirp_duration,
+                "unit": "s",
+                "description": "Calculated optimal chirp duration for this radar configuration",
+                "dependencies": "Based on bandwidth and center frequency. Balances range and velocity resolution.",
+                "formula": "Complex relationship based on bandwidth and center frequency"
+            }
+        
+        if self.signal_type in ['OFDM', 'OFDM_FMCW']:
+            metrics["ofdm_symbol_duration"] = {
+                "value": self.ofdm_symbol_duration,
+                "unit": "s",
+                "description": "Duration of one OFDM symbol (without cyclic prefix)",
+                "dependencies": "Inversely proportional to subcarrier spacing",
+                "formula": "1 / subcarrier_spacing"
+            }
+            
+            metrics["ofdm_bandwidth"] = {
+                "value": self.ofdm_bandwidth,
+                "unit": "Hz",
+                "description": "Total bandwidth occupied by OFDM signal",
+                "dependencies": "Product of number of subcarriers and subcarrier spacing",
+                "formula": "num_subcarriers * subcarrier_spacing"
+            }
+        
+        return metrics
+
+    def print_radar_capabilities(self):
+        """
+        Print radar capabilities and parameter relationships in a human-readable format
+        """
+        metrics = self.get_performance_metrics_summary()
+        
+        print("\n===== RADAR CAPABILITIES =====")
+        print(f"Signal Type: {self.signal_type}")
+        print(f"Center Frequency: {self.center_freq/1e9:.2f} GHz")
+        print(f"Bandwidth: {self.bandwidth/1e6:.2f} MHz")
+        print(f"Chirp Duration: {self.chirp_duration*1e6:.2f} μs")
+        print(f"Number of Chirps: {self.num_chirps}")
+        print("\n--- PERFORMANCE METRICS ---")
+        
+        for name, info in metrics.items():
+            # Format value based on magnitude
+            if info["value"] < 0.001:
+                value_str = f"{info['value']*1e6:.2f} μ{info['unit']}"
+            elif info["value"] < 1:
+                value_str = f"{info['value']*1e3:.2f} m{info['unit']}"
+            else:
+                value_str = f"{info['value']:.2f} {info['unit']}"
+                
+            print(f"{name.replace('_', ' ').title()}: {value_str}")
+            print(f"  Description: {info['description']}")
+            print(f"  Dependencies: {info['dependencies']}")
+            print()
+        
+        print("--- PARAMETER IMPACT SUMMARY ---")
+        print("• Increasing bandwidth improves range resolution but requires higher sampling rate")
+        print("• Increasing chirp duration improves velocity resolution but reduces maximum unambiguous velocity")
+        print("• Increasing number of chirps improves velocity resolution and SNR through coherent integration")
+        print("• Increasing center frequency improves angular resolution but increases atmospheric attenuation")
+        print("• For FMCW, the chirp slope (bandwidth/duration) is limited by hardware capabilities")
+        print("• For OFDM, the subcarrier spacing affects symbol duration and Doppler resolution")
+        
+        if self.signal_type in ['FMCW', 'OFDM_FMCW', 'Sine_FMCW']:
+            print(f"\nOptimal chirp duration for this configuration: {self.optimal_chirp_duration*1e6:.2f} μs")
+            if abs(self.optimal_chirp_duration - self.chirp_duration) > 0.2 * self.chirp_duration:
+                print(f"Note: Current chirp duration ({self.chirp_duration*1e6:.2f} μs) differs significantly from optimal.")
+                if self.chirp_duration < self.optimal_chirp_duration:
+                    print("  Consider increasing chirp duration to improve velocity resolution.")
+                else:
+                    print("  Consider decreasing chirp duration to improve maximum velocity measurement.")
 
     def _calculate_range_resolution(self):
         """Calculate range resolution based on bandwidth"""
@@ -275,6 +505,307 @@ class RadarProcessing:
         return filtered_signal
 
     def time_to_range_doppler(self, complex_data):
+        """
+        Convert time domain data to range-Doppler map
+        
+        This function processes time domain radar data into a range-Doppler map,
+        applying the appropriate processing based on the signal type.
+        
+        Args:
+            complex_data: Complex time domain data with shape [num_rx, num_chirps, samples_per_chirp]
+                         or [num_chirps, samples_per_chirp]
+        
+        Returns:
+            Range-Doppler map with shape [2, num_doppler_bins, num_range_bins]
+            where the first dimension contains real and imaginary parts
+        """
+        # Determine the signal type and call the appropriate processing function
+        if self.signal_type == 'FMCW':
+            return self._process_fmcw_range_doppler(complex_data)
+        elif self.signal_type == 'OFDM':
+            return self._process_ofdm_range_doppler(complex_data)
+        elif self.signal_type == 'Sine':
+            return self._process_sine_range_doppler(complex_data)
+        elif self.signal_type == 'OFDM_FMCW':
+            return self._process_hybrid_ofdm_fmcw_range_doppler(complex_data)
+        elif self.signal_type == 'Sine_FMCW':
+            return self._process_hybrid_sine_fmcw_range_doppler(complex_data)
+        else:
+            # Default to FMCW processing if signal type is not recognized
+            print(f"Warning: Unrecognized signal type '{self.signal_type}'. Using FMCW processing.")
+            return self._process_fmcw_range_doppler(complex_data)
+    
+    def _process_fmcw_range_doppler(self, complex_data):
+        """
+        Process FMCW radar data to create range-Doppler map
+        
+        Args:
+            complex_data: Complex time domain data
+        
+        Returns:
+            Range-Doppler map
+        """
+        # Ensure data has the right shape
+        complex_data = self._prepare_complex_data(complex_data)
+        
+        # Apply windowing for range processing
+        windowed_data = self._apply_window(complex_data, axis=2)
+        
+        # Perform range FFT (along fast time)
+        range_data = self._perform_range_fft(windowed_data)
+        
+        # Apply windowing for Doppler processing
+        doppler_windowed = self._apply_window(range_data, axis=1)
+        
+        # Perform Doppler FFT (along slow time)
+        rd_map = self._perform_doppler_fft(doppler_windowed)
+        
+        # Reshape to standard output format
+        return self._format_output(rd_map)
+    
+    def _process_ofdm_range_doppler(self, complex_data):
+        """
+        Process OFDM radar data to create range-Doppler map
+        
+        Args:
+            complex_data: Complex time domain data
+        
+        Returns:
+            Range-Doppler map
+        """
+        # Ensure data has the right shape
+        complex_data = self._prepare_complex_data(complex_data)
+        
+        # For OFDM, we first need to perform OFDM demodulation
+        # This involves FFT across subcarriers
+        ofdm_demod_data = self._perform_ofdm_demodulation(complex_data)
+        
+        # Extract channel information from demodulated data
+        channel_data = self._extract_ofdm_channel(ofdm_demod_data)
+        
+        # Apply windowing for range processing
+        windowed_data = self._apply_window(channel_data, axis=2)
+        
+        # Perform range FFT (IFFT of channel data gives range profile)
+        range_data = self._perform_ofdm_range_fft(windowed_data)
+        
+        # Apply windowing for Doppler processing
+        doppler_windowed = self._apply_window(range_data, axis=1)
+        
+        # Perform Doppler FFT (along slow time)
+        rd_map = self._perform_doppler_fft(doppler_windowed)
+        
+        # Reshape to standard output format
+        return self._format_output(rd_map)
+    
+    def _process_sine_range_doppler(self, complex_data):
+        """
+        Process Sine wave radar data to create range-Doppler map
+        
+        Args:
+            complex_data: Complex time domain data
+        
+        Returns:
+            Range-Doppler map
+        """
+        # Ensure data has the right shape
+        complex_data = self._prepare_complex_data(complex_data)
+        
+        # For sine wave, we primarily focus on phase changes for Doppler
+        # First, extract phase information
+        phase_data = self._extract_sine_phase(complex_data)
+        
+        # Apply windowing for range processing (limited range info in sine wave)
+        windowed_data = self._apply_window(complex_data, axis=2)
+        
+        # Perform simplified range processing
+        range_data = self._perform_sine_range_processing(windowed_data)
+        
+        # Apply windowing for Doppler processing
+        doppler_windowed = self._apply_window(range_data, axis=1)
+        
+        # Perform Doppler FFT (along slow time)
+        rd_map = self._perform_doppler_fft(doppler_windowed)
+        
+        # Reshape to standard output format
+        return self._format_output(rd_map)
+    
+    def _process_hybrid_ofdm_fmcw_range_doppler(self, complex_data):
+        """
+        Process hybrid OFDM-FMCW radar data to create range-Doppler map
+        
+        Args:
+            complex_data: Complex time domain data
+        
+        Returns:
+            Range-Doppler map
+        """
+        # Ensure data has the right shape
+        complex_data = self._prepare_complex_data(complex_data)
+        
+        # For hybrid signals, we process both components and combine results
+        # First, extract OFDM component
+        ofdm_data = self._extract_ofdm_component(complex_data)
+        
+        # Process OFDM component
+        ofdm_rd_map = self._process_ofdm_range_doppler(ofdm_data)
+        
+        # Extract FMCW component
+        fmcw_data = self._extract_fmcw_component(complex_data)
+        
+        # Process FMCW component
+        fmcw_rd_map = self._process_fmcw_range_doppler(fmcw_data)
+        
+        # Combine the results (weighted average based on SNR)
+        rd_map = self._combine_hybrid_results(ofdm_rd_map, fmcw_rd_map)
+        
+        return rd_map
+    
+    def _process_hybrid_sine_fmcw_range_doppler(self, complex_data):
+        """
+        Process hybrid Sine-FMCW radar data to create range-Doppler map
+        
+        Args:
+            complex_data: Complex time domain data
+        
+        Returns:
+            Range-Doppler map
+        """
+        # Ensure data has the right shape
+        complex_data = self._prepare_complex_data(complex_data)
+        
+        # Extract Sine component
+        sine_data = self._extract_sine_component(complex_data)
+        
+        # Process Sine component
+        sine_rd_map = self._process_sine_range_doppler(sine_data)
+        
+        # Extract FMCW component
+        fmcw_data = self._extract_fmcw_component(complex_data)
+        
+        # Process FMCW component
+        fmcw_rd_map = self._process_fmcw_range_doppler(fmcw_data)
+        
+        # Combine the results (weighted average based on SNR)
+        rd_map = self._combine_hybrid_results(sine_rd_map, fmcw_rd_map)
+        
+        return rd_map
+    
+    # Shared utility functions for range-Doppler processing
+    
+    def _prepare_complex_data(self, complex_data):
+        """
+        Ensure complex data has the right shape for processing
+        
+        Args:
+            complex_data: Complex time domain data
+        
+        Returns:
+            Properly shaped complex data
+        """
+        # Check if we need to add a dimension for single receiver
+        if len(complex_data.shape) == 2:
+            # Add dimension for single receiver
+            complex_data = complex_data[np.newaxis, :, :]
+        
+        return complex_data
+    
+    def _apply_window(self, data, axis, window_type='hann'):
+        """
+        Apply window function to data along specified axis
+        
+        Args:
+            data: Input data
+            axis: Axis to apply window
+            window_type: Type of window function
+        
+        Returns:
+            Windowed data
+        """
+        # Get the size of the dimension to window
+        dim_size = data.shape[axis]
+        
+        # Create window function
+        if window_type == 'hann':
+            window = np.hanning(dim_size)
+        elif window_type == 'hamming':
+            window = np.hamming(dim_size)
+        elif window_type == 'blackman':
+            window = np.blackman(dim_size)
+        else:
+            window = np.hanning(dim_size)  # Default to Hann window
+        
+        # Reshape window for broadcasting
+        reshape_dims = [1] * len(data.shape)
+        reshape_dims[axis] = dim_size
+        window = window.reshape(reshape_dims)
+        
+        # Apply window
+        return data * window
+    
+    def _perform_range_fft(self, data):
+        """
+        Perform range FFT on windowed data
+        
+        Args:
+            data: Windowed data
+        
+        Returns:
+            Range processed data
+        """
+        # Perform FFT along the samples_per_chirp dimension (axis=2)
+        range_data = np.fft.fft(data, axis=2)
+        
+        # Optionally truncate to num_range_bins if needed
+        if range_data.shape[2] > self.num_range_bins:
+            range_data = range_data[:, :, :self.num_range_bins]
+        
+        return range_data
+    
+    def _perform_doppler_fft(self, data):
+        """
+        Perform Doppler FFT on range processed data
+        
+        Args:
+            data: Range processed data
+        
+        Returns:
+            Range-Doppler map
+        """
+        # Perform FFT along the chirps dimension (axis=1)
+        rd_map = np.fft.fft(data, axis=1)
+        
+        # Optionally truncate to num_doppler_bins if needed
+        if rd_map.shape[1] > self.num_doppler_bins:
+            rd_map = rd_map[:, :self.num_doppler_bins, :]
+        
+        # Shift zero-frequency component to center
+        rd_map = np.fft.fftshift(rd_map, axes=1)
+        
+        return rd_map
+    
+    def _format_output(self, rd_map):
+        """
+        Format range-Doppler map to standard output format
+        
+        Args:
+            rd_map: Range-Doppler map
+        
+        Returns:
+            Formatted range-Doppler map with shape [2, num_doppler_bins, num_range_bins]
+        """
+        # Average across receivers if multiple receivers
+        if rd_map.shape[0] > 1:
+            rd_map = np.mean(rd_map, axis=0, keepdims=True)
+        
+        # Reshape to [2, num_doppler_bins, num_range_bins]
+        # where the first dimension contains real and imaginary parts
+        real_part = np.real(rd_map[0])
+        imag_part = np.imag(rd_map[0])
+        
+        return np.stack([real_part, imag_part], axis=0)
+
+    def time_to_range_doppler_old(self, complex_data):
         """
         Convert time-domain data to range-Doppler map
         
@@ -789,6 +1320,301 @@ class RadarProcessing:
         return rd_maps, detection_masks
 
     def detect_targets(self, rd_map, threshold=0.15, min_area=2):
+        """
+        Detect targets in a range-Doppler map using signal-type specific processing
+        
+        Args:
+            rd_map: Range-Doppler map
+            threshold: Detection threshold (0-1)
+            min_area: Minimum area of connected components to be considered a target
+            
+        Returns:
+            List of dictionaries containing target information
+        """
+        # Determine which detector to use based on signal type
+        if self.signal_type == 'FMCW':
+            return self._detect_targets_fmcw(rd_map, threshold, min_area)
+        elif self.signal_type == 'OFDM':
+            return self._detect_targets_ofdm(rd_map, threshold, min_area)
+        elif self.signal_type == 'Sine':
+            return self._detect_targets_sine(rd_map, threshold, min_area)
+        elif self.signal_type == 'OFDM_FMCW' or self.signal_type == 'Sine_FMCW':
+            return self._detect_targets_combined(rd_map, threshold, min_area)
+        else:
+            # Default to FMCW processing if signal type is not recognized
+            return self._detect_targets_fmcw(rd_map, threshold, min_area)
+    
+    def _detect_targets_common(self, binary_map):
+        """
+        Common target detection logic shared by all signal types
+        
+        Args:
+            binary_map: Binary map of detections after thresholding
+            
+        Returns:
+            List of connected components (potential targets)
+        """
+        # Find connected components in the binary map
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_map.astype(np.uint8), connectivity=8)
+        
+        # Extract components (skipping the background which is label 0)
+        components = []
+        for i in range(1, num_labels):
+            components.append({
+                'label': i,
+                'centroid': centroids[i],
+                'stats': stats[i],
+                'area': stats[i, cv2.CC_STAT_AREA]
+            })
+            
+        return components
+    
+    def _detect_targets_fmcw(self, rd_map, threshold=0.15, min_area=2):
+        """
+        Detect targets in FMCW radar data
+        
+        Args:
+            rd_map: Range-Doppler map
+            threshold: Detection threshold (0-1)
+            min_area: Minimum area of connected components to be considered a target
+            
+        Returns:
+            List of dictionaries containing target information
+        """
+        # Get magnitude of range-Doppler map
+        rd_magnitude = np.abs(rd_map)
+        
+        # Normalize to 0-1 range
+        rd_normalized = rd_magnitude / np.max(rd_magnitude)
+        
+        # Apply threshold to get binary detection map
+        binary_map = (rd_normalized > threshold).astype(np.uint8)
+        
+        # Get connected components
+        components = self._detect_targets_common(binary_map)
+        
+        # Filter components by minimum area and extract target information
+        targets = []
+        for comp in components:
+            if comp['area'] >= min_area:
+                # Get centroid coordinates
+                doppler_idx, range_idx = comp['centroid']
+                
+                # Convert indices to physical values
+                range_m = range_idx * self.range_resolution
+                velocity_mps = (doppler_idx - self.num_doppler_bins // 2) * self.velocity_resolution
+                
+                # Calculate SNR (simplified)
+                peak_value = rd_normalized[int(doppler_idx), int(range_idx)]
+                snr_db = 20 * np.log10(peak_value / (np.mean(rd_normalized) + 1e-10))
+                
+                # Add target to list
+                targets.append({
+                    'range': range_m,
+                    'velocity': velocity_mps,
+                    'snr': snr_db,
+                    'doppler_idx': int(doppler_idx),
+                    'range_idx': int(range_idx),
+                    'area': comp['area']
+                })
+        
+        return targets
+    
+    def _detect_targets_ofdm(self, rd_map, threshold=0.15, min_area=2):
+        """
+        Detect targets in OFDM radar data
+        
+        Args:
+            rd_map: Range-Doppler map
+            threshold: Detection threshold (0-1)
+            min_area: Minimum area of connected components to be considered a target
+            
+        Returns:
+            List of dictionaries containing target information
+        """
+        # Get magnitude of range-Doppler map
+        rd_magnitude = np.abs(rd_map)
+        
+        # Apply additional OFDM-specific processing
+        # OFDM typically has higher sidelobes, so we apply a more aggressive normalization
+        rd_normalized = rd_magnitude / (np.max(rd_magnitude) + 1e-10)
+        
+        # Apply OFDM-specific filtering to reduce sidelobes
+        # Simple 3x3 median filter to reduce noise
+        rd_filtered = cv2.medianBlur(rd_normalized.astype(np.float32), 3)
+        
+        # Apply threshold to get binary detection map
+        binary_map = (rd_filtered > threshold).astype(np.uint8)
+        
+        # Get connected components
+        components = self._detect_targets_common(binary_map)
+        
+        # Filter components by minimum area and extract target information
+        targets = []
+        for comp in components:
+            if comp['area'] >= min_area:
+                # Get centroid coordinates
+                doppler_idx, range_idx = comp['centroid']
+                
+                # Convert indices to physical values
+                range_m = range_idx * self.range_resolution
+                velocity_mps = (doppler_idx - self.num_doppler_bins // 2) * self.velocity_resolution
+                
+                # Calculate SNR (simplified)
+                peak_value = rd_normalized[int(doppler_idx), int(range_idx)]
+                snr_db = 20 * np.log10(peak_value / (np.mean(rd_normalized) + 1e-10))
+                
+                # Add target to list with OFDM-specific confidence metric
+                # OFDM typically has better range resolution but worse Doppler resolution
+                range_confidence = min(1.0, peak_value * 1.2)  # Boost range confidence
+                doppler_confidence = min(1.0, peak_value * 0.8)  # Reduce Doppler confidence
+                
+                targets.append({
+                    'range': range_m,
+                    'velocity': velocity_mps,
+                    'snr': snr_db,
+                    'doppler_idx': int(doppler_idx),
+                    'range_idx': int(range_idx),
+                    'area': comp['area'],
+                    'range_confidence': range_confidence,
+                    'doppler_confidence': doppler_confidence
+                })
+        
+        return targets
+    
+    def _detect_targets_sine(self, rd_map, threshold=0.15, min_area=2):
+        """
+        Detect targets in Sine (CW) radar data
+        
+        Args:
+            rd_map: Range-Doppler map
+            threshold: Detection threshold (0-1)
+            min_area: Minimum area of connected components to be considered a target
+            
+        Returns:
+            List of dictionaries containing target information
+        """
+        # Get magnitude of range-Doppler map
+        rd_magnitude = np.abs(rd_map)
+        
+        # For Sine wave radar, we focus primarily on the Doppler dimension
+        # since range information is limited
+        
+        # Sum across range bins to get Doppler profile
+        doppler_profile = np.sum(rd_magnitude, axis=1)
+        doppler_profile = doppler_profile / np.max(doppler_profile)
+        
+        # Create a 2D map with enhanced Doppler information
+        rd_normalized = rd_magnitude / (np.max(rd_magnitude) + 1e-10)
+        
+        # Apply threshold to get binary detection map
+        binary_map = (rd_normalized > threshold).astype(np.uint8)
+        
+        # Get connected components
+        components = self._detect_targets_common(binary_map)
+        
+        # Filter components by minimum area and extract target information
+        targets = []
+        for comp in components:
+            if comp['area'] >= min_area:
+                # Get centroid coordinates
+                doppler_idx, range_idx = comp['centroid']
+                
+                # For Sine wave, range is less accurate, so we add uncertainty
+                range_m = range_idx * self.range_resolution
+                velocity_mps = (doppler_idx - self.num_doppler_bins // 2) * self.velocity_resolution
+                
+                # Calculate SNR (simplified)
+                peak_value = rd_normalized[int(doppler_idx), int(range_idx)]
+                snr_db = 20 * np.log10(peak_value / (np.mean(rd_normalized) + 1e-10))
+                
+                # For Sine wave, we have high confidence in velocity but low in range
+                targets.append({
+                    'range': range_m,
+                    'velocity': velocity_mps,
+                    'snr': snr_db,
+                    'doppler_idx': int(doppler_idx),
+                    'range_idx': int(range_idx),
+                    'area': comp['area'],
+                    'range_confidence': 0.3,  # Low confidence in range for Sine wave
+                    'doppler_confidence': 0.9  # High confidence in Doppler for Sine wave
+                })
+        
+        return targets
+    
+    def _detect_targets_combined(self, rd_map, threshold=0.15, min_area=2):
+        """
+        Detect targets in combined signal types (OFDM_FMCW or Sine_FMCW)
+        
+        Args:
+            rd_map: Range-Doppler map
+            threshold: Detection threshold (0-1)
+            min_area: Minimum area of connected components to be considered a target
+            
+        Returns:
+            List of dictionaries containing target information
+        """
+        # Get magnitude of range-Doppler map
+        rd_magnitude = np.abs(rd_map)
+        
+        # Normalize to 0-1 range
+        rd_normalized = rd_magnitude / np.max(rd_magnitude)
+        
+        # For combined signals, we can leverage the strengths of both signal types
+        if self.signal_type == 'OFDM_FMCW':
+            # OFDM provides better range resolution, FMCW provides better Doppler
+            # Apply a 2D filter that preserves peaks while reducing sidelobes
+            kernel = np.ones((3, 3)) / 9
+            rd_filtered = cv2.filter2D(rd_normalized.astype(np.float32), -1, kernel)
+        else:  # Sine_FMCW
+            # Sine provides better Doppler resolution, FMCW provides range information
+            # Apply a filter that emphasizes Doppler dimension
+            kernel = np.ones((5, 3)) / 15
+            rd_filtered = cv2.filter2D(rd_normalized.astype(np.float32), -1, kernel)
+        
+        # Apply threshold to get binary detection map
+        binary_map = (rd_filtered > threshold).astype(np.uint8)
+        
+        # Get connected components
+        components = self._detect_targets_common(binary_map)
+        
+        # Filter components by minimum area and extract target information
+        targets = []
+        for comp in components:
+            if comp['area'] >= min_area:
+                # Get centroid coordinates
+                doppler_idx, range_idx = comp['centroid']
+                
+                # Convert indices to physical values
+                range_m = range_idx * self.range_resolution
+                velocity_mps = (doppler_idx - self.num_doppler_bins // 2) * self.velocity_resolution
+                
+                # Calculate SNR (simplified)
+                peak_value = rd_normalized[int(doppler_idx), int(range_idx)]
+                snr_db = 20 * np.log10(peak_value / (np.mean(rd_normalized) + 1e-10))
+                
+                # Set confidence based on signal type
+                if self.signal_type == 'OFDM_FMCW':
+                    range_confidence = 0.9  # High confidence in range
+                    doppler_confidence = 0.8  # Good confidence in Doppler
+                else:  # Sine_FMCW
+                    range_confidence = 0.7  # Good confidence in range
+                    doppler_confidence = 0.9  # High confidence in Doppler
+                
+                targets.append({
+                    'range': range_m,
+                    'velocity': velocity_mps,
+                    'snr': snr_db,
+                    'doppler_idx': int(doppler_idx),
+                    'range_idx': int(range_idx),
+                    'area': comp['area'],
+                    'range_confidence': range_confidence,
+                    'doppler_confidence': doppler_confidence
+                })
+        
+        return targets
+
+    def detect_targets_old(self, rd_map, threshold=0.15, min_area=2):
         """
         Detect targets in a range-Doppler map using thresholding and clustering
         

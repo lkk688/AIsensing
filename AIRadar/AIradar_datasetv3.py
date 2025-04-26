@@ -18,9 +18,9 @@ class RadarDataset(Dataset):
                  num_samples=100,
                  num_range_bins=128,  # Increased from 64 for better range resolution
                  num_doppler_bins=16,  # Increased from 12 for better velocity resolution
-                 sample_rate=1.5e6,    # reduce from 15MHz to 1.5MHz Adjusted to match hardware constraints
+                 sample_rate=1.5e6, #1.5e6,    # reduce from 15MHz to 1.5MHz Adjusted to match hardware constraints
                  transceiver_bandwidth=30e6,  # AD9361 bandwidth limitation
-                 chirp_duration=1e-4,  # reduce from 1ms to 0.1ms Increased to 1ms for better SNR (from 500μs)
+                 #chirp_duration=1e-4,  # reduce from 1ms to 0.1ms Increased to 1ms for better SNR (from 500μs)
                  num_chirps=32,       # Increased from 12 for better integration gain
                  bandwidth=500e6,     # Fixed by CN0566 capabilities
                  transceiver_center_freq=2.1e9,  # AD9361 center frequency
@@ -92,13 +92,6 @@ class RadarDataset(Dataset):
             print(f"Warning: Unsupported precision '{precision}'. Using 'float32' instead.")
             self.precision = 'float32'
         
-        # Store SDR parameters
-        self.sample_rate = sample_rate
-        self.chirp_duration = chirp_duration
-        self.num_chirps = num_chirps
-        self.bandwidth = bandwidth
-        self.center_freq = center_freq
-        self.transceiver_center_freq = transceiver_center_freq
         # Validate signal type
         valid_signal_types = ['FMCW', 'OFDM', 'Sine', 'OFDM_FMCW', 'Sine_FMCW']
         if signal_type not in valid_signal_types:
@@ -106,6 +99,58 @@ class RadarDataset(Dataset):
             self.signal_type = 'FMCW'
         else:
             self.signal_type = signal_type
+
+        # Store SDR parameters
+        self.sample_rate = sample_rate
+        self.bandwidth = bandwidth
+        self.center_freq = center_freq
+        self.transceiver_center_freq = transceiver_center_freq
+        
+        # For FMCW radar, we want to ensure the chirp rate is appropriate for visualization
+        # A good rule of thumb is to have the chirp duration be proportional to the ratio of
+        # bandwidth to center frequency to avoid too many oscillations in one chirp
+        carrier_to_bw_ratio = self.center_freq / self.bandwidth
+        
+        # Calculate appropriate sample rate based on bandwidth
+        # According to Nyquist, we need at least 2x the bandwidth for proper sampling
+        if self.signal_type == 'FMCW':
+            # For FMCW, we need higher sampling rate to properly capture the chirp
+            self.sample_rate = max(2.5 * self.bandwidth, sample_rate)
+            print(f"Automatically calculated sample rate for FMCW: {self.sample_rate/1e6:.2f} MHz")
+        elif self.signal_type in ['OFDM', 'OFDM_FMCW']:
+            # For OFDM, sample rate should be at least num_subcarriers * subcarrier_spacing
+            min_sample_rate = self.num_subcarriers * self.subcarrier_spacing * 1.2  # 20% margin
+            self.sample_rate = max(min_sample_rate, 2.2 * self.bandwidth, sample_rate)
+            print(f"Automatically calculated sample rate for OFDM: {self.sample_rate/1e6:.2f} MHz")
+        elif self.signal_type in ['Sine', 'Sine_FMCW']:
+            # For sine wave, we need at least 10 samples per period
+            min_sample_rate = 10 * self.signal_freq
+            self.sample_rate = max(min_sample_rate, 2.2 * self.bandwidth, sample_rate)
+            print(f"Automatically calculated sample rate for Sine: {self.sample_rate/1e6:.2f} MHz")
+        else:
+            # Default case - use at least 2.2x bandwidth (Nyquist + margin)
+            self.sample_rate = max(2.2 * self.bandwidth, sample_rate)
+            print(f"Using default sample rate: {self.sample_rate/1e6:.2f} MHz")
+            
+        # Check if sample rate is too high for practical simulation
+        max_practical_sample_rate = 2e9  # 2 GHz is a reasonable upper limit for simulation
+        if self.sample_rate > max_practical_sample_rate:
+            print(f"Warning: Calculated sample rate ({self.sample_rate/1e6:.2f} MHz) is very high.")
+            print(f"Limiting to {max_practical_sample_rate/1e6:.2f} MHz for practical simulation.")
+            self.sample_rate = max_practical_sample_rate
+        
+        # Base chirp duration that would work well for visualization
+        # Longer duration for higher carrier-to-bandwidth ratio
+        self.chirp_duration = (carrier_to_bw_ratio / 20) * 1e-4
+        
+        # Ensure chirp duration is within reasonable limits
+        self.chirp_duration = max(0.8e-4, min(5e-4, self.chirp_duration))
+        
+        print(f"Automatically calculated chirp duration: {self.chirp_duration:.2e} seconds")
+
+        self.num_chirps = num_chirps
+        
+        
         self.signal_freq = signal_freq #used for Sine_FMCW
         self.num_rx = num_rx
         self.num_tx = num_tx
@@ -182,13 +227,14 @@ class RadarDataset(Dataset):
         # Update samples_per_chirp based on the actual signal length
         self.samples_per_chirp = test_tx_signal.shape[1]
 
+
         # Initialize arrays to store data
         self.time_domain_data = np.zeros((self.num_samples, self.num_rx, self.num_chirps, 
-                                         self.samples_per_chirp, 2), dtype=self.precision)
+                                         self.samples_per_chirp, 2), dtype=self.precision) #(100, 4, 32, 150, 2)
         self.range_doppler_maps = np.zeros((self.num_samples, 2, self.num_doppler_bins, 
-                                           self.num_range_bins), dtype=self.precision)
+                                           self.num_range_bins), dtype=self.precision) #(100, 2, 16, 128)
         self.target_masks = np.zeros((self.num_samples, self.num_doppler_bins, 
-                                     self.num_range_bins, 1), dtype=self.precision)
+                                     self.num_range_bins, 1), dtype=self.precision) #(100, 16, 128, 1)
         
         # Initialize lists to store additional information
         self.target_info = []
@@ -207,7 +253,8 @@ class RadarDataset(Dataset):
             tx_power = np.random.uniform(0.5, 1.5)
             
             # Generate TX signal with the random parameters
-            tx_signal = self._generate_tx_signal(tx_power=tx_power)
+            tx_signal = self._generate_tx_signal(tx_power=tx_power) #(32, 150)
+            self._visualize_tx_signal(tx_signal, title=f"TX Signal {i}", save_path=f"{self.save_path}/tx_signal_{i}{IMG_FORMAT}")
             
             # Initialize RX signal (all zeros)
             rx_signal = np.zeros((self.num_rx, self.num_chirps, self.samples_per_chirp), 
@@ -269,6 +316,7 @@ class RadarDataset(Dataset):
             
             # Add noise to the received signal
             rx_signal = self._add_noise(rx_signal, snr_db)
+            self._visualize_rx_signal(rx_signal, target_info=sample_targets, title=f"RX Signal {i}", save_path=f"{self.save_path}/rx_signal_{i}{IMG_FORMAT}")
             
             # Process the received signal to generate range-Doppler map
             #rd_map = self.radar_processor.generate_range_doppler_map(rx_signal)
@@ -357,6 +405,84 @@ class RadarDataset(Dataset):
             signal_type=self.signal_type,
             signal_freq=self.signal_freq if hasattr(self, 'signal_freq') else 1e6
         )
+
+    def _visualize_tx_signal(self, tx_signal, title="Transmit Signal Visualization", save_path=None):
+        """Visualize the transmit signal and its frequency spectrum
+        
+        Args:
+            tx_signal: Transmit signal array [num_chirps, samples_per_chirp]
+            title: Title for the plot
+            save_path: Path to save the figure (if None, just display)
+        """
+        # Create figure with subplots
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 12))
+        
+        # Select first chirp for visualization
+        chirp_idx = 0
+        
+        # Time domain plot
+        t = np.linspace(0, self.chirp_duration, self.samples_per_chirp, endpoint=False)
+        
+        ax1.plot(t * 1e6, np.real(tx_signal[chirp_idx]), label='Real')
+        ax1.plot(t * 1e6, np.imag(tx_signal[chirp_idx]), label='Imaginary')
+        ax1.set_title(f'Time Domain TX Signal (Chirp {chirp_idx})\nChirp Duration: {self.chirp_duration*1e6:.2f} μs')
+        ax1.set_xlabel('Time (μs)')
+        ax1.set_ylabel('Amplitude')
+        ax1.grid(True, alpha=0.3)
+        ax1.legend()
+        
+        # Calculate and plot instantaneous frequency
+        # For a chirp, we can extract the instantaneous frequency by taking the derivative of the phase
+        phase = np.unwrap(np.angle(tx_signal[chirp_idx]))
+        # Calculate the derivative of the phase
+        inst_freq = np.diff(phase) / (2 * np.pi * (t[1] - t[0]))
+        
+        # Plot instantaneous frequency
+        ax2.plot(t[1:] * 1e6, inst_freq / 1e6, 'r-')
+        ax2.set_title('Instantaneous Frequency (Shows Chirp Characteristic)')
+        ax2.set_xlabel('Time (μs)')
+        ax2.set_ylabel('Frequency (MHz)')
+        ax2.grid(True, alpha=0.3)
+        
+        # Add horizontal lines showing the bandwidth limits
+        ax2.axhline(y=-self.bandwidth/2e6, color='g', linestyle='--', 
+                    label=f'Start: {-self.bandwidth/2e6:.1f} MHz')
+        ax2.axhline(y=self.bandwidth/2e6, color='b', linestyle='--', 
+                    label=f'End: {self.bandwidth/2e6:.1f} MHz')
+        ax2.legend()
+        
+        # Frequency domain plot
+        freq = np.fft.fftshift(np.fft.fftfreq(len(tx_signal[chirp_idx]), 1/self.sample_rate))
+        
+        fft_signal = np.fft.fftshift(np.fft.fft(tx_signal[chirp_idx]))
+        fft_mag = np.abs(fft_signal)
+        fft_db = 20 * np.log10(fft_mag + 1e-10)
+        
+        ax3.plot(freq / 1e6, fft_db)
+        ax3.set_title('Frequency Domain TX Signal')
+        ax3.set_xlabel('Frequency (MHz)')
+        ax3.set_ylabel('Magnitude (dB)')
+        ax3.grid(True, alpha=0.3)
+        
+        # Mark the bandwidth region
+        bw_start = -self.bandwidth/2
+        bw_end = self.bandwidth/2
+        ax3.axvspan(bw_start/1e6, bw_end/1e6, alpha=0.2, color='green', 
+                    label=f'Signal Bandwidth ({self.bandwidth/1e6:.0f} MHz)')
+        ax3.legend()
+        
+        # Set x-axis limits to focus on the relevant frequency range
+        ax3.set_xlim([-self.bandwidth/1e6, self.bandwidth/1e6])  # Focus on the bandwidth region
+        
+        # Adjust layout
+        plt.tight_layout()
+        
+        # Save or display the figure
+        if save_path:
+            plt.savefig(save_path)
+            plt.close()
+        else:
+            plt.show()
 
     def _visualize_rx_signal(self, rx_signal, target_info=None, title="Received Signal Visualization", save_path=None):
         """Visualize the received signal to check correctness
@@ -590,8 +716,8 @@ class RadarDataset(Dataset):
             Transmit signal array [num_chirps, samples_per_chirp]
         """
         # Create time vector for one chirp
-        t = np.arange(0, self.chirp_duration, 1/self.sample_rate)
-        self.samples_per_chirp = len(t)
+        t = np.arange(0, self.chirp_duration, 1/self.sample_rate) 
+        self.samples_per_chirp = len(t)#150 points for one chirp
 
         # Update samples_per_chirp only if it's the first time (during initialization)
         if not hasattr(self, '_tx_signal_initialized'):
@@ -600,17 +726,48 @@ class RadarDataset(Dataset):
         
         # Initialize transmit signal array
         tx_signal = np.zeros((self.num_chirps, self.samples_per_chirp), dtype=np.complex64)
+        #(32, 150)
+        #For basic FMCW: generates the chirp signal directly at the center frequency; 
+        # Generate time vector with exact number of samples
         
         if self.signal_type == 'FMCW':
-            # Generate FMCW chirp signal
-            for chirp_idx in range(self.num_chirps):
-                # Linear frequency sweep from f0 to f0+bandwidth
-                f0 = self.center_freq - self.bandwidth/2
-                f1 = self.center_freq + self.bandwidth/2
+            # Generate time vector with exact number of samples
+            t = np.linspace(0, self.chirp_duration, self.samples_per_chirp, endpoint=False)
+            
+            # For FMCW radar, we need to generate a baseband chirp that sweeps across the full bandwidth
+            # The baseband chirp should sweep from -bandwidth/2 to +bandwidth/2
+            start_freq = -self.bandwidth/2
+            end_freq = self.bandwidth/2
+            
+            # Calculate chirp rate (Hz/s)
+            chirp_rate = self.bandwidth / self.chirp_duration
+            
+            print(f"FMCW Chirp Parameters:")
+            print(f"  Center Frequency: {self.center_freq/1e9:.2f} GHz")
+            print(f"  Bandwidth: {self.bandwidth/1e6:.1f} MHz")
+            print(f"  Chirp Duration: {self.chirp_duration*1e6:.2f} μs")
+            print(f"  Chirp Rate: {chirp_rate/1e12:.3f} THz/s")
+            print(f"  Samples per chirp: {self.samples_per_chirp}")
                 
-                # Generate complex chirp signal at the carrier frequency
-                chirp_signal = np.exp(1j * 2 * np.pi * (f0 * t + 0.5 * (f1 - f0) / self.chirp_duration * t**2))
-                tx_signal[chirp_idx] = chirp_signal
+            # Generate FMCW chirp signal for each chirp
+            for chirp_idx in range(self.num_chirps):
+                # Generate linear frequency sweep
+                # The phase is the integral of 2π*f(t): φ(t) = 2π*(start_freq*t + (chirp_rate/2)*t²)
+                phase = 2 * np.pi * (start_freq * t + (chirp_rate/2) * t**2)
+                
+                # Apply a small random phase offset between chirps for more realistic simulation
+                chirp_phase_offset = np.random.uniform(0, 2*np.pi)
+                
+                # Generate the complex baseband signal: A*exp(j*φ(t))
+                tx_signal[chirp_idx] = tx_power * np.exp(1j * (phase + chirp_phase_offset))
+            
+            # Print diagnostic information to verify bandwidth utilization
+            # Calculate instantaneous frequency of first chirp to verify sweep
+            if self.samples_per_chirp > 1:
+                phase = np.unwrap(np.angle(tx_signal[0]))
+                inst_freq = np.diff(phase) / (2 * np.pi * (t[1] - t[0]))
+                print(f"  Instantaneous frequency range: {np.min(inst_freq)/1e6:.1f} MHz to {np.max(inst_freq)/1e6:.1f} MHz")
+                print(f"  Measured bandwidth: {(np.max(inst_freq) - np.min(inst_freq))/1e6:.1f} MHz")
                 
         elif self.signal_type == 'OFDM':
             # Generate standard OFDM signal using the dedicated function
@@ -2533,6 +2690,15 @@ def visualize_signal_processing_steps(dataset, sample_idx=0):
     """Visualize the signal processing steps for a single sample"""
     # Create directory for processing figures
     os.makedirs(f"{dataset.save_path}/processing", exist_ok=True)
+
+    # Initialize metrics lists
+    detection_accuracies = []
+    metrics = {
+        'snr_improvement': [],
+        'detection_accuracy': [],
+        'processing_time': []
+    }
+    processing_times = []
     
     # Get sample data
     sample = dataset[sample_idx]
