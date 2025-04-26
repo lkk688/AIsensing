@@ -254,7 +254,8 @@ class RadarDataset(Dataset):
             
             # Generate TX signal with the random parameters
             tx_signal = self._generate_tx_signal(tx_power=tx_power) #(32, 150)
-            self._visualize_tx_signal(tx_signal, title=f"TX Signal {i}", save_path=f"{self.save_path}/tx_signal_{i}{IMG_FORMAT}")
+            if i % 100 == 0:
+                self._visualize_tx_signal(tx_signal, title=f"TX Signal {i}", save_path=f"{self.save_path}/tx_signal_{i}{IMG_FORMAT}")
             
             # Initialize RX signal (all zeros)
             rx_signal = np.zeros((self.num_rx, self.num_chirps, self.samples_per_chirp), 
@@ -316,11 +317,19 @@ class RadarDataset(Dataset):
             
             # Add noise to the received signal
             rx_signal = self._add_noise(rx_signal, snr_db)
-            self._visualize_rx_signal(rx_signal, target_info=sample_targets, title=f"RX Signal {i}", save_path=f"{self.save_path}/rx_signal_{i}{IMG_FORMAT}")
+            if i % 100 == 0:
+                self._visualize_rx_signal(rx_signal, target_info=sample_targets, title=f"RX Signal {i}", save_path=f"{self.save_path}/rx_signal_{i}{IMG_FORMAT}")
             
             # Process the received signal to generate range-Doppler map
             #rd_map = self.radar_processor.generate_range_doppler_map(rx_signal)
             rd_map = self.radar_processor.time_to_range_doppler(rx_signal)
+            # Visualize range-Doppler map# Visualize range-Doppler map for selected samples
+            if i % 100 == 0:
+                self._visualize_range_doppler_map(rd_map, sample_targets, 
+                                                title=f"Range-Doppler Map {i}", 
+                                                save_path=f"{self.save_path}/rd_map_{i}{IMG_FORMAT}")
+
+            # Visualize the range-Doppler map
 
             # Create target mask
             target_mask = self._create_target_mask(sample_targets)
@@ -611,7 +620,146 @@ class RadarDataset(Dataset):
         else:
             plt.show()
 
-    
+    def _visualize_range_doppler_map(self, rd_map, target_info=None, title="Range-Doppler Map Visualization", save_path=None):
+        """
+        Visualize the range-Doppler map with target annotations in both 2D and 3D
+        
+        Args:
+            rd_map: Range-Doppler map with shape [2, num_doppler_bins, num_range_bins]
+            target_info: List of dictionaries containing target information
+            title: Title for the plot
+            save_path: Path to save the figure
+            
+        Returns:
+            None
+        """
+        # Create figure with two subplots (2D and 3D)
+        fig = plt.figure(figsize=(18, 10))
+        
+        # Get magnitude of range-Doppler map
+        rd_magnitude = np.sqrt(rd_map[0]**2 + rd_map[1]**2)
+        
+        # Convert to dB scale with clipping
+        rd_db = 20 * np.log10(rd_magnitude / np.max(rd_magnitude) + 1e-10)
+        rd_db_clipped = np.clip(rd_db, -40, 0)
+        
+        # Create normalized version for display
+        rd_normalized = (rd_db_clipped + 40) / 40
+        
+        # Create range and velocity axes
+        range_axis = np.arange(self.num_range_bins) * self.range_resolution
+        velocity_axis = (np.arange(self.num_doppler_bins) - self.num_doppler_bins // 2) * self.velocity_resolution
+        
+        # 2D Plot (left subplot)
+        ax1 = fig.add_subplot(1, 2, 1)
+        im = ax1.imshow(rd_normalized, aspect='auto', origin='lower', 
+                  extent=[0, range_axis[-1], velocity_axis[0], velocity_axis[-1]],
+                  cmap='viridis')
+        
+        # Add colorbar to 2D plot
+        cbar = plt.colorbar(im, ax=ax1)
+        cbar.set_label('Normalized Power (dB)')
+        
+        # Add target annotations to 2D plot if provided
+        if target_info is not None and len(target_info) > 0:
+            for i, target in enumerate(target_info):
+                distance = target['distance']
+                velocity = target['velocity']
+                rcs = target.get('rcs', 1.0)
+                
+                # Calculate marker size based on RCS
+                marker_size = 50 * np.sqrt(rcs)
+                
+                # Plot target
+                ax1.scatter(distance, velocity, s=marker_size, c='red', 
+                           marker='x', linewidths=2, label=f'Target {i+1}' if i == 0 else None)
+                
+                # Add target label
+                ax1.annotate(f'T{i+1}', (distance, velocity), 
+                            xytext=(5, 5), textcoords='offset points',
+                            color='white', fontweight='bold')
+        
+        # Add plot labels and title for 2D plot
+        ax1.set_xlabel('Range (m)')
+        ax1.set_ylabel('Velocity (m/s)')
+        ax1.set_title('2D Range-Doppler Map')
+        
+        # Add grid to 2D plot
+        ax1.grid(True, linestyle='--', alpha=0.5)
+        
+        # Add legend if targets are present
+        if target_info is not None and len(target_info) > 0:
+            ax1.legend(loc='upper right')
+        
+        # 3D Plot (right subplot)
+        ax2 = fig.add_subplot(1, 2, 2, projection='3d')
+        
+        # Create meshgrid for 3D surface
+        X, Y = np.meshgrid(range_axis, velocity_axis)
+        
+        # Plot the 3D surface
+        surf = ax2.plot_surface(X, Y, rd_normalized, cmap='plasma', 
+                               linewidth=0, antialiased=True, alpha=0.8)
+        
+        # Add colorbar to 3D plot
+        cbar2 = fig.colorbar(surf, ax=ax2, shrink=0.6)
+        cbar2.set_label('Normalized Power (dB)')
+        
+        # Add target markers to 3D plot if provided
+        if target_info is not None and len(target_info) > 0:
+            for i, target in enumerate(target_info):
+                distance = target['distance']
+                velocity = target['velocity']
+                
+                # Find the closest indices to the target location
+                range_idx = int(distance / self.range_resolution)
+                velocity_idx = int((velocity / self.velocity_resolution) + self.num_doppler_bins // 2)
+                
+                # Ensure indices are within bounds
+                range_idx = min(max(0, range_idx), self.num_range_bins - 1)
+                velocity_idx = min(max(0, velocity_idx), self.num_doppler_bins - 1)
+                
+                # Get the power value at target location
+                z_value = rd_normalized[velocity_idx, range_idx]
+                
+                # Plot target in 3D with a small offset for visibility
+                ax2.scatter([distance], [velocity], [z_value + 0.05], 
+                           c='red', marker='o', s=80, label=f'Target {i+1}' if i == 0 else None)
+                
+                # Add target label in 3D
+                ax2.text(distance, velocity, z_value + 0.1, f'T{i+1}', 
+                        color='white', fontweight='bold', fontsize=10)
+        
+        # Set labels and title for 3D plot
+        ax2.set_xlabel('Range (m)')
+        ax2.set_ylabel('Velocity (m/s)')
+        ax2.set_zlabel('Normalized Power')
+        ax2.set_title('3D Range-Doppler Surface')
+        
+        # Adjust 3D view angle for better visualization
+        ax2.view_init(elev=30, azim=225)
+        
+        # Add radar parameters as text
+        param_text = f"Signal: {self.signal_type}\n"
+        param_text += f"Bandwidth: {self.bandwidth/1e6:.1f} MHz\n"
+        param_text += f"Range Res: {self.range_resolution:.2f} m\n"
+        param_text += f"Velocity Res: {self.velocity_resolution:.2f} m/s"
+        
+        plt.figtext(0.02, 0.02, param_text, fontsize=9, 
+                   bbox=dict(facecolor='white', alpha=0.7))
+        
+        # Set main title for the entire figure
+        fig.suptitle(title, fontsize=16)
+        
+        # Adjust layout
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        
+        # Save figure if path is provided
+        if save_path is not None:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            plt.close()
+        else:
+            plt.show()
 
     def _add_target(self, rx_signal, distance, velocity, rcs=1.0):
         """Add target to received signal
@@ -937,352 +1085,258 @@ class RadarDataset(Dataset):
 
     
     def _draw_sample(self, index, rx_signal, rd_map, targets):
-        """Draw visualization of a sample
+        """
+        Draw comprehensive visualization of a sample using existing visualization functions
         
         Args:
             index: Sample index
-            rx_signal: Complex received signal
+            rx_signal: Received signal
             rd_map: Range-Doppler map
-            targets: Target information
-        """
-        # Create directory for figures
-        os.makedirs(f"{self.save_path}/figures", exist_ok=True)
-        
-        # Create figure with subplots
-        fig, axs = plt.subplots(2, 2, figsize=(15, 10))
-        
-        # Plot time domain signal (real part)
-        axs[0, 0].plot(np.real(rx_signal[0, 0]))
-        axs[0, 0].set_title('Time Domain Signal (Real Part)')
-        axs[0, 0].set_xlabel('Sample')
-        axs[0, 0].set_ylabel('Amplitude')
-        
-        # Plot time domain signal (imaginary part)
-        axs[0, 1].plot(np.imag(rx_signal[0, 0]))
-        axs[0, 1].set_title('Time Domain Signal (Imaginary Part)')
-        axs[0, 1].set_xlabel('Sample')
-        axs[0, 1].set_ylabel('Amplitude')
-        
-        # Plot range-Doppler map (magnitude)
-        rd_magnitude = np.sqrt(np.real(rd_map)**2 + np.imag(rd_map)**2)
-        rd_db = 20 * np.log10(rd_magnitude + 1e-10)  # Convert to dB
-        im = axs[1, 0].imshow(rd_db, aspect='auto', cmap='jet')
-        axs[1, 0].set_title('Range-Doppler Map (Magnitude, dB)')
-        axs[1, 0].set_xlabel('Range Bin')
-        axs[1, 0].set_ylabel('Doppler Bin')
-        plt.colorbar(im, ax=axs[1, 0])
-        
-        # Plot target mask
-        mask = self.target_masks[index, :, :, 0]
-        axs[1, 1].imshow(mask, aspect='auto', cmap='hot')  # Changed to 'hot' colormap for better visibility
-        axs[1, 1].set_title('Target Mask')
-        axs[1, 1].set_xlabel('Range Bin')
-        axs[1, 1].set_ylabel('Doppler Bin')
-        
-        # Add target annotations with clear markers
-        for target in targets:
-            range_bin = int(target['distance'] / self.range_resolution)
-            doppler_bin = int(self.num_doppler_bins/2 + target['velocity'] / self.velocity_resolution)
+            targets: List of target information
             
-            if (0 <= range_bin < self.num_range_bins and 
-                0 <= doppler_bin < self.num_doppler_bins):
-                # Add markers to both plots
-                axs[1, 0].plot(range_bin, doppler_bin, 'wo', markersize=8, markeredgecolor='black')
-                axs[1, 1].plot(range_bin, doppler_bin, 'wo', markersize=8, markeredgecolor='black')
-                
-                # Add target information text
-                axs[1, 0].text(range_bin + 2, doppler_bin, 
-                          f"R: {target['distance']:.1f}m\nV: {target['velocity']:.1f}m/s", 
-                          color='white', fontsize=8, backgroundcolor='black')
+        Returns:
+            None
+        """
+        # Create a directory for this sample's visualizations
+        sample_dir = os.path.join(self.save_path, f"sample_{index}")
+        os.makedirs(sample_dir, exist_ok=True)
         
-        # Add sample information
-        plt.suptitle(f'Sample {index}: {len(targets)} Targets, Signal Type: {self.signal_type}')
+        # Generate a TX signal for visualization (since we might not have it stored)
+        tx_signal = self._generate_tx_signal()
         
-        # Adjust layout and save
-        plt.tight_layout()
-        plt.savefig(f"{self.save_path}/figures/sample_{index}{IMG_FORMAT}")
-        plt.close()
+        # Create a comprehensive figure title
+        title = f"Sample {index}: {len(targets)} Targets, {self.signal_type}"
+        
+        # Visualize TX signal
+        self._visualize_tx_signal(
+            tx_signal, 
+            title=f"TX Signal - {title}", 
+            save_path=f"{sample_dir}/tx_signal{IMG_FORMAT}"
+        )
+        
+        # Visualize RX signal
+        self._visualize_rx_signal(
+            rx_signal, 
+            target_info=targets, 
+            title=f"RX Signal - {title}", 
+            save_path=f"{sample_dir}/rx_signal{IMG_FORMAT}"
+        )
+        
+        # Visualize Range-Doppler map
+        self._visualize_range_doppler_map(
+            rd_map, 
+            target_info=targets, 
+            title=f"Range-Doppler Map - {title}", 
+            save_path=f"{sample_dir}/rd_map{IMG_FORMAT}"
+        )
+        
+        # Also create a comprehensive visualization that combines all three
+        self._visualize_comprehensive_signal(
+            tx_signal=tx_signal,
+            rx_signal=rx_signal,
+            title=title,
+            target_info=targets,
+            save_path=f"{sample_dir}/comprehensive{IMG_FORMAT}"
+        )
+        
+        print(f"Sample {index} visualizations saved to {sample_dir}")
 
     def _visualize_comprehensive_signal(self, tx_signal, rx_signal, title="Signal Visualization", target_info=None, save_path=None):
-        """Comprehensive visualization of TX and RX signals with hardware effects
+        """Comprehensive visualization focusing on unique insights not covered by other visualization functions
         
         Args:
-            tx_signal: Transmit signal array [num_chirps, samples_per_chirp]
-            rx_signal: Received signal array [num_rx, num_chirps, samples_per_chirp]
-            title: Title for the plot
-            target_info: Optional list of dictionaries with target information
-            save_path: Path to save the figure (if None, just display)
+            tx_signal: Transmitted signal
+            rx_signal: Received signal
+            title: Title for the visualization
+            target_info: List of dictionaries containing target information
+            save_path: Path to save the figure
+            
+        Returns:
+            None
         """
-        # Create figure with subplots (3 rows, 4 columns)
-        fig, axs = plt.subplots(3, 4, figsize=(20, 12))
+        # Create a figure with multiple subplots for unique visualizations
+        fig = plt.figure(figsize=(15, 12))
         
-        # Select first chirp and RX for visualization
-        chirp_idx = 0
-        rx_idx = 0
+        # Create a grid layout for our specialized plots
+        gs = fig.add_gridspec(3, 2)
         
-        # Row 1: TX Signal Analysis
-        # --------------------------
+        # 1. Signal Spectrum Analysis (not in other visualizations)
+        ax1 = fig.add_subplot(gs[0, 0])
         
-        # Plot TX time domain signal (real part)
-        axs[0, 0].plot(np.real(tx_signal[chirp_idx]))
-        axs[0, 0].set_title('TX Signal (Real Part)')
-        axs[0, 0].set_xlabel('Sample')
-        axs[0, 0].set_ylabel('Amplitude')
-        axs[0, 0].grid(True, alpha=0.3)
+        # Calculate spectrum of TX signal (first chirp)
+        tx_spectrum = np.fft.fftshift(np.fft.fft(tx_signal[0]))
+        freq = np.fft.fftshift(np.fft.fftfreq(len(tx_spectrum), 1/self.sample_rate))
         
-        # Plot TX time domain signal (imaginary part)
-        axs[0, 1].plot(np.imag(tx_signal[chirp_idx]))
-        axs[0, 1].set_title('TX Signal (Imaginary Part)')
-        axs[0, 1].set_xlabel('Sample')
-        axs[0, 1].set_ylabel('Amplitude')
-        axs[0, 1].grid(True, alpha=0.3)
+        # Plot TX spectrum
+        ax1.plot(freq/1e6, 20*np.log10(np.abs(tx_spectrum) + 1e-10), 'b-', label='TX Spectrum')
+        ax1.set_xlabel('Frequency (MHz)')
+        ax1.set_ylabel('Power (dB)')
+        ax1.set_title('Signal Spectrum Analysis')
+        ax1.grid(True)
+        ax1.legend()
         
-        # Plot TX frequency domain
-        freq_tx = np.fft.fftshift(np.fft.fftfreq(len(tx_signal[chirp_idx]), 1/self.sample_rate))
-        freq_tx_ghz = (freq_tx + self.center_freq) / 1e9  # Convert to GHz
+        # 2. Phase Analysis (not in other visualizations)
+        ax2 = fig.add_subplot(gs[0, 1])
         
-        fft_tx = np.fft.fftshift(np.fft.fft(tx_signal[chirp_idx]))
-        fft_tx_mag = np.abs(fft_tx)
-        fft_tx_db = 20 * np.log10(fft_tx_mag + 1e-10)
+        # Calculate phase of RX signal for first antenna, first chirp
+        rx_phase = np.angle(rx_signal[0, 0])
+        time_axis = np.arange(len(rx_phase)) / self.sample_rate * 1e6  # in μs
         
-        axs[0, 2].plot(freq_tx_ghz, fft_tx_db)
-        axs[0, 2].set_title('TX Frequency Domain (Magnitude)')
-        axs[0, 2].set_xlabel('Frequency (GHz)')
-        axs[0, 2].set_ylabel('Magnitude (dB)')
-        axs[0, 2].grid(True, alpha=0.3)
+        # Plot phase
+        ax2.plot(time_axis, rx_phase, 'r-')
+        ax2.set_xlabel('Time (μs)')
+        ax2.set_ylabel('Phase (rad)')
+        ax2.set_title('RX Signal Phase Analysis')
+        ax2.grid(True)
         
-        # Mark the bandwidth region
-        bw_start = self.center_freq - self.bandwidth/2
-        bw_end = self.center_freq + self.bandwidth/2
-        axs[0, 2].axvspan(bw_start/1e9, bw_end/1e9, alpha=0.2, color='green', 
-                        label=f'Signal Bandwidth ({self.bandwidth/1e6:.0f} MHz)')
-        axs[0, 2].legend()
+        # 3. Multi-Antenna Correlation Analysis (unique visualization)
+        ax3 = fig.add_subplot(gs[1, 0])
         
-        # Set x-axis limits to focus on the relevant frequency range
-        axs[0, 2].set_xlim([self.center_freq/1e9 - 1, self.center_freq/1e9 + 1])
-        
-        # Plot TX phase
-        phase_tx = np.angle(tx_signal[chirp_idx])
-        axs[0, 3].plot(phase_tx)
-        axs[0, 3].set_title('TX Signal Phase')
-        axs[0, 3].set_xlabel('Sample')
-        axs[0, 3].set_ylabel('Phase (radians)')
-        axs[0, 3].grid(True, alpha=0.3)
-        
-        # Row 2: Hardware Modulation Effects (if applicable)
-        # -------------------------------------------------
-        
-        if self.signal_type in ['OFDM_FMCW', 'Sine_FMCW']:
-            # For these signal types, we have hardware modulation
-            # Generate baseband signal at AD9361 frequency
-            t = np.arange(0, self.chirp_duration, 1/self.sample_rate)
-            baseband_signal = np.zeros((self.num_chirps, self.samples_per_chirp), dtype=np.complex64)
+        if self.num_rx > 1:
+            # Calculate correlation between antennas
+            corr_matrix = np.zeros((self.num_rx, self.num_rx))
+            for i in range(self.num_rx):
+                for j in range(self.num_rx):
+                    # Correlation for first chirp
+                    corr = np.abs(np.corrcoef(
+                        np.abs(rx_signal[i, 0]), 
+                        np.abs(rx_signal[j, 0])
+                    )[0, 1])
+                    corr_matrix[i, j] = corr
             
-            if self.signal_type == 'OFDM_FMCW':
-                # Generate OFDM baseband signal
-                baseband_signal = self._generate_ofdm_signal(
-                    num_chirps=self.num_chirps,
-                    samples_per_chirp=self.samples_per_chirp,
-                    center_freq=self.transceiver_center_freq,
-                    bandwidth=self.transceiver_bandwidth,
-                    num_subcarriers=self.num_subcarriers,
-                    t=t
-                )
-            elif self.signal_type == 'Sine_FMCW':
-                # Generate Sine baseband signal
-                for c_idx in range(self.num_chirps):
-                    sine_phase = 2 * np.pi * self.signal_freq * t
-                    baseband_signal[c_idx] = np.exp(1j * sine_phase)
+            # Plot correlation matrix
+            im = ax3.imshow(corr_matrix, cmap='viridis', vmin=0, vmax=1)
+            ax3.set_title('RX Antenna Correlation')
+            ax3.set_xlabel('Antenna Index')
+            ax3.set_ylabel('Antenna Index')
             
-            # Plot baseband time domain (real part)
-            axs[1, 0].plot(np.real(baseband_signal[chirp_idx]))
-            axs[1, 0].set_title('Baseband Signal (Real Part)')
-            axs[1, 0].set_xlabel('Sample')
-            axs[1, 0].set_ylabel('Amplitude')
-            axs[1, 0].grid(True, alpha=0.3)
+            # Add colorbar
+            cbar = plt.colorbar(im, ax=ax3)
+            cbar.set_label('Correlation')
             
-            # Plot baseband frequency domain
-            freq_bb = np.fft.fftshift(np.fft.fftfreq(len(baseband_signal[chirp_idx]), 1/self.sample_rate))
-            freq_bb_ghz = (freq_bb + self.transceiver_center_freq) / 1e9  # Convert to GHz
-            
-            fft_bb = np.fft.fftshift(np.fft.fft(baseband_signal[chirp_idx]))
-            fft_bb_mag = np.abs(fft_bb)
-            fft_bb_db = 20 * np.log10(fft_bb_mag + 1e-10)
-            
-            axs[1, 1].plot(freq_bb_ghz, fft_bb_db)
-            axs[1, 1].set_title('Baseband Frequency Domain')
-            axs[1, 1].set_xlabel('Frequency (GHz)')
-            axs[1, 1].set_ylabel('Magnitude (dB)')
-            axs[1, 1].grid(True, alpha=0.3)
-            
-            # Mark the transceiver bandwidth region
-            bb_bw_start = self.transceiver_center_freq - self.transceiver_bandwidth/2
-            bb_bw_end = self.transceiver_center_freq + self.transceiver_bandwidth/2
-            axs[1, 1].axvspan(bb_bw_start/1e9, bb_bw_end/1e9, alpha=0.2, color='blue', 
-                            label=f'Transceiver BW ({self.transceiver_bandwidth/1e6:.0f} MHz)')
-            axs[1, 1].legend()
-            
-            # Set x-axis limits to focus on the relevant frequency range
-            axs[1, 1].set_xlim([self.transceiver_center_freq/1e9 - 0.5, self.transceiver_center_freq/1e9 + 0.5])
-            
-            # Plot hardware modulation effect (time domain)
-            axs[1, 2].plot(np.real(tx_signal[chirp_idx]))
-            axs[1, 2].set_title('After Hardware Modulation (Real)')
-            axs[1, 2].set_xlabel('Sample')
-            axs[1, 2].set_ylabel('Amplitude')
-            axs[1, 2].grid(True, alpha=0.3)
-            
-            # Plot hardware modulation effect (frequency domain)
-            axs[1, 3].plot(freq_tx_ghz, fft_tx_db)
-            axs[1, 3].set_title('After Hardware Modulation (Freq)')
-            axs[1, 3].set_xlabel('Frequency (GHz)')
-            axs[1, 3].set_ylabel('Magnitude (dB)')
-            axs[1, 3].grid(True, alpha=0.3)
-            axs[1, 3].axvspan(bw_start/1e9, bw_end/1e9, alpha=0.2, color='green', 
-                            label=f'Output BW ({self.bandwidth/1e6:.0f} MHz)')
-            axs[1, 3].legend()
-            axs[1, 3].set_xlim([self.center_freq/1e9 - 1, self.center_freq/1e9 + 1])
+            # Add antenna indices
+            for i in range(self.num_rx):
+                for j in range(self.num_rx):
+                    ax3.text(j, i, f'{corr_matrix[i, j]:.2f}', 
+                            ha='center', va='center', color='w' if corr_matrix[i, j] < 0.7 else 'k')
         else:
-            # For direct signal types, show spectrogram and other visualizations
-            # Plot spectrogram to visualize frequency change over time (for FMCW)
-            try:
-                from scipy import signal as sig
-                f, t, Sxx = sig.spectrogram(tx_signal[chirp_idx], 
-                                          fs=self.sample_rate,
-                                          nperseg=128,
-                                          noverlap=64,
-                                          scaling='spectrum')
-                
-                # Convert to dB
-                Sxx_db = 10 * np.log10(np.abs(Sxx) + 1e-10)
-                
-                # Plot spectrogram
-                im = axs[1, 0].pcolormesh(t, f/1e6, Sxx_db, shading='gouraud', cmap='viridis')
-                axs[1, 0].set_title('TX Spectrogram (Frequency vs Time)')
-                axs[1, 0].set_xlabel('Time (s)')
-                axs[1, 0].set_ylabel('Frequency (MHz)')
-                plt.colorbar(im, ax=axs[1, 0], label='Power (dB)')
-            except Exception as e:
-                axs[1, 0].text(0.5, 0.5, f"Spectrogram calculation failed:\n{str(e)}", 
-                              ha='center', va='center', transform=axs[1, 0].transAxes)
-                axs[1, 0].set_title('TX Spectrogram (Error)')
-            
-            # Plot multiple chirps to see consistency
-            if tx_signal.shape[0] > 1:
-                num_chirps_to_plot = min(5, tx_signal.shape[0])
-                for i in range(num_chirps_to_plot):
-                    axs[1, 1].plot(np.real(tx_signal[i]), 
-                                  label=f'Chirp {i}', 
-                                  alpha=0.7)
-                
-                axs[1, 1].set_title('Multiple TX Chirps (Real Part)')
-                axs[1, 1].set_xlabel('Sample')
-                axs[1, 1].set_ylabel('Amplitude')
-                axs[1, 1].legend()
-                axs[1, 1].grid(True, alpha=0.3)
-            
-            # Plot instantaneous frequency (for FMCW)
-            if self.signal_type == 'FMCW':
-                # Calculate instantaneous frequency
-                inst_phase = np.unwrap(np.angle(tx_signal[chirp_idx]))
-                inst_freq = np.diff(inst_phase) * self.sample_rate / (2 * np.pi)
-                
-                axs[1, 2].plot(inst_freq)
-                axs[1, 2].set_title('TX Instantaneous Frequency')
-                axs[1, 2].set_xlabel('Sample')
-                axs[1, 2].set_ylabel('Frequency (Hz)')
-                axs[1, 2].grid(True, alpha=0.3)
-            else:
-                # For non-FMCW, show signal envelope
-                envelope = np.abs(tx_signal[chirp_idx])
-                axs[1, 2].plot(envelope)
-                axs[1, 2].set_title('TX Signal Envelope')
-                axs[1, 2].set_xlabel('Sample')
-                axs[1, 2].set_ylabel('Amplitude')
-                axs[1, 2].grid(True, alpha=0.3)
-            
-            # Empty plot for consistency
-            axs[1, 3].set_visible(False)
+            ax3.text(0.5, 0.5, 'Multiple antennas required for correlation analysis', 
+                    ha='center', va='center', transform=ax3.transAxes)
         
-        # Row 3: RX Signal Analysis
-        # --------------------------
+        # 4. Doppler Profile Analysis (unique visualization)
+        ax4 = fig.add_subplot(gs[1, 1])
         
-        # Plot RX time domain signal (real part)
-        axs[2, 0].plot(np.real(rx_signal[rx_idx, chirp_idx]))
-        axs[2, 0].set_title('RX Signal (Real Part)')
-        axs[2, 0].set_xlabel('Sample')
-        axs[2, 0].set_ylabel('Amplitude')
-        axs[2, 0].grid(True, alpha=0.3)
+        # Process the received signal to generate range-Doppler map if not already provided
+        rd_map = self.radar_processor.time_to_range_doppler(rx_signal)
         
-        # Plot RX time domain signal (imaginary part)
-        axs[2, 1].plot(np.imag(rx_signal[rx_idx, chirp_idx]))
-        axs[2, 1].set_title('RX Signal (Imaginary Part)')
-        axs[2, 1].set_xlabel('Sample')
-        axs[2, 1].set_ylabel('Amplitude')
-        axs[2, 1].grid(True, alpha=0.3)
+        # Get magnitude of range-Doppler map
+        rd_magnitude = np.sqrt(rd_map[0]**2 + rd_map[1]**2)
         
-        # Plot RX frequency domain
-        freq_rx = np.fft.fftshift(np.fft.fftfreq(len(rx_signal[rx_idx, chirp_idx]), 1/self.sample_rate))
-        freq_rx_ghz = (freq_rx + self.center_freq) / 1e9  # Convert to GHz
+        # Sum across range bins to get Doppler profile
+        doppler_profile = np.sum(rd_magnitude, axis=1)
+        doppler_profile = doppler_profile / np.max(doppler_profile)
         
-        fft_rx = np.fft.fftshift(np.fft.fft(rx_signal[rx_idx, chirp_idx]))
-        fft_rx_mag = np.abs(fft_rx)
-        fft_rx_db = 20 * np.log10(fft_rx_mag + 1e-10)
+        # Create velocity axis
+        velocity_axis = (np.arange(self.num_doppler_bins) - self.num_doppler_bins // 2) * self.velocity_resolution
         
-        axs[2, 2].plot(freq_rx_ghz, fft_rx_db)
-        axs[2, 2].set_title('RX Frequency Domain (Magnitude)')
-        axs[2, 2].set_xlabel('Frequency (GHz)')
-        axs[2, 2].set_ylabel('Magnitude (dB)')
-        axs[2, 2].grid(True, alpha=0.3)
+        # Plot Doppler profile
+        ax4.plot(velocity_axis, doppler_profile, 'g-', linewidth=2)
+        ax4.set_xlabel('Velocity (m/s)')
+        ax4.set_ylabel('Normalized Power')
+        ax4.set_title('Doppler Profile Analysis')
+        ax4.grid(True)
         
-        # Mark the bandwidth region
-        axs[2, 2].axvspan(bw_start/1e9, bw_end/1e9, alpha=0.2, color='green', 
-                        label=f'Signal Bandwidth ({self.bandwidth/1e6:.0f} MHz)')
-        axs[2, 2].legend()
-        
-        # Set x-axis limits to focus on the relevant frequency range
-        axs[2, 2].set_xlim([self.center_freq/1e9 - 1, self.center_freq/1e9 + 1])
-        
-        # Plot multiple RX antennas comparison
-        if rx_signal.shape[0] > 1:
-            num_rx_to_plot = min(4, rx_signal.shape[0])
-            for i in range(num_rx_to_plot):
-                axs[2, 3].plot(np.real(rx_signal[i, chirp_idx]), 
-                              label=f'RX {i}', 
-                              alpha=0.7)
-            
-            axs[2, 3].set_title('Multiple RX Antennas (Real Part)')
-            axs[2, 3].set_xlabel('Sample')
-            axs[2, 3].set_ylabel('Amplitude')
-            axs[2, 3].legend()
-            axs[2, 3].grid(True, alpha=0.3)
-        
-        # Add target information if provided
-        if target_info:
-            target_text = "Target Information:\n"
+        # Add target markers if available
+        if target_info is not None and len(target_info) > 0:
             for i, target in enumerate(target_info):
-                target_text += f"Target {i+1}: Distance={target['distance']:.1f}m, "
-                target_text += f"Velocity={target['velocity']:.1f}m/s, RCS={target['rcs']:.2f}\n"
+                velocity = target['velocity']
+                # Find closest velocity bin
+                vel_idx = int((velocity / self.velocity_resolution) + self.num_doppler_bins // 2)
+                if 0 <= vel_idx < self.num_doppler_bins:
+                    ax4.axvline(x=velocity, color='r', linestyle='--', alpha=0.7)
+                    ax4.text(velocity, 0.8, f'T{i+1}', color='r', fontweight='bold')
+        
+        # 5. Range Profile Analysis (unique visualization)
+        ax5 = fig.add_subplot(gs[2, 0])
+        
+        # Sum across Doppler bins to get range profile
+        range_profile = np.sum(rd_magnitude, axis=0)
+        range_profile = range_profile / np.max(range_profile)
+        
+        # Create range axis
+        range_axis = np.arange(self.num_range_bins) * self.range_resolution
+        
+        # Plot range profile
+        ax5.plot(range_axis, range_profile, 'b-', linewidth=2)
+        ax5.set_xlabel('Range (m)')
+        ax5.set_ylabel('Normalized Power')
+        ax5.set_title('Range Profile Analysis')
+        ax5.grid(True)
+        
+        # Add target markers if available
+        if target_info is not None and len(target_info) > 0:
+            for i, target in enumerate(target_info):
+                distance = target['distance']
+                # Find closest range bin
+                range_idx = int(distance / self.range_resolution)
+                if 0 <= range_idx < self.num_range_bins:
+                    ax5.axvline(x=distance, color='r', linestyle='--', alpha=0.7)
+                    ax5.text(distance, 0.8, f'T{i+1}', color='r', fontweight='bold')
+        
+        # 6. Signal-to-Noise Ratio Analysis (unique visualization)
+        ax6 = fig.add_subplot(gs[2, 1])
+        
+        # Calculate SNR across chirps for first RX antenna
+        signal_power = np.zeros(self.num_chirps)
+        noise_power = np.zeros(self.num_chirps)
+        
+        for chirp_idx in range(self.num_chirps):
+            # Get chirp data
+            chirp_data = np.abs(rx_signal[0, chirp_idx])
             
-            fig.text(0.5, 0.01, target_text, ha='center', 
-                    bbox=dict(facecolor='white', alpha=0.8))
+            # Estimate noise floor (using lower 10% of samples)
+            sorted_data = np.sort(chirp_data)
+            noise_floor = np.mean(sorted_data[:int(len(sorted_data)*0.1)])
+            
+            # Calculate signal power (peak)
+            signal_peak = np.max(chirp_data)
+            
+            # Store powers
+            signal_power[chirp_idx] = signal_peak
+            noise_power[chirp_idx] = noise_floor
         
-        # Add signal parameters
-        params_text = (f"Signal Type: {self.signal_type}, Bandwidth: {self.bandwidth/1e6:.0f} MHz\n"
-                      f"Center Freq: {self.center_freq/1e9:.1f} GHz, Sample Rate: {self.sample_rate/1e6:.1f} MHz\n"
-                      f"Chirp Duration: {self.chirp_duration*1e6:.1f} μs, SNR: {self.snr_values[-1]:.1f} dB")
+        # Calculate SNR in dB
+        snr_db = 20 * np.log10(signal_power / (noise_power + 1e-10))
         
-        fig.text(0.5, 0.97, params_text, ha='center', 
-                bbox=dict(facecolor='white', alpha=0.8))
+        # Plot SNR
+        chirp_axis = np.arange(self.num_chirps)
+        ax6.plot(chirp_axis, snr_db, 'r-o')
+        ax6.set_xlabel('Chirp Index')
+        ax6.set_ylabel('SNR (dB)')
+        ax6.set_title('Signal-to-Noise Ratio Analysis')
+        ax6.grid(True)
         
-        # Add overall title
-        plt.suptitle(title, fontsize=16, y=0.995)
+        # Add radar parameters as text
+        param_text = f"Signal Type: {self.signal_type}\n"
+        param_text += f"Bandwidth: {self.bandwidth/1e6:.1f} MHz\n"
+        param_text += f"Sample Rate: {self.sample_rate/1e6:.1f} MHz\n"
+        param_text += f"Chirp Duration: {self.chirp_duration*1e6:.1f} μs\n"
+        param_text += f"Range Resolution: {self.range_resolution:.2f} m\n"
+        param_text += f"Velocity Resolution: {self.velocity_resolution:.2f} m/s\n"
+        param_text += f"Number of Targets: {len(target_info) if target_info else 0}"
+        
+        plt.figtext(0.02, 0.02, param_text, fontsize=9, 
+                   bbox=dict(facecolor='white', alpha=0.7))
+        
+        # Set main title
+        fig.suptitle(title, fontsize=16)
+        
+        # Adjust layout
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
         
-        # Save or show the figure
-        if save_path:
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            plt.savefig(save_path)
+        # Save or show figure
+        if save_path is not None:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
             plt.close()
         else:
             plt.show()
