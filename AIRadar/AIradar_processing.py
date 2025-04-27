@@ -415,65 +415,102 @@ class RadarProcessing:
         return modulated_signal
 
     def simulate_hardware_demodulation(self, complex_data):
-        """Simulate hardware demodulation from 10 GHz to 2.1 GHz
-
-        This simulates the CN0566 to AD9361 signal path:
-        1. Received signal at 10 GHz (CN0566 output frequency)
-        2. Mixing with local oscillator to downconvert to 2.1 GHz (AD9361 center frequency)
-        3. Filtering to match AD9361 bandwidth limitations
-        4. Compensating for system delay if calibrated
-
+        """
+        Simulate the hardware demodulation process for hybrid signal types
+        
+        This simulates the two-step demodulation process:
+        1. CN0566 (10GHz) sweep demodulation
+        2. AD9361 (2.1GHz) baseband processing
+        
         Args:
-            complex_data: Complex signal array [num_rx, num_chirps, samples_per_chirp]
+            complex_data: Complex time domain data with shape [num_rx, num_chirps, samples_per_chirp]
             
         Returns:
-            Demodulated complex signal array [num_rx, num_chirps, samples_per_chirp]
+            Demodulated complex data with the same shape
         """
+        # Create a copy of the input data to avoid modifying the original
+        demodulated_data = np.zeros_like(complex_data, dtype=np.complex128)
+        
         # Get dimensions
         num_rx, num_chirps, samples_per_chirp = complex_data.shape
-
-        # Initialize output array
-        demodulated_data = np.zeros_like(complex_data)
-
-        # Time vector for one chirp
-        t = np.arange(0, self.chirp_duration, 1/self.sample_rate)
-
-        # Frequency difference between output and transceiver
-        freq_diff = self.output_freq - self.transceiver_center_freq
-
-        # Check if system delay has been calibrated
-        if hasattr(self, 'system_delay') and self.system_delay is not None:
-            # Calculate delay in samples
-            delay_samples = int(self.system_delay * self.sample_rate)
-            print(f"Applying calibrated system delay: {self.system_delay*1e9:.2f} ns ({delay_samples} samples)")
+        
+        # Simulate the CN0566 demodulation (first stage)
+        if self.signal_type == 'OFDM_FMCW':
+            # For OFDM_FMCW, we need to extract the OFDM component
+            # First, apply bandpass filtering around the OFDM carrier frequency
+            
+            # Create time vector
+            t = np.arange(samples_per_chirp) / self.sample_rate
+            
+            # For each RX and chirp
+            for rx in range(num_rx):
+                for chirp in range(num_chirps):
+                    # 1. Demodulate the FMCW component (CN0566 stage)
+                    # Simulate the mixing with the FMCW sweep
+                    chirp_slope = self.bandwidth / self.chirp_duration
+                    fmcw_phase = 2 * np.pi * (chirp_slope * t**2 / 2)
+                    fmcw_demod = complex_data[rx, chirp, :] * np.exp(-1j * fmcw_phase)
+                    
+                    # 2. Apply bandpass filtering to isolate OFDM component
+                    # This would be done by the AD9361 frontend
+                    # Simplified simulation using FFT-based filtering
+                    fft_signal = np.fft.fft(fmcw_demod)
+                    
+                    # Create bandpass filter around the OFDM subcarriers
+                    # Assuming OFDM is centered at signal_freq
+                    filter_mask = np.zeros_like(fft_signal)
+                    center_bin = int(self.signal_freq * samples_per_chirp / self.sample_rate)
+                    bandwidth_bins = int(self.num_subcarriers * self.subcarrier_spacing * samples_per_chirp / self.sample_rate)
+                    
+                    # Set filter passband
+                    half_bw = bandwidth_bins // 2
+                    filter_mask[center_bin-half_bw:center_bin+half_bw+1] = 1
+                    
+                    # Apply filter
+                    filtered_fft = fft_signal * filter_mask
+                    
+                    # Convert back to time domain
+                    demodulated_data[rx, chirp, :] = np.fft.ifft(filtered_fft)
+                    
+        elif self.signal_type == 'Sine_FMCW':
+            # For Sine_FMCW, we need to extract the sine wave component
+            
+            # Create time vector
+            t = np.arange(samples_per_chirp) / self.sample_rate
+            
+            # For each RX and chirp
+            for rx in range(num_rx):
+                for chirp in range(num_chirps):
+                    # 1. Demodulate the FMCW component (CN0566 stage)
+                    # Simulate the mixing with the FMCW sweep
+                    chirp_slope = self.bandwidth / self.chirp_duration
+                    fmcw_phase = 2 * np.pi * (chirp_slope * t**2 / 2)
+                    fmcw_demod = complex_data[rx, chirp, :] * np.exp(-1j * fmcw_phase)
+                    
+                    # 2. Apply bandpass filtering to isolate sine component
+                    # This would be done by the AD9361 frontend
+                    # Simplified simulation using FFT-based filtering
+                    fft_signal = np.fft.fft(fmcw_demod)
+                    
+                    # Create bandpass filter around the sine frequency
+                    filter_mask = np.zeros_like(fft_signal)
+                    center_bin = int(self.signal_freq * samples_per_chirp / self.sample_rate)
+                    bandwidth_bins = int(0.1 * self.signal_freq * samples_per_chirp / self.sample_rate)  # 10% bandwidth
+                    
+                    # Set filter passband
+                    half_bw = max(1, bandwidth_bins // 2)
+                    filter_mask[center_bin-half_bw:center_bin+half_bw+1] = 1
+                    
+                    # Apply filter
+                    filtered_fft = fft_signal * filter_mask
+                    
+                    # Convert back to time domain
+                    demodulated_data[rx, chirp, :] = np.fft.ifft(filtered_fft)
+        
         else:
-            delay_samples = 0
-
-        # For each RX and chirp, perform time-domain demodulation
-        for rx in range(num_rx):
-            for chirp in range(num_chirps):
-                # Get the received signal
-                rx_signal = complex_data[rx, chirp]
-                
-                # Generate local oscillator signal at the difference frequency
-                lo_signal = np.exp(-1j * 2 * np.pi * freq_diff * t)
-                
-                # Mix the received signal with the local oscillator (time-domain multiplication)
-                mixed_signal = rx_signal * lo_signal
-                
-                # Apply bandpass filter to simulate AD9361 bandwidth limitation
-                mixed_signal = self._apply_bandpass_filter(mixed_signal)
-                
-                # Compensate for system delay if calibrated
-                if delay_samples > 0:
-                    # Shift signal to compensate for system delay
-                    compensated_signal = np.zeros_like(mixed_signal)
-                    compensated_signal[:-delay_samples] = mixed_signal[delay_samples:]
-                    mixed_signal = compensated_signal
-                
-                # Store the demodulated signal
-                demodulated_data[rx, chirp] = mixed_signal
-
+            # For other signal types, just pass through
+            demodulated_data = complex_data.copy()
+        
         return demodulated_data
 
     def _apply_bandpass_filter(self, signal):
@@ -504,63 +541,264 @@ class RadarProcessing:
         
         return filtered_signal
 
+    def process_radar_data(self, time_domain_data, apply_cfar=True, guard_cells=(2, 2), training_cells=(4, 4), pfa=1e-4):
+        """
+        Process radar data to generate range-Doppler map and detect targets
+        
+        Args:
+            time_domain_data: Time domain radar data with shape [num_rx, num_chirps, samples_per_chirp]
+                            which is already in complex format
+            apply_cfar: Whether to apply CFAR detection
+            guard_cells: Tuple of (doppler_guard, range_guard) cells to exclude around CUT
+            training_cells: Tuple of (doppler_train, range_train) cells to use for estimation
+            pfa: Probability of false alarm
+            
+        Returns:
+            Dictionary containing processed data including range-Doppler map and detected targets
+        """
+        # Check if the input data is already complex
+        if np.iscomplexobj(time_domain_data):
+            complex_data = time_domain_data
+        else:
+            # If the data has a last dimension of size 2, convert to complex
+            if time_domain_data.shape[-1] == 2:
+                complex_data = time_domain_data[..., 0] + 1j * time_domain_data[..., 1]
+            else:
+                raise ValueError("Input data must be either complex or have a last dimension of size 2 for I/Q data")
+        
+        # Generate range-Doppler map
+        rd_map = self.time_to_range_doppler(complex_data) #(2, 16, 128)
+        
+        # Apply CFAR detection if requested
+        if apply_cfar:
+            # Apply CFAR detection to identify targets
+            cfar_map = self._apply_cfar(rd_map, guard_cells, training_cells, pfa) #(16, 128)
+            detected_targets = self.extract_targets_from_cfar(cfar_map)
+        else:
+            cfar_map = None
+            detected_targets = None
+        
+        # Return results
+        return {
+            'range_doppler_map': rd_map,
+            'cfar_map': cfar_map,
+            'detected_targets': detected_targets
+        }
+    
+    def extract_targets_from_cfar(self, cfar_map, min_value=0.5):
+        """
+        Extract target information from CFAR detection map
+        
+        Args:
+            cfar_map: CFAR detection map with shape [num_doppler_bins, num_range_bins]
+            min_value: Minimum value for target detection (typically 0.5 or 1.0 for binary maps)
+            
+        Returns:
+            List of dictionaries containing target information
+        """
+        # Find peaks in CFAR map
+        peaks = np.where(cfar_map >= min_value)
+        
+        # Extract target information
+        targets = []
+        for i in range(len(peaks[0])):
+            doppler_idx = peaks[0][i]
+            range_idx = peaks[1][i]
+            
+            # Convert indices to physical values
+            range_m = range_idx * self.range_resolution
+            
+            # Convert Doppler index to velocity
+            # Adjust for Doppler FFT shift
+            doppler_shifted = doppler_idx
+            if doppler_shifted >= self.num_doppler_bins // 2:
+                doppler_shifted = doppler_shifted - self.num_doppler_bins
+            velocity = doppler_shifted * self.velocity_resolution
+            
+            # Add target to list
+            targets.append({
+                'range': range_m,
+                'velocity': velocity,
+                'amplitude': cfar_map[doppler_idx, range_idx],
+                'doppler_idx': doppler_idx,
+                'range_idx': range_idx
+            })
+        
+        return targets
+
     def time_to_range_doppler(self, complex_data):
         """
-        Convert time domain data to range-Doppler map
-        
-        This function processes time domain radar data into a range-Doppler map,
-        applying the appropriate processing based on the signal type.
+        Convert time domain complex data to range-Doppler map
         
         Args:
             complex_data: Complex time domain data with shape [num_rx, num_chirps, samples_per_chirp]
-                         or [num_chirps, samples_per_chirp]
-        
+                          or [num_chirps, samples_per_chirp] or with I/Q components
+                          
         Returns:
             Range-Doppler map with shape [2, num_doppler_bins, num_range_bins]
             where the first dimension contains real and imaginary parts
         """
-        # Determine the signal type and call the appropriate processing function
-        if self.signal_type == 'FMCW':
-            return self._process_fmcw_range_doppler(complex_data)
-        elif self.signal_type == 'OFDM':
-            return self._process_ofdm_range_doppler(complex_data)
+        # Ensure data has the right shape and format
+        complex_data = self._prepare_complex_data(complex_data) #(4, 32, 125000)
+        
+        # Process based on signal type
+        if self.signal_type == 'FMCW' or self.signal_type == 'Sine_FMCW':
+            # For FMCW, use standard range-Doppler processing
+            rd_map = self._process_fmcw_range_doppler(complex_data)
+        elif self.signal_type == 'OFDM' or self.signal_type == 'OFDM_FMCW':
+            # For OFDM, use OFDM-specific processing
+            rd_map = self._process_ofdm_range_doppler(complex_data)
         elif self.signal_type == 'Sine':
-            return self._process_sine_range_doppler(complex_data)
-        elif self.signal_type == 'OFDM_FMCW':
-            return self._process_hybrid_ofdm_fmcw_range_doppler(complex_data)
-        elif self.signal_type == 'Sine_FMCW':
-            return self._process_hybrid_sine_fmcw_range_doppler(complex_data)
+            # For Sine wave, use CW processing
+            rd_map = self._process_sine_range_doppler(complex_data)
         else:
-            # Default to FMCW processing if signal type is not recognized
-            print(f"Warning: Unrecognized signal type '{self.signal_type}'. Using FMCW processing.")
-            return self._process_fmcw_range_doppler(complex_data)
+            # Default to FMCW processing
+            rd_map = self._process_fmcw_range_doppler(complex_data)
+        
+        # Apply any additional processing if needed
+        # (e.g., normalization, calibration, etc.)
+        rd_map = self._post_process_rd_map(rd_map) #(2, 16, 128)
+        
+        return rd_map
     
     def _process_fmcw_range_doppler(self, complex_data):
         """
         Process FMCW radar data to create range-Doppler map
         
         Args:
-            complex_data: Complex time domain data
-        
+            complex_data: Complex time domain data with shape [num_rx, num_chirps, samples_per_chirp]
+                        
         Returns:
-            Range-Doppler map
+            Range-Doppler map with shape [num_doppler_bins, num_range_bins] or
+            [2, num_doppler_bins, num_range_bins] with real and imaginary parts
         """
         # Ensure data has the right shape
-        complex_data = self._prepare_complex_data(complex_data)
+        if len(complex_data.shape) == 2:
+            # Single receiver case, add dimension
+            complex_data = complex_data[np.newaxis, :, :]
         
-        # Apply windowing for range processing
-        windowed_data = self._apply_window(complex_data, axis=2)
+        # Get dimensions
+        num_rx, num_chirps, samples_per_chirp = complex_data.shape
         
-        # Perform range FFT (along fast time)
-        range_data = self._perform_range_fft(windowed_data)
+        # Initialize range-Doppler map to accumulate results from all receivers
+        rd_map_complex = np.zeros((self.num_doppler_bins, self.num_range_bins), dtype=complex)
         
-        # Apply windowing for Doppler processing
-        doppler_windowed = self._apply_window(range_data, axis=1)
+        # Process each receiver and accumulate results for better SNR
+        for rx_idx in range(num_rx):
+            # Apply windowing for range processing (along fast time)
+            # Window function reduces sidelobes in the frequency domain
+            range_window = np.hamming(samples_per_chirp)
+            windowed_data = complex_data[rx_idx] * range_window[np.newaxis, :]
+            
+            # Perform range FFT (along fast time)
+            # For FMCW, the beat frequency is proportional to range
+            range_fft = np.fft.fft(windowed_data, n=self.num_range_bins, axis=1)
+            
+            # Remove DC component (direct signal leakage)
+            range_fft[:, 0] = range_fft[:, 0] * 0.1  # Attenuate DC component
+            
+            # Apply windowing for Doppler processing (along slow time)
+            doppler_window = np.hamming(num_chirps)
+            doppler_windowed = range_fft * doppler_window[:, np.newaxis]
+            
+            # Perform Doppler FFT (along slow time)
+            # For FMCW, the phase change between chirps is proportional to velocity
+            rd_map_rx = np.fft.fftshift(np.fft.fft(doppler_windowed, n=self.num_doppler_bins, axis=0), axes=0)
+            
+            # Accumulate results (coherent integration)
+            rd_map_complex += rd_map_rx
         
-        # Perform Doppler FFT (along slow time)
-        rd_map = self._perform_doppler_fft(doppler_windowed)
+        # Normalize by number of receivers
+        rd_map_complex /= num_rx
         
-        # Reshape to standard output format
+        # Format output based on expected format
+        if np.iscomplexobj(rd_map_complex):
+            # Split into real and imaginary parts
+            real_part = np.real(rd_map_complex)
+            imag_part = np.imag(rd_map_complex)
+            
+            # Stack to create output format [2, num_doppler_bins, num_range_bins]
+            return np.stack([real_part, imag_part], axis=0)
+        else:
+            return rd_map_complex
+
+    def _post_process_rd_map(self, rd_map):
+        """
+        Apply post-processing to range-Doppler map to enhance target visibility
+        
+        Args:
+            rd_map: Range-Doppler map
+            
+        Returns:
+            Processed range-Doppler map
+        """
+        # Convert to complex format if needed
+        if len(rd_map.shape) == 3 and rd_map.shape[0] == 2:
+            # Convert from [2, num_doppler_bins, num_range_bins] to complex
+            rd_complex = rd_map[0] + 1j * rd_map[1]
+        elif np.iscomplexobj(rd_map):
+            rd_complex = rd_map
+        else:
+            # If we have a magnitude-only array, create zero imaginary part
+            rd_complex = rd_map + 0j
+        
+        # Calculate magnitude
+        rd_magnitude = np.abs(rd_complex)
+        
+        # Apply logarithmic scaling to better visualize targets
+        # Add a small constant to avoid log(0)
+        rd_magnitude_db = 20 * np.log10(rd_magnitude + 1e-10)
+        
+        # Apply dynamic range limiting to highlight targets
+        dynamic_range_db = 40  # Adjust this value as needed
+        rd_magnitude_db_limited = np.maximum(rd_magnitude_db, np.max(rd_magnitude_db) - dynamic_range_db)
+        
+        # Normalize to 0-1 range for better visualization
+        rd_magnitude_norm = (rd_magnitude_db_limited - np.min(rd_magnitude_db_limited)) / (np.max(rd_magnitude_db_limited) - np.min(rd_magnitude_db_limited) + 1e-10)
+        
+        # Convert back to complex format
+        rd_enhanced = rd_magnitude_norm * np.exp(1j * np.angle(rd_complex))
+        
+        # Format output based on expected format
+        real_part = np.real(rd_enhanced)
+        imag_part = np.imag(rd_enhanced)
+        
+        # Stack to create output format [2, num_doppler_bins, num_range_bins]
+        return np.stack([real_part, imag_part], axis=0)
+
+    def _post_process_rd_map_old(self, rd_map):
+        """
+        Apply post-processing to range-Doppler map
+        
+        Args:
+            rd_map: Range-Doppler map
+            
+        Returns:
+            Processed range-Doppler map
+        """
+        # Ensure the output has the correct shape
+        if len(rd_map.shape) == 3 and rd_map.shape[0] == 2:
+            # Already in the correct format [2, num_doppler_bins, num_range_bins]
+            return rd_map
+        
+        # If we have a complex array, convert to real/imaginary format
+        if np.iscomplexobj(rd_map):
+            # Extract real and imaginary parts
+            real_part = np.real(rd_map)
+            imag_part = np.imag(rd_map)
+            
+            # Stack to create output format [2, num_doppler_bins, num_range_bins]
+            return np.stack([real_part, imag_part], axis=0)
+        
+        # If we have a magnitude-only array, create zero imaginary part
+        if len(rd_map.shape) == 2:
+            # Create zero imaginary part
+            imag_part = np.zeros_like(rd_map)
+            
+            # Stack to create output format [2, num_doppler_bins, num_range_bins]
+            return np.stack([rd_map, imag_part], axis=0)
+        
+        # If we have another format, try to convert it
         return self._format_output(rd_map)
     
     def _process_ofdm_range_doppler(self, complex_data):
@@ -584,20 +822,119 @@ class RadarProcessing:
         channel_data = self._extract_ofdm_channel(ofdm_demod_data)
         
         # Apply windowing for range processing
+        # Use FFT size based on num_subcarriers (typically power of 2)
+        fft_size = 2**int(np.ceil(np.log2(self.num_subcarriers)))
         windowed_data = self._apply_window(channel_data, axis=2)
         
         # Perform range FFT (IFFT of channel data gives range profile)
+        # For OFDM, range information is encoded in the frequency domain
         range_data = self._perform_ofdm_range_fft(windowed_data)
         
         # Apply windowing for Doppler processing
+        # Window across chirps (OFDM symbols) for Doppler processing
         doppler_windowed = self._apply_window(range_data, axis=1)
         
         # Perform Doppler FFT (along slow time)
         rd_map = self._perform_doppler_fft(doppler_windowed)
         
-        # Reshape to standard output format
+        # Reshape to standard output format [2, num_doppler_bins, num_range_bins]
         return self._format_output(rd_map)
     
+    def _perform_ofdm_demodulation(self, complex_data):
+        """
+        Perform OFDM demodulation on complex time domain data
+        
+        Args:
+            complex_data: Complex time domain data with shape [num_rx, num_chirps, samples_per_chirp]
+            
+        Returns:
+            Demodulated OFDM data with shape [num_rx, num_chirps, num_subcarriers]
+        """
+        # Get dimensions
+        num_rx, num_chirps, samples_per_chirp = complex_data.shape
+        
+        # Calculate FFT size (typically power of 2)
+        fft_size = 2**int(np.ceil(np.log2(self.num_subcarriers)))
+        
+        # Calculate cyclic prefix length (typically 20-25% of symbol)
+        cp_length = int(0.25 * fft_size)
+        
+        # Initialize output array
+        demodulated_data = np.zeros((num_rx, num_chirps, self.num_subcarriers), dtype=np.complex64)
+        
+        # Process each RX and chirp
+        for rx in range(num_rx):
+            for chirp in range(num_chirps):
+                # Extract time domain signal for this RX and chirp
+                signal = complex_data[rx, chirp, :]
+                
+                # Remove cyclic prefix if signal is long enough
+                if samples_per_chirp >= fft_size + cp_length:
+                    # Extract the symbol without CP
+                    symbol = signal[cp_length:cp_length+fft_size]
+                else:
+                    # If signal is too short, pad with zeros
+                    symbol = np.zeros(fft_size, dtype=np.complex64)
+                    symbol[:min(fft_size, samples_per_chirp)] = signal[:min(fft_size, samples_per_chirp)]
+                
+                # Perform FFT to convert to frequency domain
+                freq_domain = np.fft.fft(symbol) / np.sqrt(fft_size)
+                
+                # Extract the subcarriers
+                start_idx = (fft_size - self.num_subcarriers) // 2
+                demodulated_data[rx, chirp, :] = freq_domain[start_idx:start_idx+self.num_subcarriers]
+        
+        return demodulated_data
+
+    def _extract_ofdm_channel(self, ofdm_demod_data):
+        """
+        Extract channel information from demodulated OFDM data
+        
+        Args:
+            ofdm_demod_data: Demodulated OFDM data with shape [num_rx, num_chirps, num_subcarriers]
+            
+        Returns:
+            Channel data with shape [num_rx, num_chirps, num_subcarriers]
+        """
+        # In a real system, we would use pilot subcarriers for channel estimation
+        # For simulation, we can use the demodulated data directly as channel information
+        # In a more advanced implementation, we would divide by the known transmitted symbols
+        
+        # For now, just return the demodulated data as channel information
+        return ofdm_demod_data
+
+    def _perform_ofdm_range_fft(self, channel_data):
+        """
+        Perform range FFT on OFDM channel data
+        
+        Args:
+            channel_data: Channel data with shape [num_rx, num_chirps, num_subcarriers]
+            
+        Returns:
+            Range data with shape [num_rx, num_chirps, num_range_bins]
+        """
+        # Get dimensions
+        num_rx, num_chirps, num_subcarriers = channel_data.shape
+        
+        # Initialize output array
+        range_data = np.zeros((num_rx, num_chirps, self.num_range_bins), dtype=np.complex64)
+        
+        # Process each RX and chirp
+        for rx in range(num_rx):
+            for chirp in range(num_chirps):
+                # Extract channel data for this RX and chirp
+                subcarrier_data = channel_data[rx, chirp, :]
+                
+                # Perform IFFT to get range profile
+                # For OFDM, range information is in the frequency domain
+                # IFFT converts frequency domain to time domain (range)
+                range_profile = np.fft.ifft(subcarrier_data, n=self.num_range_bins)
+                
+                # Store range profile
+                range_data[rx, chirp, :] = range_profile
+        
+        return range_data
+
     def _process_sine_range_doppler(self, complex_data):
         """
         Process Sine wave radar data to create range-Doppler map
@@ -606,7 +943,7 @@ class RadarProcessing:
             complex_data: Complex time domain data
         
         Returns:
-            Range-Doppler map
+            Range-Doppler map with shape [2, num_doppler_bins, num_range_bins]
         """
         # Ensure data has the right shape
         complex_data = self._prepare_complex_data(complex_data)
@@ -627,7 +964,7 @@ class RadarProcessing:
         # Perform Doppler FFT (along slow time)
         rd_map = self._perform_doppler_fft(doppler_windowed)
         
-        # Reshape to standard output format
+        # Reshape to standard output format [2, num_doppler_bins, num_range_bins]
         return self._format_output(rd_map)
     
     def _process_hybrid_ofdm_fmcw_range_doppler(self, complex_data):
@@ -638,7 +975,7 @@ class RadarProcessing:
             complex_data: Complex time domain data
         
         Returns:
-            Range-Doppler map
+            Range-Doppler map with shape [2, num_doppler_bins, num_range_bins]
         """
         # Ensure data has the right shape
         complex_data = self._prepare_complex_data(complex_data)
@@ -659,7 +996,8 @@ class RadarProcessing:
         # Combine the results (weighted average based on SNR)
         rd_map = self._combine_hybrid_results(ofdm_rd_map, fmcw_rd_map)
         
-        return rd_map
+        # Ensure output format is consistent [2, num_doppler_bins, num_range_bins]
+        return self._format_output(rd_map)
     
     def _process_hybrid_sine_fmcw_range_doppler(self, complex_data):
         """
@@ -669,7 +1007,7 @@ class RadarProcessing:
             complex_data: Complex time domain data
         
         Returns:
-            Range-Doppler map
+            Range-Doppler map with shape [2, num_doppler_bins, num_range_bins]
         """
         # Ensure data has the right shape
         complex_data = self._prepare_complex_data(complex_data)
@@ -689,7 +1027,8 @@ class RadarProcessing:
         # Combine the results (weighted average based on SNR)
         rd_map = self._combine_hybrid_results(sine_rd_map, fmcw_rd_map)
         
-        return rd_map
+        # Ensure output format is consistent [2, num_doppler_bins, num_range_bins]
+        return self._format_output(rd_map)
     
     # Shared utility functions for range-Doppler processing
     
@@ -707,6 +1046,11 @@ class RadarProcessing:
         if len(complex_data.shape) == 2:
             # Add dimension for single receiver
             complex_data = complex_data[np.newaxis, :, :]
+            
+        # Check if we have I/Q components separated
+        elif len(complex_data.shape) == 4 and complex_data.shape[-1] == 2:
+            # Convert from [num_rx, num_chirps, samples_per_chirp, 2] to complex
+            complex_data = complex_data[..., 0] + 1j * complex_data[..., 1]
         
         return complex_data
     
@@ -996,69 +1340,78 @@ class RadarProcessing:
         Apply Cell-Averaging Constant False Alarm Rate (CA-CFAR) detection
         
         Args:
-            rd_map: Range-Doppler map magnitude
+            rd_map: Range-Doppler map with shape [2, num_doppler_bins, num_range_bins]
+                    where the first dimension contains real and imaginary parts
             guard_cells: Tuple of (doppler_guard, range_guard) cells to exclude around CUT
             training_cells: Tuple of (doppler_train, range_train) cells to use for estimation
             pfa: Probability of false alarm
             
         Returns:
-            Binary detection map
+            Binary detection map with shape [num_doppler_bins, num_range_bins]
         """
-        doppler_bins, range_bins = rd_map.shape
+        # Check if rd_map is in the format [2, num_doppler_bins, num_range_bins]
+        if len(rd_map.shape) == 3 and rd_map.shape[0] == 2:
+            # Convert complex format [2, num_doppler_bins, num_range_bins] to magnitude
+            rd_magnitude = np.sqrt(rd_map[0]**2 + rd_map[1]**2)
+            doppler_bins, range_bins = rd_magnitude.shape
+        else:
+            # Assume rd_map is already in magnitude format [num_doppler_bins, num_range_bins]
+            doppler_bins, range_bins = rd_map.shape
+            rd_magnitude = rd_map
         
         # Extract guard and training cell sizes
         doppler_guard, range_guard = guard_cells
         doppler_train, range_train = training_cells
         
-        # Calculate total number of training cells
-        num_training_cells = (2*doppler_train + 2*range_train + 4*doppler_train*range_train)
+        # Calculate total window size
+        window_doppler = 2 * (doppler_guard + doppler_train) + 1
+        window_range = 2 * (range_guard + range_train) + 1
         
-        # Calculate CFAR threshold factor
-        # For CA-CFAR: threshold = alpha * noise_level
-        # alpha = num_training_cells * (pfa^(-1/num_training_cells) - 1)
-        alpha = num_training_cells * (pfa**(-1/num_training_cells) - 1)
-        
-        # Initialize output map
-        cfar_map = np.zeros_like(rd_map)
+        # Initialize detection map
+        detection_map = np.zeros((doppler_bins, range_bins))
         
         # Apply CFAR for each cell
-        for i in range(doppler_bins):
-            for j in range(range_bins):
-                # Define cell under test (CUT)
-                cut = rd_map[i, j]
+        for d in range(doppler_bins):
+            for r in range(range_bins):
+                # Define cell under test
+                cell_under_test = rd_magnitude[d, r]
                 
-                # Define guard cell region
-                guard_low_doppler = max(0, i - doppler_guard)
-                guard_high_doppler = min(doppler_bins, i + doppler_guard + 1)
-                guard_low_range = max(0, j - range_guard)
-                guard_high_range = min(range_bins, j + range_guard + 1)
+                # Define window boundaries with wraparound for Doppler (circular)
+                # and clipping for range
+                d_min = max(0, d - doppler_guard - doppler_train)
+                d_max = min(doppler_bins - 1, d + doppler_guard + doppler_train)
+                r_min = max(0, r - range_guard - range_train)
+                r_max = min(range_bins - 1, r + range_guard + range_train)
                 
-                # Define training cell region
-                train_low_doppler = max(0, i - doppler_guard - doppler_train)
-                train_high_doppler = min(doppler_bins, i + doppler_guard + doppler_train + 1)
-                train_low_range = max(0, j - range_guard - range_train)
-                train_high_range = min(range_bins, j + range_guard + range_train + 1)
+                # Extract window
+                window = rd_magnitude[d_min:d_max+1, r_min:r_max+1]
                 
-                # Extract training cells (excluding guard cells and CUT)
-                training_region = np.concatenate([
-                    rd_map[train_low_doppler:guard_low_doppler, train_low_range:train_high_range].flatten(),
-                    rd_map[guard_high_doppler:train_high_doppler, train_low_range:train_high_range].flatten(),
-                    rd_map[guard_low_doppler:guard_high_doppler, train_low_range:guard_low_range].flatten(),
-                    rd_map[guard_low_doppler:guard_high_doppler, guard_high_range:train_high_range].flatten()
-                ])
+                # Create guard cell mask (1 for training cells, 0 for guard cells and CUT)
+                mask = np.ones_like(window)
                 
-                # Calculate noise level (mean of training cells)
-                if len(training_region) > 0:
-                    noise_level = np.mean(training_region)
+                # Calculate guard cell region in the window
+                gd_min = max(0, doppler_guard + doppler_train - (d - d_min))
+                gd_max = min(window.shape[0] - 1, doppler_guard + doppler_train + (d_max - d))
+                gr_min = max(0, range_guard + range_train - (r - r_min))
+                gr_max = min(window.shape[1] - 1, range_guard + range_train + (r_max - r))
+                
+                # Set guard cells and CUT to 0 in mask
+                mask[gd_min:gd_max+1, gr_min:gr_max+1] = 0
+                
+                # Calculate noise level from training cells
+                if np.sum(mask) > 0:  # Ensure we have training cells
+                    noise_level = np.sum(window * mask) / np.sum(mask)
                     
-                    # Apply threshold
+                    # Calculate threshold based on desired PFA
+                    # For exponentially distributed noise (magnitude of complex Gaussian)
+                    alpha = -np.log(pfa)
                     threshold = alpha * noise_level
                     
-                    # Compare CUT with threshold
-                    if cut > threshold:
-                        cfar_map[i, j] = cut
-                
-        return cfar_map
+                    # Apply threshold
+                    if cell_under_test > threshold:
+                        detection_map[d, r] = 1
+        
+        return detection_map
     
     def _apply_ofdm_filter(self, signal):
         """

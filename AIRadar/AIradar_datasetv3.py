@@ -223,7 +223,7 @@ class RadarDataset(Dataset):
             os.makedirs(self.save_path, exist_ok=True)
         
         # Generate a test TX signal to ensure samples_per_chirp is correctly calculated
-        test_tx_signal = self._generate_tx_signal()
+        test_tx_signal = self._generate_tx_signal() #(num_chirps, sample_per_chirp) complex
         # Update samples_per_chirp based on the actual signal length
         self.samples_per_chirp = test_tx_signal.shape[1]
 
@@ -253,7 +253,7 @@ class RadarDataset(Dataset):
             tx_power = np.random.uniform(0.5, 1.5)
             
             # Generate TX signal with the random parameters
-            tx_signal = self._generate_tx_signal(tx_power=tx_power) #(32, 150)
+            tx_signal = self._generate_tx_signal(tx_power=tx_power) #(32, 125000)
             if i % 100 == 0:
                 self._visualize_tx_signal(tx_signal, title=f"TX Signal {i}", save_path=f"{self.save_path}/tx_signal_{i}{IMG_FORMAT}")
             
@@ -267,16 +267,13 @@ class RadarDataset(Dataset):
             # List to store target information for this sample
             sample_targets = []
             
-            # If we have targets, add them to the signal
+            # Generate target parameters if we have targets
             if num_targets > 0:
                 for _ in range(num_targets):
                     # Generate random target parameters
                     distance = random.uniform(5, self.max_range)
                     velocity = random.uniform(-self.max_velocity, self.max_velocity)
-                    rcs = random.uniform(0.1, 10.0)  # Radar Cross Section
-                    
-                    # Add target to received signal
-                    rx_signal = self._add_target(rx_signal, distance, velocity, rcs)
+                    rcs = random.uniform(1.0, 20.0)  # Radar Cross Section
                     
                     # Store target information
                     target = {
@@ -285,60 +282,85 @@ class RadarDataset(Dataset):
                         'rcs': rcs
                     }
                     sample_targets.append(target)
-            else:
-                # If no targets, just apply channel model to TX signal
-                # This simulates the radar transmitting but not receiving any reflections
-                for rx_idx in range(self.num_rx):
-                    for chirp_idx in range(self.num_chirps):
-                        # Apply channel effects (like noise, interference, etc.)
-                        if self.apply_realistic_effects:
-                            # Add minimal noise to represent system noise
-                            noise_power = 1e-6  # Very low noise power
-                            noise_real = np.random.normal(0, np.sqrt(noise_power/2), self.samples_per_chirp)
-                            noise_imag = np.random.normal(0, np.sqrt(noise_power/2), self.samples_per_chirp)
-                            rx_signal[rx_idx, chirp_idx] = noise_real + 1j * noise_imag
-                            
-                            # Add minimal crosstalk from TX to RX
-                            isolation_db = 30  # Typical isolation between TX and RX in dB
-                            attenuation = 10**(-isolation_db/20)
-                            delay_samples = 5  # Small fixed delay
-                            
-                            if delay_samples < self.samples_per_chirp:
-                                rx_signal[rx_idx, chirp_idx, delay_samples:] += attenuation * tx_signal[chirp_idx, :self.samples_per_chirp-delay_samples]
-                        else:
-                            # Just add minimal noise
-                            noise_power = 1e-9  # Extremely low noise power
-                            noise_real = np.random.normal(0, np.sqrt(noise_power/2), self.samples_per_chirp)
-                            noise_imag = np.random.normal(0, np.sqrt(noise_power/2), self.samples_per_chirp)
-                            rx_signal[rx_idx, chirp_idx] = noise_real + 1j * noise_imag
             
+            # Simulate radar channel with all effects
+            rx_signal = self._simulate_radar_channel(
+                rx_signal=rx_signal,
+                tx_signal=tx_signal,
+                targets=sample_targets,
+                add_crosstalk=self.apply_realistic_effects, 
+                add_ground_clutter=self.apply_realistic_effects,
+                add_system_noise=self.apply_realistic_effects,
+                crosstalk_isolation_db=30,
+                crosstalk_delay_samples=5,
+                system_noise_power=1e-6 if self.apply_realistic_effects else 1e-9,
+                clutter_probability=0.1 if num_targets == 0 else 0.05  # More clutter when no targets
+            )
+            if i % 100 == 0:
+                self._visualize_rx_signal(rx_signal, target_info=sample_targets, title=f"RX Signal {i}", save_path=f"{self.save_path}/rx_signal_{i}{IMG_FORMAT}")
+
             # Generate random SNR for this sample
             snr_db = random.uniform(self.snr_min, self.snr_max)
             
             # Add noise to the received signal
-            rx_signal = self._add_noise(rx_signal, snr_db)
-            if i % 100 == 0:
-                self._visualize_rx_signal(rx_signal, target_info=sample_targets, title=f"RX Signal {i}", save_path=f"{self.save_path}/rx_signal_{i}{IMG_FORMAT}")
+            rx_signal = self._add_noise(rx_signal, snr_db) #(4, 32, 125000)
+            
             
             # Process the received signal to generate range-Doppler map
             #rd_map = self.radar_processor.generate_range_doppler_map(rx_signal)
-            rd_map = self.radar_processor.time_to_range_doppler(rx_signal)
+            rd_map = self.radar_processor.time_to_range_doppler(rx_signal) #(2, 16, 128) float64
             # Visualize range-Doppler map# Visualize range-Doppler map for selected samples
-            if i % 100 == 0:
-                self._visualize_range_doppler_map(rd_map, sample_targets, 
+            #if i % 100 == 0:
+            self._visualize_range_doppler_map(rd_map, sample_targets, 
                                                 title=f"Range-Doppler Map {i}", 
                                                 save_path=f"{self.save_path}/rd_map_{i}{IMG_FORMAT}")
+            self._visualize_range_doppler_map3d(rd_map, sample_targets, 
+                                                title=f"Range-Doppler Map {i}", 
+                                                save_path=f"{self.save_path}/rd_map_3d_{i}{IMG_FORMAT}")
 
-            # Visualize the range-Doppler map
+
+            # Process radar data with CFAR detection
+            results = self.radar_processor.process_radar_data(
+                rx_signal, 
+                apply_cfar=True,
+                guard_cells=(2, 2),
+                training_cells=(4, 4),
+                pfa=1e-4
+            )
+            # Access results
+            rd_map = results['range_doppler_map'] #(2, 16, 128)
+            cfar_map = results['cfar_map'] #(16, 128)
+            detected_targets = results['detected_targets']
+
+            # Visualize both maps together
+            self._visualize_range_doppler_map(
+                rd_map, 
+                sample_targets, 
+                title=f"Range-Doppler Map with CFAR {i}", 
+                save_path=f"{self.save_path}/rd_map_cfar_{i}{IMG_FORMAT}",
+                cfar_map=cfar_map
+            )
 
             # Create target mask
             target_mask = self._create_target_mask(sample_targets)
+            # Visualize detection comparison
+            self._visualize_detection_comparison(
+                rd_map,
+                detected_targets,
+                target_mask,
+                sample_targets,
+                title=f"Detection Comparison {i}",
+                save_path=f"{self.save_path}/detection_comparison_{i}{IMG_FORMAT}"
+            )
             
             # Store data (100, 4, 32, 150, 2) (4, 32, 176)
             self.time_domain_data[i, :, :, :, 0] = np.real(rx_signal)
             self.time_domain_data[i, :, :, :, 1] = np.imag(rx_signal)
-            self.range_doppler_maps[i, 0] = np.real(rd_map)
-            self.range_doppler_maps[i, 1] = np.imag(rd_map)
+            # self.range_doppler_maps[i, 0] = np.real(rd_map)
+            # self.range_doppler_maps[i, 1] = np.imag(rd_map)
+            # Fix the broadcasting issue - rd_map shape is (2, 16, 128)
+            # and range_doppler_maps[i] shape is (2, 16, 128)
+            self.range_doppler_maps[i] = rd_map  # Direct assignment of the whole array
             self.target_masks[i] = target_mask
             self.target_info.append(sample_targets)
             
@@ -354,17 +376,8 @@ class RadarDataset(Dataset):
             self.signal_types.append(self.signal_type)
             
                         # Draw sample visualization if requested
-            if self.drawfig:
+            if self.drawfig and i % 10 == 0:
                 self._draw_sample(i, rx_signal, rd_map, sample_targets)
-                
-            # Visualize the first sample and a few random samples
-            if i == 0 or (i % 20 == 0 and i > 0):
-                self._visualize_comprehensive_signal(
-                    tx_signal=tx_signal,
-                    rx_signal=rx_signal,
-                    title=f"Sample {i}: {len(sample_targets)} Targets, {self.signal_type}",
-                    target_info=sample_targets
-                )
         
         # Save the dataset
         if save_data:
@@ -377,6 +390,132 @@ class RadarDataset(Dataset):
         
         return self.time_domain_data, self.range_doppler_maps, self.target_masks, self.target_info
     
+    def _simulate_radar_channel(self, rx_signal, tx_signal, targets=None, 
+                           add_crosstalk=True, add_ground_clutter=True, add_system_noise=True,
+                           crosstalk_isolation_db=30, crosstalk_delay_samples=5,
+                           system_noise_power=1e-6, clutter_probability=0.3,
+                           clutter_distance_range=(2, 10), clutter_rcs_range=(0.01, 0.05)):
+        """
+        Simulate radar channel effects including targets, crosstalk, ground clutter, and system noise
+        
+        Args:
+            rx_signal: Received signal array with shape [num_rx, num_chirps, samples_per_chirp]
+            tx_signal: Transmitted signal with shape [num_chirps, samples_per_chirp]
+            targets: List of target dictionaries, each with 'distance', 'velocity', and 'rcs' keys
+                    If None, no targets will be simulated
+            add_crosstalk: Whether to add TX-RX crosstalk
+            add_ground_clutter: Whether to add ground clutter
+            add_system_noise: Whether to add system noise
+            crosstalk_isolation_db: Isolation between TX and RX in dB
+            crosstalk_delay_samples: Delay for crosstalk in samples
+            system_noise_power: Power of system noise
+            clutter_probability: Probability of adding ground clutter
+            clutter_distance_range: Range of distances for ground clutter (min, max)
+            clutter_rcs_range: Range of RCS values for ground clutter (min, max)
+            
+        Returns:
+            Updated received signal with all channel effects
+        """
+        # Add targets if provided
+        if targets is not None and len(targets) > 0:
+            for target in targets:
+                distance = target['distance']
+                velocity = target['velocity']
+                rcs = target['rcs']
+                rx_signal = self._add_target_reflection(rx_signal, tx_signal, distance, velocity, rcs)
+        else:
+            # If no targets, add some environmental reflections to ensure signal content
+            # This simulates reflections from the environment that are always present
+            # Add a few weak reflections at random distances
+            num_env_reflections = random.randint(2, 5)
+            for _ in range(num_env_reflections):
+                env_distance = random.uniform(5, self.max_range * 0.8)
+                env_velocity = random.uniform(-0.5, 0.5)  # Very low velocity
+                env_rcs = random.uniform(0.01, 0.1)  # Very small RCS
+                rx_signal = self._add_target_reflection(rx_signal, tx_signal, env_distance, env_velocity, env_rcs)
+        
+        # Add system noise if enabled
+        if add_system_noise:
+            for rx_idx in range(self.num_rx):
+                for chirp_idx in range(self.num_chirps):
+                    noise_real = np.random.normal(0, np.sqrt(system_noise_power/2), self.samples_per_chirp)
+                    noise_imag = np.random.normal(0, np.sqrt(system_noise_power/2), self.samples_per_chirp)
+                    rx_signal[rx_idx, chirp_idx] += noise_real + 1j * noise_imag
+        
+        # Add crosstalk if enabled
+        if add_crosstalk:
+            attenuation = 10**(-crosstalk_isolation_db/20)
+            for rx_idx in range(self.num_rx):
+                for chirp_idx in range(self.num_chirps):
+                    if crosstalk_delay_samples < self.samples_per_chirp:
+                        rx_signal[rx_idx, chirp_idx, crosstalk_delay_samples:] += attenuation * tx_signal[chirp_idx, :self.samples_per_chirp-crosstalk_delay_samples]
+        
+        # Add ground clutter if enabled
+        if add_ground_clutter:
+            # Add random ground clutter with specified probability
+            if random.random() < clutter_probability:
+                # Generate 1-3 clutter points
+                num_clutter_points = random.randint(1, 3)
+                for _ in range(num_clutter_points):
+                    clutter_distance = random.uniform(*clutter_distance_range)
+                    clutter_rcs = random.uniform(*clutter_rcs_range)
+                    # Ground clutter has zero velocity
+                    rx_signal = self._add_target_reflection(rx_signal, tx_signal, clutter_distance, 0, clutter_rcs)
+        
+        return rx_signal
+
+    def _add_target_reflection(self, rx_signal, tx_signal, distance, velocity, rcs=1.0, attenuation_scale=1.0):
+        """
+        Add a target reflection to the received signal
+        
+        Args:
+            rx_signal: Received signal array with shape [num_rx, num_chirps, samples_per_chirp]
+            tx_signal: Transmitted signal with shape [num_chirps, samples_per_chirp]
+            distance: Distance to target in meters
+            velocity: Velocity of target in m/s
+            rcs: Radar Cross Section of target
+            
+        Returns:
+            Updated received signal with target reflection added
+        """
+        # Calculate round-trip time delay for the target
+        round_trip_time = 2 * distance / self.speed_of_light
+        
+        # Calculate delay in samples
+        delay_samples = int(round_trip_time * self.sample_rate)
+        
+        # Calculate Doppler shift due to target velocity
+        # Doppler frequency shift = 2 * velocity / wavelength
+        doppler_freq = 2 * velocity / self.wavelength
+        
+        # Calculate phase shift per chirp due to Doppler
+        # Phase shift = 2π * doppler_freq * chirp_duration
+        doppler_phase_per_chirp = 2 * np.pi * doppler_freq * self.chirp_duration
+        
+        # Calculate signal attenuation due to distance and RCS
+        # Using radar equation: P_r = P_t * G^2 * λ^2 * σ / ((4π)^3 * R^4)
+        # We simplify this to focus on the R^4 dependency and RCS (σ)
+        attenuation = np.sqrt(rcs) / (distance ** 2)  # Amplitude scales with sqrt(power)
+        
+        # Apply a scaling factor to get reasonable signal levels
+        attenuation *= attenuation_scale #1e-2  # Adjust this based on your simulation needs
+        
+        # Add the target to each RX antenna and each chirp
+        for rx_idx in range(self.num_rx):
+            for chirp_idx in range(self.num_chirps):
+                # Calculate total phase for this chirp (including Doppler)
+                doppler_phase = doppler_phase_per_chirp * chirp_idx
+                
+                # Apply Doppler shift to the reflected signal
+                # For each chirp, we need to apply the appropriate Doppler phase
+                reflected_signal = tx_signal[chirp_idx] * np.exp(1j * doppler_phase)
+                
+                # Add the delayed and attenuated signal to the received signal
+                if delay_samples < self.samples_per_chirp:
+                    rx_signal[rx_idx, chirp_idx, delay_samples:] += attenuation * reflected_signal[:self.samples_per_chirp-delay_samples]
+        
+        return rx_signal
+
     def _randomize_signal_parameters(self):
         """Randomize signal parameters for more diverse dataset"""
         # Randomly select signal type from available options
@@ -620,7 +759,121 @@ class RadarDataset(Dataset):
         else:
             plt.show()
 
-    def _visualize_range_doppler_map(self, rd_map, target_info=None, title="Range-Doppler Map Visualization", save_path=None):
+    def _visualize_range_doppler_map(self, rd_map, target_info, title="Range-Doppler Map", save_path=None, cfar_map=None):
+        """
+        Visualize range-Doppler map and optionally CFAR detection results
+        
+        Args:
+            rd_map: Range-Doppler map with shape [2, num_doppler_bins, num_range_bins] (2, 16, 128)
+            target_info: List of target dictionaries
+            title: Title of the plot
+            save_path: Path to save the plot
+            cfar_map: Optional CFAR detection map to display alongside the range-Doppler map
+        """
+        # Compute magnitude of complex range-Doppler map
+        rd_magnitude = np.sqrt(rd_map[0]**2 + rd_map[1]**2) #(16, 128)
+        
+        # Apply logarithmic scaling to better visualize targets
+        # Add a small constant to avoid log(0)
+        rd_magnitude_db = 20 * np.log10(rd_magnitude + 1e-10)
+        
+        # Normalize to 0-1 range for better visualization
+        rd_magnitude_norm = (rd_magnitude_db - np.min(rd_magnitude_db)) / (np.max(rd_magnitude_db) - np.min(rd_magnitude_db) + 1e-10)
+        
+        # Determine if we need to show CFAR map alongside
+        if cfar_map is not None:
+            # Create figure with two subplots
+            plt.figure(figsize=(12, 5))
+            
+            # Plot Range-Doppler Map
+            plt.subplot(121)
+            plt.imshow(rd_magnitude_db, aspect='auto', origin='lower', 
+                    extent=[0, self.max_range, -self.max_velocity, self.max_velocity],
+                    cmap='viridis')
+            plt.title('Range-Doppler Map (dB)')
+            plt.xlabel('Range (m)')
+            plt.ylabel('Velocity (m/s)')
+            plt.colorbar(label='Magnitude (dB)')
+            plt.grid(True, linestyle='--', alpha=0.5)
+            
+            # Mark targets on the RD map if available
+            if target_info:
+                for target in target_info:
+                    distance = target['distance']
+                    velocity = target['velocity']
+                    # Mark target with a red circle
+                    plt.plot(distance, velocity, 'ro', markersize=8, markeredgecolor='white')
+            
+            # Plot CFAR Detection Map
+            plt.subplot(122)
+            plt.imshow(cfar_map, aspect='auto', origin='lower',
+                    extent=[0, self.max_range, -self.max_velocity, self.max_velocity],
+                    cmap='hot')
+            plt.title('CFAR Detection')
+            plt.xlabel('Range (m)')
+            plt.ylabel('Velocity (m/s)')
+            plt.colorbar(label='Detection')
+            plt.grid(True, linestyle='--', alpha=0.5)
+            
+            # Mark targets on the CFAR map if available
+            if target_info:
+                for target in target_info:
+                    distance = target['distance']
+                    velocity = target['velocity']
+                    # Mark target with a red circle
+                    plt.plot(distance, velocity, 'ro', markersize=8, markeredgecolor='white')
+            
+            plt.tight_layout()
+        else:
+            # Create single plot for just the range-Doppler map
+            plt.figure(figsize=(10, 8))
+            
+            # Create range and velocity axes
+            range_axis = np.linspace(0, self.max_range, self.num_range_bins)
+            velocity_axis = np.linspace(-self.max_velocity, self.max_velocity, self.num_doppler_bins)
+            
+            # Plot range-Doppler map with improved colormap
+            plt.imshow(rd_magnitude_norm, aspect='auto', origin='lower', 
+                    extent=[0, self.max_range, -self.max_velocity, self.max_velocity],
+                    cmap='viridis')
+            
+            # Add colorbar
+            cbar = plt.colorbar()
+            cbar.set_label('Normalized Magnitude (dB)')
+            
+            # Mark targets on the plot
+            if target_info:
+                for target in target_info:
+                    distance = target['distance']
+                    velocity = target['velocity']
+                    # Mark target with a red circle and add annotation
+                    plt.plot(distance, velocity, 'ro', markersize=10, markeredgecolor='white')
+                    plt.annotate(f"Target\nD: {distance:.1f}m\nV: {velocity:.1f}m/s", 
+                                (distance, velocity), 
+                                xytext=(10, 10), 
+                                textcoords='offset points',
+                                color='white',
+                                bbox=dict(boxstyle="round,pad=0.3", fc="red", alpha=0.7))
+            
+            # Add grid
+            plt.grid(True, linestyle='--', alpha=0.5)
+            
+            # Set labels and title
+            plt.xlabel('Range (m)')
+            plt.ylabel('Velocity (m/s)')
+            plt.title(title)
+            
+            # Tight layout
+            plt.tight_layout()
+        
+        # Save or show the plot
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            plt.close()
+        else:
+            plt.show()
+
+    def _visualize_range_doppler_map3d(self, rd_map, target_info=None, title="Range-Doppler Map Visualization", save_path=None):
         """
         Visualize the range-Doppler map with target annotations in both 2D and 3D
         
@@ -761,96 +1014,227 @@ class RadarDataset(Dataset):
         else:
             plt.show()
 
-    def _add_target(self, rx_signal, distance, velocity, rcs=1.0):
-        """Add target to received signal
+    def _visualize_detection_comparison(self, rd_map, detected_targets, target_mask, target_info, 
+                                   title="Detection Comparison", save_path=None):
+        """
+        Visualize detected targets and ground truth target mask together for comparison
         
         Args:
-            rx_signal: Received signal array [num_rx, num_chirps, samples_per_chirp]
-            distance: Target distance in meters
-            velocity: Target velocity in m/s
-            rcs: Target radar cross section (normalized)
+            rd_map: Range-Doppler map with shape [2, num_doppler_bins, num_range_bins]
+            detected_targets: List of detected target dictionaries from CFAR
+            target_mask: Ground truth target mask with shape [num_doppler_bins, num_range_bins, 1]
+            target_info: List of ground truth target dictionaries
+            title: Title of the plot
+            save_path: Path to save the plot
+        """
+        # Compute magnitude of complex range-Doppler map
+        rd_magnitude = np.sqrt(rd_map[0]**2 + rd_map[1]**2)
+        
+        # Apply logarithmic scaling
+        rd_magnitude_db = 20 * np.log10(rd_magnitude + 1e-10)
+        
+        # Normalize to 0-1 range for better visualization
+        rd_magnitude_norm = (rd_magnitude_db - np.min(rd_magnitude_db)) / (np.max(rd_magnitude_db) - np.min(rd_magnitude_db) + 1e-10)
+        
+        # Create figure with two subplots
+        plt.figure(figsize=(12, 5))
+        
+        # Plot Range-Doppler Map with ground truth targets
+        plt.subplot(121)
+        plt.imshow(rd_magnitude_db, aspect='auto', origin='lower', 
+                extent=[0, self.max_range, -self.max_velocity, self.max_velocity],
+                cmap='viridis')
+        plt.title('Ground Truth Targets')
+        plt.xlabel('Range (m)')
+        plt.ylabel('Velocity (m/s)')
+        plt.colorbar(label='Magnitude (dB)')
+        plt.grid(True, linestyle='--', alpha=0.5)
+        
+        # Overlay target mask as contour
+        target_mask_2d = target_mask[:, :, 0]
+        if np.max(target_mask_2d) > 0:  # Only if there are targets
+            plt.contour(target_mask_2d, levels=[0.5], 
+                    extent=[0, self.max_range, -self.max_velocity, self.max_velocity],
+                    colors='r', linewidths=2)
+        
+        # Mark ground truth targets
+        if target_info:
+            for target in target_info:
+                distance = target['distance']
+                velocity = target['velocity']
+                plt.plot(distance, velocity, 'ro', markersize=8, markeredgecolor='white')
+                plt.annotate(f"GT\nD: {distance:.1f}m\nV: {velocity:.1f}m/s", 
+                            (distance, velocity), 
+                            xytext=(10, 10), 
+                            textcoords='offset points',
+                            color='white',
+                            bbox=dict(boxstyle="round,pad=0.3", fc="red", alpha=0.7))
+        
+        # Plot Range-Doppler Map with detected targets
+        plt.subplot(122)
+        plt.imshow(rd_magnitude_db, aspect='auto', origin='lower', 
+                extent=[0, self.max_range, -self.max_velocity, self.max_velocity],
+                cmap='viridis')
+        plt.title('CFAR Detected Targets')
+        plt.xlabel('Range (m)')
+        plt.ylabel('Velocity (m/s)')
+        plt.colorbar(label='Magnitude (dB)')
+        plt.grid(True, linestyle='--', alpha=0.5)
+        
+        # Mark detected targets
+        if detected_targets:
+            for target in detected_targets:
+                distance = target['range']
+                velocity = target['velocity']
+                plt.plot(distance, velocity, 'go', markersize=8, markeredgecolor='white')
+                plt.annotate(f"DET\nD: {distance:.1f}m\nV: {velocity:.1f}m/s", 
+                            (distance, velocity), 
+                            xytext=(10, 10), 
+                            textcoords='offset points',
+                            color='white',
+                            bbox=dict(boxstyle="round,pad=0.3", fc="green", alpha=0.7))
+        
+        # Add title and adjust layout
+        plt.suptitle(title, fontsize=16)
+        plt.tight_layout(rect=[0, 0, 1, 0.95])  # Adjust for suptitle
+        
+        # Save or show the plot
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            plt.close()
+        else:
+            plt.show()
+
+    def _add_target_old(self, rx_signal, distance, velocity, rcs=1.0, tx_signal=None):
+        """
+        Add a target to the received signal
+        
+        Args:
+            rx_signal: Received signal array with shape [num_rx, num_chirps, samples_per_chirp]
+            distance: Distance to target in meters
+            velocity: Velocity of target in m/s
+            rcs: Radar Cross Section of target
+            tx_signal: Transmitted signal to use for target reflection
             
         Returns:
-            Updated received signal array
+            Updated received signal with target added
         """
-        # Generate the transmit signal first
-        tx_signal = self._generate_tx_signal()
+        # If tx_signal is not provided, use the last generated tx_signal
+        if tx_signal is None:
+            # This is not ideal - we should always pass the tx_signal
+            print("Warning: tx_signal not provided to _add_target. Using default signal.")
+            tx_signal = self._generate_tx_signal()
         
-        # For each RX antenna and chirp, calculate the received signal
+        # Calculate round-trip time delay for the target
+        round_trip_time = 2 * distance / self.speed_of_light
+        
+        # Calculate delay in samples
+        delay_samples = int(round_trip_time * self.sample_rate)
+        
+        # Calculate Doppler shift due to target velocity
+        # Doppler frequency shift = 2 * velocity / wavelength
+        doppler_freq = 2 * velocity / self.wavelength
+        
+        # Calculate phase shift per chirp due to Doppler
+        # Phase shift = 2π * doppler_freq * chirp_duration
+        doppler_phase_per_chirp = 2 * np.pi * doppler_freq * self.chirp_duration
+        
+        # Calculate signal attenuation due to distance and RCS
+        # Using radar equation: P_r = P_t * G^2 * λ^2 * σ / ((4π)^3 * R^4)
+        # We simplify this to focus on the R^4 dependency and RCS (σ)
+        attenuation = np.sqrt(rcs) / (distance ** 2)  # Amplitude scales with sqrt(power)
+        
+        # Apply a scaling factor to get reasonable signal levels
+        attenuation *= 1e-2  # Adjust this based on your simulation needs
+        
+        # Add the target to each RX antenna and each chirp
         for rx_idx in range(self.num_rx):
             for chirp_idx in range(self.num_chirps):
-                # Calculate time delay for this chirp based on distance and velocity
-                # For moving targets, distance changes with each chirp
-                current_distance = distance + velocity * chirp_idx * self.chirp_duration
+                # Calculate total phase for this chirp (including Doppler)
+                doppler_phase = doppler_phase_per_chirp * chirp_idx
                 
-                # Calculate time delay (round trip)
-                time_delay = 2 * current_distance / 3e8  # Speed of light = 3e8 m/s
+                # Apply Doppler shift to the reflected signal
+                # For each chirp, we need to apply the appropriate Doppler phase
+                reflected_signal = tx_signal[chirp_idx] * np.exp(1j * doppler_phase)
                 
-                # Calculate Doppler shift
-                doppler_shift = 2 * velocity * self.center_freq / 3e8  # Hz
-                
-                # Calculate phase shift due to Doppler
-                doppler_phase = 2 * np.pi * doppler_shift * chirp_idx * self.chirp_duration
-                
-                # Apply delay, attenuation, and phase shift to the transmit signal
-                delayed_signal = self._apply_delay_to_tx_signal(
-                    tx_signal, time_delay, doppler_phase, chirp_idx, rcs
-                )
-                
-                # Add the delayed signal to the received signal
-                rx_signal[rx_idx, chirp_idx] += delayed_signal
-                
+                # Add the delayed and attenuated signal to the received signal
+                if delay_samples < self.samples_per_chirp:
+                    rx_signal[rx_idx, chirp_idx, delay_samples:] += attenuation * reflected_signal[:self.samples_per_chirp-delay_samples]
+        
         return rx_signal
     
     def _generate_ofdm_signal(self, num_chirps, samples_per_chirp, center_freq, bandwidth, 
-                             num_subcarriers, subcarrier_spacing=None, t=None):
-        """Generate OFDM signal with configurable parameters
+                         num_subcarriers, subcarrier_spacing=None, t=None):
+        """
+        Generate OFDM signal for radar sensing
         
         Args:
-            num_chirps: Number of chirps to generate
+            num_chirps: Number of OFDM symbols (chirps)
             samples_per_chirp: Number of samples per chirp
-            center_freq: Center frequency of the OFDM signal in Hz
-            bandwidth: Total bandwidth of the OFDM signal in Hz
-            num_subcarriers: Number of subcarriers to use
-            subcarrier_spacing: Spacing between subcarriers in Hz (if None, calculated from bandwidth)
-            t: Time vector (if None, created based on samples_per_chirp)
+            center_freq: Center frequency in Hz
+            bandwidth: Signal bandwidth in Hz
+            num_subcarriers: Number of subcarriers
+            subcarrier_spacing: Spacing between subcarriers in Hz (optional)
+            t: Time vector (optional)
             
         Returns:
-            OFDM signal array [num_chirps, samples_per_chirp]
+            Complex OFDM signal with shape [num_chirps, samples_per_chirp]
         """
-        # Create time vector if not provided
-        if t is None:
-            t = np.arange(samples_per_chirp) / self.sample_rate
-        
         # Calculate subcarrier spacing if not provided
         if subcarrier_spacing is None:
             subcarrier_spacing = bandwidth / num_subcarriers
         
-        # Initialize OFDM signal array
+        # Calculate FFT size (typically power of 2)
+        fft_size = 2**int(np.ceil(np.log2(num_subcarriers)))
+        
+        # Calculate symbol duration (without CP)
+        symbol_duration = 1 / subcarrier_spacing
+        
+        # Calculate cyclic prefix length (typically 20-25% of symbol)
+        cp_length = int(0.25 * fft_size)
+        
+        # Calculate total symbol length (with CP)
+        total_symbol_length = fft_size + cp_length
+        
+        # Create time vector if not provided
+        if t is None:
+            t = np.arange(samples_per_chirp) / self.sample_rate
+        
+        # Initialize output signal
         ofdm_signal = np.zeros((num_chirps, samples_per_chirp), dtype=np.complex64)
         
-        # Generate OFDM signal for each chirp
+        # Generate OFDM symbols (chirps)
         for chirp_idx in range(num_chirps):
-            # Initialize chirp signal
-            chirp_signal = np.zeros(samples_per_chirp, dtype=np.complex64)
+            # Generate random data for subcarriers
+            # For radar, we can use known symbols for better channel estimation
+            data_symbols = np.exp(1j * 2 * np.pi * np.random.random(num_subcarriers))
             
-            # Generate subcarriers
-            for i in range(num_subcarriers):
-                # Random phase for each subcarrier
-                phase_offset = np.random.uniform(0, 2*np.pi)
-                
-                # Subcarrier frequency centered around center_freq
-                f_sc = center_freq - bandwidth/2 + i * subcarrier_spacing
-                
-                # Generate subcarrier signal
-                subcarrier = np.exp(1j * (2 * np.pi * f_sc * t + phase_offset))
-                
-                # Add to total signal
-                chirp_signal += subcarrier
+            # Place subcarriers in the frequency domain
+            # Center the subcarriers around DC
+            freq_domain = np.zeros(fft_size, dtype=np.complex64)
+            start_idx = (fft_size - num_subcarriers) // 2
+            freq_domain[start_idx:start_idx + num_subcarriers] = data_symbols
             
-            # Normalize
-            chirp_signal /= np.sqrt(num_subcarriers)
-            ofdm_signal[chirp_idx] = chirp_signal
+            # Convert to time domain using IFFT
+            time_domain = np.fft.ifft(freq_domain) * np.sqrt(fft_size)
+            
+            # Add cyclic prefix
+            symbol_with_cp = np.concatenate([time_domain[-cp_length:], time_domain])
+            
+            # Apply windowing to reduce spectral leakage
+            window = np.hamming(total_symbol_length)
+            windowed_symbol = symbol_with_cp * window
+            
+            # Ensure the symbol fits within the chirp duration
+            if total_symbol_length <= samples_per_chirp:
+                ofdm_signal[chirp_idx, :total_symbol_length] = windowed_symbol
+            else:
+                # If the symbol is too long, truncate it
+                ofdm_signal[chirp_idx, :] = windowed_symbol[:samples_per_chirp]
+            
+            # Apply frequency shift to center the signal at center_freq
+            freq_shift = np.exp(1j * 2 * np.pi * center_freq * t[:samples_per_chirp])
+            ofdm_signal[chirp_idx, :] *= freq_shift
         
         return ofdm_signal
 
@@ -1083,7 +1467,28 @@ class RadarDataset(Dataset):
         
         return mask
 
-    
+    def visualize_sample(self, idx):
+        """
+        Public wrapper for _draw_sample that visualizes a sample with its range-Doppler map,
+        time domain signal, and target information
+        
+        Args:
+            idx: Sample index to visualize
+        """
+        # Get the data for this sample
+        if self.use_lazy_loading:
+            rx_signal = self._get_time_domain_data(idx)
+            rd_map = self._get_range_doppler_map(idx)
+        else:
+            rx_signal = self.time_domain_data[idx]
+            rd_map = self.range_doppler_maps[idx]
+        
+        # Get target information
+        targets = self.target_info[idx] if hasattr(self, 'target_info') and idx < len(self.target_info) else []
+        
+        # Call the comprehensive visualization function
+        self._draw_sample(idx, rx_signal, rd_map, targets)
+
     def _draw_sample(self, index, rx_signal, rd_map, targets):
         """
         Draw comprehensive visualization of a sample using existing visualization functions
@@ -2250,60 +2655,6 @@ class RadarDataset(Dataset):
             
             return sample
 
-    def visualize_sample(self, idx):
-        """Visualize a sample from the dataset
-        
-        Args:
-            idx: Sample index
-        """
-        # Get sample
-        sample = self[idx]
-        
-        # Extract data
-        range_doppler = sample['range_doppler'].numpy()
-        target_mask = sample['target_mask'].numpy()
-        target_info = sample['target_info']
-        
-        # Create figure with subplots
-        fig, axs = plt.subplots(1, 2, figsize=(15, 6))
-        
-        # Plot range-Doppler map (magnitude)
-        rd_magnitude = np.sqrt(range_doppler[0]**2 + range_doppler[1]**2)
-        rd_db = 20 * np.log10(rd_magnitude + 1e-10)  # Convert to dB
-        im = axs[0].imshow(rd_db, aspect='auto', cmap='jet')
-        axs[0].set_title('Range-Doppler Map (Magnitude, dB)')
-        axs[0].set_xlabel('Range Bin')
-        axs[0].set_ylabel('Doppler Bin')
-        plt.colorbar(im, ax=axs[0])
-        
-        # Plot target mask
-        axs[1].imshow(target_mask[:, :, 0], aspect='auto', cmap='gray')
-        axs[1].set_title('Target Mask')
-        axs[1].set_xlabel('Range Bin')
-        axs[1].set_ylabel('Doppler Bin')
-        
-        # Add target annotations
-        for target in target_info:
-            range_bin = int(target['distance'] / self.range_resolution)
-            doppler_bin = int(self.num_doppler_bins/2 + target['velocity'] / self.velocity_resolution)
-            
-            if (0 <= range_bin < self.num_range_bins and 
-                0 <= doppler_bin < self.num_doppler_bins):
-                axs[0].plot(range_bin, doppler_bin, 'ro')
-                axs[1].plot(range_bin, doppler_bin, 'ro')
-                
-                # Add target information
-                axs[0].text(range_bin + 1, doppler_bin + 1, 
-                          f"R: {target['distance']:.1f}m\nV: {target['velocity']:.1f}m/s", 
-                          color='white', fontsize=8, backgroundcolor='black')
-        
-        # Add sample information
-        plt.suptitle(f'Sample {idx}: {len(target_info)} Targets, Signal Type: {self.signal_type}')
-        
-        # Adjust layout and show
-        plt.tight_layout()
-        plt.show()
-
     def calibrate_system_delay_using_crosstalk(self):
         """
         Calibrate the system delay by detecting the crosstalk between TX and RX
@@ -2741,367 +3092,130 @@ def visualize_dataset_statistics(dataset, num_samples=5):
     print(f"Dataset statistics visualized and saved to {dataset.save_path}/statistics/")
 
 def visualize_signal_processing_steps(dataset, sample_idx=0):
-    """Visualize the signal processing steps for a single sample"""
-    # Create directory for processing figures
-    os.makedirs(f"{dataset.save_path}/processing", exist_ok=True)
-
-    # Initialize metrics lists
-    detection_accuracies = []
-    metrics = {
-        'snr_improvement': [],
-        'detection_accuracy': [],
-        'processing_time': []
-    }
-    processing_times = []
+    """
+    Visualize the radar signal processing steps for a given sample
     
-    # Get sample data
+    Args:
+        dataset: RadarDataset instance
+        sample_idx: Index of the sample to visualize
+    """
+    # Get the sample data
     sample = dataset[sample_idx]
-    time_domain = sample['time_domain'].numpy()
-    range_doppler = sample['range_doppler'].numpy()
+    
+    # Extract time domain data (complex format)
+    time_data = sample['time_domain_data']  # Shape: [num_rx, num_chirps, samples_per_chirp, 2]
+    
+    # Convert to complex format for processing
+    complex_data = time_data[..., 0] + 1j * time_data[..., 1]
+    
+    # Create figure for visualization
+    plt.figure(figsize=(15, 12))
+    
+    # 1. Plot raw time domain signal (first RX, first chirp)
+    plt.subplot(3, 2, 1)
+    plt.plot(np.real(complex_data[0, 0, :]), label='Real')
+    plt.plot(np.imag(complex_data[0, 0, :]), label='Imaginary')
+    plt.title('Raw Time Domain Signal (RX1, Chirp1)')
+    plt.xlabel('Sample')
+    plt.ylabel('Amplitude')
+    plt.legend()
+    plt.grid(True)
+    
+    # 2. Apply signal-specific processing based on signal type
+    if dataset.signal_type in ['OFDM_FMCW', 'Sine_FMCW']:
+        # For hybrid signal types, apply the two-step demodulation process
+        demodulated_data = dataset.radar_processor.simulate_hardware_demodulation(complex_data)
+        
+        # Plot demodulated time domain signal
+        plt.subplot(3, 2, 2)
+        plt.plot(np.real(demodulated_data[0, 0, :]), label='Real')
+        plt.plot(np.imag(demodulated_data[0, 0, :]), label='Imaginary')
+        plt.title(f'Demodulated Signal ({dataset.signal_type})')
+        plt.xlabel('Sample')
+        plt.ylabel('Amplitude')
+        plt.legend()
+        plt.grid(True)
+        
+        # Process the demodulated data
+        range_profile = dataset.radar_processor.compute_range_profile(demodulated_data)
+    else:
+        # For standard signal types, follow the normal processing pipeline
+        range_profile = dataset.radar_processor.compute_range_profile(complex_data)
+    
+    # 3. Plot range profile (first RX, first chirp)
+    plt.subplot(3, 2, 3)
+    range_profile_db = 20 * np.log10(np.abs(range_profile[0, 0, :]) + 1e-10)
+    plt.plot(range_profile_db)
+    plt.title('Range Profile (dB)')
+    plt.xlabel('Range Bin')
+    plt.ylabel('Magnitude (dB)')
+    plt.grid(True)
+    
+    # 4. Compute Doppler processing
+    range_doppler = dataset.radar_processor.compute_range_doppler(range_profile)
+    
+    # 5. Plot range-Doppler map
+    plt.subplot(3, 2, 4)
+    range_doppler_db = 20 * np.log10(np.abs(range_doppler[0, :, :]) + 1e-10)
+    plt.imshow(range_doppler_db, aspect='auto', cmap='jet', origin='lower')
+    plt.title('Range-Doppler Map (dB)')
+    plt.xlabel('Range Bin')
+    plt.ylabel('Doppler Bin')
+    plt.colorbar(label='Magnitude (dB)')
+    
+    # 6. Apply CFAR detection
+    detections = dataset.radar_processor.apply_cfar_detection(range_doppler)
+    
+    # 7. Plot CFAR detections
+    plt.subplot(3, 2, 5)
+    plt.imshow(range_doppler_db, aspect='auto', cmap='jet', origin='lower')
+    
+    # Overlay detections
+    detection_indices = np.where(detections[0, :, :] > 0)
+    if len(detection_indices[0]) > 0:
+        plt.scatter(detection_indices[1], detection_indices[0], 
+                   c='red', marker='x', s=40, label='Detections')
+    plt.title('CFAR Detections')
+    plt.xlabel('Range Bin')
+    plt.ylabel('Doppler Bin')
+    plt.colorbar(label='Magnitude (dB)')
+    if len(detection_indices[0]) > 0:
+        plt.legend()
+    
+    # 8. Plot ground truth targets
+    plt.subplot(3, 2, 6)
+    plt.imshow(range_doppler_db, aspect='auto', cmap='jet', origin='lower')
+    
+    # Get target information
     target_info = sample['target_info']
     
-    # Convert time domain data back to complex
-    # Shape: [num_rx, num_chirps, samples_per_chirp]
-    complex_data = time_domain[:, :, :, 0] + 1j * time_domain[:, :, :, 1]
-    
-    # Get TX signal if available
-    if hasattr(dataset, 'tx_signals') and dataset.tx_signals and sample_idx < len(dataset.tx_signals):
-        tx_signal = dataset.tx_signals[sample_idx]
-    else:
-        # Generate a TX signal if not available
-        tx_signal = dataset._generate_tx_signal()
-    
-    # Create figure with multiple subplots for processing steps
-    fig, axs = plt.subplots(5, 2, figsize=(15, 25))
-    
-    # 1. Plot TX signal (real and imaginary parts)
-    chirp_idx = 0  # First chirp
-    
-    # Define a subsection of the signal to visualize more clearly
-    start_sample = 0
-    num_samples_to_show = min(1000, dataset.samples_per_chirp)
-    
-    # Create sample indices for the subsection
-    sample_indices = np.arange(start_sample, start_sample + num_samples_to_show)
-    
-    # Plot real part of TX signal
-    axs[0, 0].plot(sample_indices, np.real(tx_signal[chirp_idx][start_sample:start_sample + num_samples_to_show]))
-    axs[0, 0].set_title(f'TX Signal (Real Part) - Chirp {chirp_idx}')
-    axs[0, 0].set_xlabel('Sample')
-    axs[0, 0].set_ylabel('Amplitude')
-    axs[0, 0].grid(True, alpha=0.3)
-    
-    # Plot imaginary part of TX signal
-    axs[0, 1].plot(sample_indices, np.imag(tx_signal[chirp_idx][start_sample:start_sample + num_samples_to_show]))
-    axs[0, 1].set_title(f'TX Signal (Imaginary Part) - Chirp {chirp_idx}')
-    axs[0, 1].set_xlabel('Sample')
-    axs[0, 1].set_ylabel('Amplitude')
-    axs[0, 1].grid(True, alpha=0.3)
-    
-    # Add a note about the subsection being shown
-    axs[0, 0].text(0.5, 0.02, f'Showing samples {start_sample}-{start_sample + num_samples_to_show} of {dataset.samples_per_chirp}',
-                  transform=axs[0, 0].transAxes, fontsize=8, ha='center', 
-                  bbox=dict(facecolor='white', alpha=0.7))
-    
-    # 2. Plot TX signal frequency domain
-    freq_tx = np.fft.fftshift(np.fft.fftfreq(len(tx_signal[chirp_idx]), 1/dataset.sample_rate))
-    freq_tx_ghz = (freq_tx + dataset.center_freq) / 1e9  # Convert to GHz
-    
-    fft_tx = np.fft.fftshift(np.fft.fft(tx_signal[chirp_idx]))
-    fft_tx_mag = np.abs(fft_tx)
-    fft_tx_db = 20 * np.log10(fft_tx_mag + 1e-10)
-    
-    axs[1, 0].plot(freq_tx_ghz, fft_tx_db)
-    axs[1, 0].set_title('TX Frequency Domain (Magnitude)')
-    axs[1, 0].set_xlabel('Frequency (GHz)')
-    axs[1, 0].set_ylabel('Magnitude (dB)')
-    axs[1, 0].grid(True, alpha=0.3)
-    
-    # Mark the bandwidth region
-    bw_start = dataset.center_freq - dataset.bandwidth/2
-    bw_end = dataset.center_freq + dataset.bandwidth/2
-    axs[1, 0].axvspan(bw_start/1e9, bw_end/1e9, alpha=0.2, color='green', 
-                    label=f'Signal Bandwidth ({dataset.bandwidth/1e6:.0f} MHz)')
-    axs[1, 0].legend()
-    
-    # Set x-axis limits to focus on the relevant frequency range
-    axs[1, 0].set_xlim([dataset.center_freq/1e9 - 1, dataset.center_freq/1e9 + 1])
-    
-    # 3. Plot original received time domain signal (real and imaginary parts)
-    rx_idx, chirp_idx = 0, 0  # First RX, first chirp
-    
-    # Plot real part of the subsection
-    axs[1, 1].plot(sample_indices, np.real(complex_data[rx_idx, chirp_idx][start_sample:start_sample + num_samples_to_show]))
-    axs[1, 1].set_title(f'Original Received Signal (Real Part) - RX {rx_idx}, Chirp {chirp_idx}')
-    axs[1, 1].set_xlabel('Sample')
-    axs[1, 1].set_ylabel('Amplitude')
-    axs[1, 1].grid(True, alpha=0.3)
-    
-    # 4. Simulate hardware demodulation (CN0566 to AD9361)
-    # Use the radar processor to perform the hardware demodulation
-    demodulated_data = dataset.radar_processor.simulate_hardware_demodulation(complex_data)
-    
-    # Plot demodulated signal
-    axs[2, 0].plot(np.real(demodulated_data[rx_idx, chirp_idx]))
-    axs[2, 0].set_title(f'Demodulated Signal (Real Part) - RX {rx_idx}, Chirp {chirp_idx}')
-    axs[2, 0].set_xlabel('Sample')
-    axs[2, 0].set_ylabel('Amplitude')
-    axs[2, 0].grid(True, alpha=0.3)
-    
-    axs[2, 1].plot(np.imag(demodulated_data[rx_idx, chirp_idx]))
-    axs[2, 1].set_title(f'Demodulated Signal (Imaginary Part) - RX {rx_idx}, Chirp {chirp_idx}')
-    axs[2, 1].set_xlabel('Sample')
-    axs[2, 1].set_ylabel('Amplitude')
-    axs[2, 1].grid(True, alpha=0.3)
-    
-    # 5. Range processing on demodulated data
-    # Use the radar processor to perform range FFT
-    range_profiles = np.zeros((dataset.num_rx, dataset.num_chirps, dataset.num_range_bins), dtype=np.complex64)
-    
-    for rx in range(dataset.num_rx):
-        for chirp in range(dataset.num_chirps):
-            # Apply window function
-            window = np.hamming(dataset.samples_per_chirp)
-            windowed_data = demodulated_data[rx, chirp] * window
-            
-            # Perform range FFT
-            range_fft = np.fft.fft(windowed_data, n=dataset.num_range_bins)
-            range_profiles[rx, chirp] = range_fft
-    
-    # Plot range profile for the first chirp of the first RX
-    range_profile_mag = np.abs(range_profiles[rx_idx, chirp_idx])
-    range_profile_db = 20 * np.log10(range_profile_mag + 1e-10)
-    
-    axs[3, 0].plot(range_profile_db)
-    axs[3, 0].set_title(f'Range Profile (dB) - RX {rx_idx}, Chirp {chirp_idx}')
-    axs[3, 0].set_xlabel('Range Bin')
-    axs[3, 0].set_ylabel('Magnitude (dB)')
-    axs[3, 0].grid(True, alpha=0.3)
-    
-    # Add secondary x-axis for range in meters
-    ax_range = axs[3, 0].secondary_xaxis('top', functions=(
-        lambda x: x * dataset.range_resolution,  # bin to meters
-        lambda x: x / dataset.range_resolution   # meters to bin
-    ))
-    ax_range.set_xlabel('Range (m)')
-    
-    # 6. Doppler processing on range profiles
-    # Find the range bin with maximum energy
-    max_range_bin = np.argmax(np.mean(np.abs(range_profiles[rx_idx])**2, axis=0))
-    
-    # Extract range bin data across all chirps for the first RX
-    range_bin_data = range_profiles[rx_idx, :, max_range_bin]
-    
-    # Apply Doppler FFT
-    doppler_window = np.hamming(dataset.num_chirps)
-    windowed_doppler = range_bin_data * doppler_window
-    doppler_fft = np.fft.fftshift(np.fft.fft(windowed_doppler, n=dataset.num_doppler_bins))
-    doppler_profile_mag = np.abs(doppler_fft)
-    doppler_profile_db = 20 * np.log10(doppler_profile_mag + 1e-10)
-    
-    axs[3, 1].plot(doppler_profile_db)
-    axs[3, 1].set_title(f'Doppler Profile (dB) - RX {rx_idx}, Range Bin {max_range_bin}')
-    axs[3, 1].set_xlabel('Doppler Bin')
-    axs[3, 1].set_ylabel('Magnitude (dB)')
-    axs[3, 1].grid(True, alpha=0.3)
-    
-    # Add secondary x-axis for velocity in m/s
-    ax_velocity = axs[3, 1].secondary_xaxis('top', functions=(
-        lambda y: (y - dataset.num_doppler_bins/2) * dataset.velocity_resolution,  # bin to m/s
-        lambda y: y / dataset.velocity_resolution + dataset.num_doppler_bins/2     # m/s to bin
-    ))
-    ax_velocity.set_xlabel('Velocity (m/s)')
-    
-    # 7. Complete Range-Doppler processing using the radar processor
-    # This uses the full two-step process implemented in AIradar_processing.py
-    rd_map = dataset.radar_processor.time_to_range_doppler(complex_data)
-    
-    # Plot the final range-Doppler map
-    rd_magnitude = np.abs(rd_map)
-    
-    # Apply dynamic range compression to enhance visibility
-    rd_db = 20 * np.log10(rd_magnitude + 1e-10)  # Convert to dB
-    
-    # Apply normalization and thresholding for better visualization
-    rd_db_norm = rd_db - np.min(rd_db)  # Normalize to start from 0
-    dynamic_range = 60  # Set dynamic range in dB
-    rd_db_norm = np.clip(rd_db_norm, 0, dynamic_range)  # Clip to dynamic range
-    rd_db_norm = rd_db_norm / dynamic_range  # Scale to [0,1]
-    
-    # Use a better colormap with higher contrast
-    im = axs[4, 0].imshow(rd_db_norm, aspect='auto', cmap='viridis', origin='lower',
-                         extent=[0, dataset.num_range_bins, 0, dataset.num_doppler_bins])
-    axs[4, 0].set_title('Range-Doppler Map (Full Processing)')
-    axs[4, 0].set_xlabel('Range Bin')
-    axs[4, 0].set_ylabel('Doppler Bin')
-    
-    # Add secondary axes for physical units
-    ax_range = axs[4, 0].secondary_xaxis('top', functions=(
-        lambda x: x * dataset.range_resolution,  # bin to meters
-        lambda x: x / dataset.range_resolution   # meters to bin
-    ))
-    ax_range.set_xlabel('Range (m)')
-    
-    ax_velocity = axs[4, 0].secondary_yaxis('right', functions=(
-        lambda y: (y - dataset.num_doppler_bins/2) * dataset.velocity_resolution,  # bin to m/s
-        lambda y: y / dataset.velocity_resolution + dataset.num_doppler_bins/2     # m/s to bin
-    ))
-    ax_velocity.set_xlabel('Velocity (m/s)')
-    
-    # Add colorbar with better formatting
-    cbar = plt.colorbar(im, ax=axs[4, 0])
-    cbar.set_label('Normalized Magnitude (dB)')
-    
-    # Generate and plot target mask for visualization
-    target_mask = np.zeros((dataset.num_doppler_bins, dataset.num_range_bins, 1), dtype=np.float32)
-    
-        # Initialize metrics dictionary for this function
-    metrics = {
-        'snr_improvement': [],
-        'detection_accuracy': []
-    }
-    
-    # Calculate noise floor
-    rd_magnitude = np.abs(rd_map)
-    noise_floor = np.median(rd_magnitude)
-
-    detected = 0
-    # Create mask based on target information
+    # Convert target information to range-Doppler bins
     for target in target_info:
+        # Convert distance to range bin
         range_bin = int(target['distance'] / dataset.range_resolution)
-        doppler_bin = int(dataset.num_doppler_bins/2 + target['velocity'] / dataset.velocity_resolution)
         
-        if (0 <= range_bin < dataset.num_range_bins and 
-            0 <= doppler_bin < dataset.num_doppler_bins):
-            # Check if there's a peak near the target
-            region = rd_magnitude[
-                max(0, doppler_bin-2):min(dataset.num_doppler_bins, doppler_bin+3),
-                max(0, range_bin-2):min(dataset.num_range_bins, range_bin+3)
-            ]
-            
-            # If the peak is significantly above the noise floor, count as detected
-            if np.max(region) > 3 * noise_floor:
-                detected += 1
-            
-        detection_accuracies.append(detected / len(target_info) if target_info else 1.0)
-    
-    # Average the metrics
-    # Calculate detection accuracy
-    detection_accuracy = detected / len(target_info) if target_info else 1.0
-    metrics['detection_accuracy'].append(detection_accuracy)
-    
-    # Calculate SNR improvement
-    target_peaks = []
-    for target in target_info:
-        range_bin = int(target['distance'] / dataset.range_resolution)
-        doppler_bin = int(dataset.num_doppler_bins/2 + target['velocity'] / dataset.velocity_resolution)
+        # Convert velocity to Doppler bin
+        doppler_bin = int(target['velocity'] / dataset.velocity_resolution + dataset.num_doppler_bins // 2)
         
-        if (0 <= range_bin < dataset.num_range_bins and 
-            0 <= doppler_bin < dataset.num_doppler_bins):
-            # Get 3x3 region around target
-            region = rd_magnitude[
-                max(0, doppler_bin-1):min(dataset.num_doppler_bins, doppler_bin+2),
-                max(0, range_bin-1):min(dataset.num_range_bins, range_bin+2)
-            ]
-            target_peaks.append(np.max(region))
+        # Ensure bins are within valid range
+        if 0 <= range_bin < dataset.num_range_bins and 0 <= doppler_bin < dataset.num_doppler_bins:
+            plt.scatter(range_bin, doppler_bin, c='green', marker='o', s=80, 
+                       label='Ground Truth', alpha=0.7)
     
-    if target_peaks:
-        avg_peak = np.mean(target_peaks)
-        snr_improvement = 20 * np.log10(avg_peak / noise_floor)
-        metrics['snr_improvement'].append(snr_improvement)
-    else:
-        metrics['snr_improvement'].append(0)
-    # metrics['snr_improvement'].append(np.mean(snr_improvements) if snr_improvements else 0)
-    metrics['processing_time'].append(np.mean(processing_times))
-    #metrics['detection_accuracy'].append(np.mean(detection_accuracies))
-
-    # Visualize samples for each signal type
-    for i in range(min(visualize_samples, num_samples)):
-        # Use the comprehensive visualization if available
-        if hasattr(dataset, '_visualize_comprehensive_signal'):
-            # Get sample data
-            sample = dataset[i]
-            time_domain = sample['time_domain'].numpy()
-            target_info = sample['target_info']
-            
-            # Convert time domain data back to complex
-            complex_data = time_domain[:, :, :, 0] + 1j * time_domain[:, :, :, 1]
-            
-            # Get TX signal if available
-            if hasattr(dataset, 'tx_signals') and dataset.tx_signals and i < len(dataset.tx_signals):
-                tx_signal = dataset.tx_signals[i]
-            else:
-                # Generate a TX signal if not available
-                tx_signal = dataset._generate_tx_signal()
-            
-            # Use comprehensive visualization
-            dataset._visualize_comprehensive_signal(
-                tx_signal=tx_signal,
-                rx_signal=complex_data,
-                title=f"{signal_type} Sample {i}: {len(target_info)} Targets",
-                target_info=target_info,
-                save_path=f"{comparison_dir}/{signal_type}_sample_{i}_comprehensive{IMG_FORMAT}"
-            )
-        
-        # Also use the standard visualization
-        dataset.visualize_sample(i)
-        plt.savefig(f"{comparison_dir}/{signal_type}_sample_{i}_visualization{IMG_FORMAT}")
-        plt.close()
+    plt.title('Ground Truth Targets')
+    plt.xlabel('Range Bin')
+    plt.ylabel('Doppler Bin')
+    plt.colorbar(label='Magnitude (dB)')
     
-    # Create comparison plots
-    plt.figure(figsize=(15, 10))
+    # Add overall title
+    plt.suptitle(f'Radar Signal Processing Steps - {dataset.signal_type}', fontsize=16)
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
     
-    # Plot range resolution comparison
-    plt.subplot(2, 2, 1)
-    plt.bar(signal_types, metrics['range_resolution'])
-    plt.title('Range Resolution Comparison')
-    plt.xlabel('Signal Type')
-    plt.ylabel('Range Resolution (m)')
-    plt.grid(True, alpha=0.3)
-    
-    # Plot velocity resolution comparison
-    plt.subplot(2, 2, 2)
-    plt.bar(signal_types, metrics['velocity_resolution'])
-    plt.title('Velocity Resolution Comparison')
-    plt.xlabel('Signal Type')
-    plt.ylabel('Velocity Resolution (m/s)')
-    plt.grid(True, alpha=0.3)
-    
-    # Plot SNR improvement comparison
-    plt.subplot(2, 2, 3)
-    plt.bar(signal_types, metrics['snr_improvement'])
-    plt.title('SNR Improvement Comparison')
-    plt.xlabel('Signal Type')
-    plt.ylabel('SNR Improvement (dB)')
-    plt.grid(True, alpha=0.3)
-    
-    # Plot processing time comparison
-    plt.subplot(2, 2, 4)
-    plt.bar(signal_types, metrics['processing_time'])
-    plt.title('Processing Time Comparison')
-    plt.xlabel('Signal Type')
-    plt.ylabel('Processing Time (s)')
-    plt.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    plt.savefig(f"{comparison_dir}/signal_type_comparison{IMG_FORMAT}")
+    # Save figure
+    plt.savefig(f'data/radar_results/signal_processing_{dataset.signal_type}.pdf')
     plt.close()
     
-    # Create detection accuracy comparison
-    plt.figure(figsize=(10, 6))
-    plt.bar(signal_types, metrics['detection_accuracy'])
-    plt.title('Target Detection Accuracy Comparison')
-    plt.xlabel('Signal Type')
-    plt.ylabel('Detection Accuracy')
-    plt.ylim(0, 1.0)
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(f"{comparison_dir}/detection_accuracy_comparison{IMG_FORMAT}")
-    plt.close()
-    
-    print(f"Signal type comparison completed and saved to {comparison_dir}/")
-    
-    return datasets, metrics
+    print(f"Signal processing visualization saved for {dataset.signal_type}")
 
 def compare_signal_types(save_path, num_samples=100, signal_types=None, visualize_samples=5, 
                         radar_params=None, apply_realistic_effects=True):
@@ -3542,6 +3656,8 @@ if __name__ == '__main__':
         dataset = RadarDataset(
             num_samples=args.num_samples,
             signal_type=args.signal_type,
+            snr_min=15,
+            snr_max=30,
             save_path=args.save_path,
             savedataformat=args.format,
             apply_realistic_effects = False,
