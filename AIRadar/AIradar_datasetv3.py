@@ -182,6 +182,7 @@ class RadarDataset(Dataset):
         self.samples_per_chirp = int(self.sample_rate * self.chirp_duration)
         self.range_resolution = self.radar_processor.range_resolution
         self.max_range = self.radar_processor.max_range
+        self.min_range = self.radar_processor.min_range
         self.velocity_resolution = self.radar_processor.velocity_resolution
         self.max_velocity = self.radar_processor.max_velocity
         self.wavelength = 3e8 / self.center_freq  # Wavelength in meters
@@ -206,7 +207,17 @@ class RadarDataset(Dataset):
             print("Generating new radar data")
             self.generate_radar_data(save_data=True, format=savedataformat)
 
-    def generate_radar_data(self, save_data=True, format='hdf5'):
+    def generate_radar_data(self, save_data=True, format='hdf5', do_debug=True):
+        """Generate radar dataset with random targets and signals
+
+        Args:
+            save_data: Whether to save the dataset to disk
+            format: Format to save the dataset ('hdf5' or 'numpy')
+
+        Returns:
+            Generated dataset
+        """
+        print(f"Generating {self.num_samples} radar samples with {self.signal_type} signals...")
         """Generate radar dataset with random targets and signals
         
         Args:
@@ -243,6 +254,17 @@ class RadarDataset(Dataset):
         self.channel_models = []
         self.snr_values = []
         self.signal_types = []
+
+        #debug one sample
+        if do_debug:
+            # Run the debug function to add an ideal target
+            rx_signal, rd_map, target_info = self.debug_add_ideal_target(test_tx_signal)
+
+           # Debug the range-Doppler processing
+            rd_map, debug_info = self.debug_time_to_range_doppler(rx_signal)
+
+            # Now you can examine the debug_info dictionary and visualizations
+            print(f"Peak-to-noise ratio: {debug_info['peak_to_noise_db']:.2f} dB")
         
         # Generate samples
         for i in tqdm(range(self.num_samples), desc="Generating samples"):
@@ -271,7 +293,7 @@ class RadarDataset(Dataset):
             if num_targets > 0:
                 for _ in range(num_targets):
                     # Generate random target parameters
-                    distance = random.uniform(5, self.max_range)
+                    distance = random.uniform(self.min_range, self.max_range)
                     velocity = random.uniform(-self.max_velocity, self.max_velocity)
                     rcs = random.uniform(1.0, 20.0)  # Radar Cross Section
                     
@@ -293,7 +315,7 @@ class RadarDataset(Dataset):
                 add_system_noise=self.apply_realistic_effects,
                 crosstalk_isolation_db=30,
                 crosstalk_delay_samples=5,
-                system_noise_power=1e-6 if self.apply_realistic_effects else 1e-9,
+                system_noise_power=1e-9 if self.apply_realistic_effects else 1e-12,
                 clutter_probability=0.1 if num_targets == 0 else 0.05  # More clutter when no targets
             )
             if i % 100 == 0:
@@ -390,6 +412,555 @@ class RadarDataset(Dataset):
         
         return self.time_domain_data, self.range_doppler_maps, self.target_masks, self.target_info
     
+    def debug_add_ideal_target(self, tx_signal, visualize=True):
+        """
+        Add a single ideal target to the transmitted signal for debugging purposes.
+        This function creates a perfect target reflection with high RCS and no noise
+        to ensure it's clearly visible in the range-Doppler map.
+        
+        Args:
+            tx_signal: Transmitted signal with shape [num_chirps, samples_per_chirp]
+            visualize: Whether to visualize the signals and range-Doppler map
+            
+        Returns:
+            Tuple of (rx_signal, rd_map, target_info)
+        """
+        print("=== DEBUG MODE: Adding ideal target ===")
+        
+        # Initialize RX signal (all zeros)
+        rx_signal = np.zeros((self.num_rx, self.num_chirps, self.samples_per_chirp), 
+                            dtype=np.complex64)
+        
+        # Create a single target with ideal parameters
+        # - Place at 30% of max range for clear visibility
+        # - Use moderate velocity (30% of max) to create clear Doppler shift
+        # - Use very high RCS to ensure strong reflection
+        target_distance = self.max_range * 0.3
+        target_velocity = self.max_velocity * 0.3
+        target_rcs = 100.0  # Very high RCS for clear visibility
+        
+        # Store target information
+        target_info = {
+            'distance': target_distance,
+            'velocity': target_velocity,
+            'rcs': target_rcs
+        }
+        
+        print(f"Ideal target parameters:")
+        print(f"  - Distance: {target_distance:.2f} m")
+        print(f"  - Velocity: {target_velocity:.2f} m/s")
+        print(f"  - RCS: {target_rcs:.2f} m²")
+        
+        # Calculate target parameters
+        # Time delay for the target (round trip)
+        delay_seconds = 2 * target_distance / self.speed_of_light
+        delay_samples = int(delay_seconds * self.sample_rate)
+        
+        # Doppler shift due to target velocity
+        doppler_freq = 2 * target_velocity * self.center_freq / self.speed_of_light
+        
+        # Calculate attenuation (using radar equation principles but amplified)
+        # We're using a simplified version with very high gain for debugging
+        attenuation = np.sqrt(target_rcs) / (target_distance ** 1.5)  # Reduced exponent for stronger signal
+        attenuation *= 1e3  # Amplification factor to make target clearly visible
+        
+        print(f"Target signal parameters:")
+        print(f"  - Delay: {delay_samples} samples ({delay_seconds*1e6:.2f} μs)")
+        print(f"  - Doppler shift: {doppler_freq:.2f} Hz")
+        print(f"  - Attenuation factor: {attenuation:.6f}")
+        
+        # IMPORTANT FIX: Check if delay is too large for the signal
+        if delay_samples >= self.samples_per_chirp:
+            print(f"WARNING: Target delay ({delay_samples} samples) exceeds signal length ({self.samples_per_chirp} samples)")
+            print(f"Reducing target distance to ensure visibility")
+            # Adjust target distance to be visible
+            max_visible_distance = (self.samples_per_chirp * self.speed_of_light) / (2 * self.sample_rate)
+            target_distance = max_visible_distance * 0.8  # 80% of max visible distance
+            delay_seconds = 2 * target_distance / self.speed_of_light
+            delay_samples = int(delay_seconds * self.sample_rate)
+            print(f"New target distance: {target_distance:.2f} m")
+            print(f"New delay: {delay_samples} samples ({delay_seconds*1e6:.2f} μs)")
+            
+            # Update target info
+            target_info['distance'] = target_distance
+        
+        # For each chirp, add the delayed and phase-shifted version of the TX signal
+        for chirp_idx in range(self.num_chirps):
+            # Calculate phase shift for this chirp due to Doppler
+            # Phase accumulates over time
+            phase_shift = 2 * np.pi * doppler_freq * chirp_idx * self.chirp_duration
+            
+            # IMPROVED APPROACH: Create the delayed signal with phase shift
+            delayed_signal = np.zeros(self.samples_per_chirp, dtype=np.complex64)
+            
+            # Only copy valid samples (avoid index out of bounds)
+            samples_to_copy = min(self.samples_per_chirp - delay_samples, self.samples_per_chirp)
+            if samples_to_copy > 0:
+                # Copy the delayed portion of the TX signal
+                delayed_signal[delay_samples:delay_samples+samples_to_copy] = tx_signal[chirp_idx, :samples_to_copy]
+                
+                # Apply Doppler phase shift and attenuation
+                delayed_signal *= attenuation * np.exp(1j * phase_shift)
+                
+                # Add to all RX channels (with slight variations for realism)
+                for rx_idx in range(self.num_rx):
+                    # Add small random phase variations between RX channels (for angle estimation)
+                    rx_phase_variation = 0.1 * rx_idx  # Small phase difference between RX channels
+                    rx_signal[rx_idx, chirp_idx, :] += delayed_signal * np.exp(1j * rx_phase_variation)
+        
+        # Add a small amount of noise to avoid numerical issues
+        noise_power = 1e-6  # Very low noise, just to avoid zeros
+        noise = np.random.normal(0, np.sqrt(noise_power/2), rx_signal.shape) + \
+                1j * np.random.normal(0, np.sqrt(noise_power/2), rx_signal.shape)
+        rx_signal += noise
+        
+        # Process the received signal to generate range-Doppler map
+        rd_map = self.radar_processor.time_to_range_doppler(rx_signal)
+        
+        if visualize:
+            # Visualize the TX signal
+            self._visualize_tx_signal(tx_signal, title="DEBUG: TX Signal", 
+                                    save_path=f"{self.save_path}/debug_tx_signal{IMG_FORMAT}")
+            
+            # Visualize the RX signal
+            self._visualize_rx_signal(rx_signal, target_info=[target_info], 
+                                    title="DEBUG: RX Signal with Ideal Target", 
+                                    save_path=f"{self.save_path}/debug_rx_signal{IMG_FORMAT}")
+            
+            # Visualize the range-Doppler map
+            self._visualize_range_doppler_map(rd_map, [target_info], 
+                                            title="DEBUG: Range-Doppler Map with Ideal Target", 
+                                            save_path=f"{self.save_path}/debug_rd_map{IMG_FORMAT}")
+            
+            # Calculate expected bin positions
+            range_bin = int(target_distance / self.max_range * self.num_range_bins)
+            velocity_bin = int((target_velocity + self.max_velocity) / (2 * self.max_velocity) * self.num_doppler_bins)
+            
+            print(f"Expected target position in range-Doppler map:")
+            print(f"  - Range bin: {range_bin} (of {self.num_range_bins})")
+            print(f"  - Velocity bin: {velocity_bin} (of {self.num_doppler_bins})")
+            
+            # Find actual peak in range-Doppler map
+            magnitude = np.abs(rd_map[0] + 1j * rd_map[1])
+            peak_idx = np.unravel_index(np.argmax(magnitude), magnitude.shape)
+            peak_velocity_bin, peak_range_bin = peak_idx
+            
+            print(f"Actual peak position in range-Doppler map:")
+            print(f"  - Range bin: {peak_range_bin} (of {self.num_range_bins})")
+            print(f"  - Velocity bin: {peak_velocity_bin} (of {self.num_doppler_bins})")
+            
+            # Print peak magnitude for debugging
+            peak_magnitude = magnitude[peak_velocity_bin, peak_range_bin]
+            print(f"Peak magnitude: {peak_magnitude:.6f}")
+            
+            # Print magnitude at expected position
+            expected_magnitude = magnitude[velocity_bin, range_bin]
+            print(f"Magnitude at expected position: {expected_magnitude:.6f}")
+            
+            # Print statistics about the range-Doppler map
+            print(f"Range-Doppler map statistics:")
+            print(f"  - Min magnitude: {np.min(magnitude):.6f}")
+            print(f"  - Max magnitude: {np.max(magnitude):.6f}")
+            print(f"  - Mean magnitude: {np.mean(magnitude):.6f}")
+            print(f"  - Median magnitude: {np.median(magnitude):.6f}")
+            
+            # Process radar data with CFAR detection
+            results = self.radar_processor.process_radar_data(
+                rx_signal, 
+                apply_cfar=True,
+                guard_cells=(2, 2),
+                training_cells=(4, 4),
+                pfa=1e-4
+            )
+            
+            # Access CFAR results
+            cfar_map = results['cfar_map']
+            detected_targets = results['detected_targets']
+            
+            # Visualize with CFAR detections
+            self._visualize_range_doppler_map(
+                rd_map, 
+                [target_info], 
+                title="DEBUG: Range-Doppler Map with CFAR", 
+                save_path=f"{self.save_path}/debug_rd_map_cfar{IMG_FORMAT}",
+                cfar_map=cfar_map
+            )
+            
+            print(f"CFAR detection results:")
+            print(f"  - Number of detected targets: {len(detected_targets)}")
+            for i, target in enumerate(detected_targets):
+                print(f"  - Target {i+1}: Range bin {target['range_idx']}, Velocity bin {target['doppler_idx']}")
+        
+        return rx_signal, rd_map, target_info
+
+    def debug_time_to_range_doppler(self, rx_signal, visualize=True):
+        """
+        Debug version of time_to_range_doppler function that shows intermediate steps
+        and provides detailed visualization of the processing pipeline.
+        
+        Args:
+            rx_signal: Received signal with shape [num_rx, num_chirps, samples_per_chirp]
+            visualize: Whether to visualize intermediate steps
+            
+        Returns:
+            Range-Doppler map and dictionary of intermediate results
+        """
+        print("=== DEBUG: Range-Doppler Processing Pipeline ===")
+        
+        # Store intermediate results
+        debug_info = {}
+        
+        # Get dimensions
+        num_rx, num_chirps, samples_per_chirp = rx_signal.shape
+        print(f"Input signal shape: {rx_signal.shape}")
+        
+        # Step 1: Check for NaN or Inf values in input
+        has_nan = np.isnan(rx_signal).any()
+        has_inf = np.isinf(rx_signal).any()
+        print(f"Input contains NaN: {has_nan}, Inf: {has_inf}")
+        if has_nan or has_inf:
+            print("WARNING: Input signal contains NaN or Inf values!")
+            # Replace with zeros to continue processing
+            rx_signal = np.nan_to_num(rx_signal)
+        
+        # Step 2: Calculate signal power statistics
+        signal_power = np.mean(np.abs(rx_signal)**2)
+        signal_min = np.min(np.abs(rx_signal))
+        signal_max = np.max(np.abs(rx_signal))
+        print(f"Signal power: {signal_power:.6e}")
+        print(f"Signal magnitude range: {signal_min:.6e} to {signal_max:.6e}")
+        debug_info['signal_power'] = signal_power
+        
+        # Step 3: Apply windowing to reduce sidelobes
+        # Use Hanning window for range dimension
+        range_window = np.hanning(samples_per_chirp)
+        # Use Hanning window for Doppler dimension
+        doppler_window = np.hanning(num_chirps)
+        
+        # Apply windows
+        windowed_signal = np.zeros_like(rx_signal)
+        for rx_idx in range(num_rx):
+            for chirp_idx in range(num_chirps):
+                windowed_signal[rx_idx, chirp_idx, :] = rx_signal[rx_idx, chirp_idx, :] * range_window
+            
+            # Apply Doppler window across chirps
+            for sample_idx in range(samples_per_chirp):
+                windowed_signal[rx_idx, :, sample_idx] = windowed_signal[rx_idx, :, sample_idx] * doppler_window
+        
+        # Calculate windowed signal power
+        windowed_power = np.mean(np.abs(windowed_signal)**2)
+        print(f"Windowed signal power: {windowed_power:.6e}")
+        debug_info['windowed_power'] = windowed_power
+        
+        # Step 4: Perform Range FFT (first dimension)
+        range_fft = np.zeros((num_rx, num_chirps, samples_per_chirp), dtype=np.complex64)
+        for rx_idx in range(num_rx):
+            for chirp_idx in range(num_chirps):
+                range_fft[rx_idx, chirp_idx, :] = np.fft.fft(windowed_signal[rx_idx, chirp_idx, :])
+        
+        # Calculate range FFT power
+        range_fft_power = np.mean(np.abs(range_fft)**2)
+        print(f"Range FFT power: {range_fft_power:.6e}")
+        debug_info['range_fft_power'] = range_fft_power
+        
+        # Step 5: Perform Doppler FFT (second dimension)
+        doppler_fft = np.zeros((num_rx, num_chirps, samples_per_chirp), dtype=np.complex64)
+        for rx_idx in range(num_rx):
+            for range_bin in range(samples_per_chirp):
+                doppler_fft[rx_idx, :, range_bin] = np.fft.fft(range_fft[rx_idx, :, range_bin])
+        
+        # Calculate Doppler FFT power
+        doppler_fft_power = np.mean(np.abs(doppler_fft)**2)
+        print(f"Doppler FFT power: {doppler_fft_power:.6e}")
+        debug_info['doppler_fft_power'] = doppler_fft_power
+        
+        # Step 6: Extract the desired number of range and Doppler bins
+        # For range, we typically use the first half of FFT output (positive frequencies)
+        # For Doppler, we need to rearrange to have zero Doppler in the center
+        
+        # Determine how many range bins to keep
+        range_bins_to_keep = min(self.num_range_bins, samples_per_chirp)
+        
+        # Determine how many Doppler bins to keep
+        doppler_bins_to_keep = min(self.num_doppler_bins, num_chirps)
+        
+        # Initialize the range-Doppler map
+        rd_map = np.zeros((2, doppler_bins_to_keep, range_bins_to_keep), dtype=np.float32)
+        
+        # Extract and rearrange Doppler bins
+        for rx_idx in range(num_rx):
+            for range_idx in range(range_bins_to_keep):
+                # Rearrange Doppler bins to have zero Doppler in the center
+                doppler_data = np.fft.fftshift(doppler_fft[rx_idx, :, range_idx])
+                
+                # Extract the desired number of Doppler bins
+                start_idx = (num_chirps - doppler_bins_to_keep) // 2
+                end_idx = start_idx + doppler_bins_to_keep
+                doppler_data = doppler_data[start_idx:end_idx]
+                
+                # Accumulate real and imaginary parts separately across RX channels
+                rd_map[0, :, range_idx] += np.real(doppler_data)
+                rd_map[1, :, range_idx] += np.imag(doppler_data)
+        
+        # Normalize by number of RX channels
+        rd_map /= num_rx
+        
+        # Calculate final RD map power
+        rd_map_power = np.mean(rd_map[0]**2 + rd_map[1]**2)
+        print(f"RD map power: {rd_map_power:.6e}")
+        debug_info['rd_map_power'] = rd_map_power
+        
+        # Step 7: Check for NaN or Inf values in output
+        has_nan_output = np.isnan(rd_map).any()
+        has_inf_output = np.isinf(rd_map).any()
+        print(f"Output contains NaN: {has_nan_output}, Inf: {has_inf_output}")
+        if has_nan_output or has_inf_output:
+            print("WARNING: Output RD map contains NaN or Inf values!")
+            # Replace with zeros
+            rd_map = np.nan_to_num(rd_map)
+        
+        # Step 8: Calculate dynamic range of RD map
+        magnitude = np.sqrt(rd_map[0]**2 + rd_map[1]**2)
+        min_val = np.min(magnitude)
+        max_val = np.max(magnitude)
+        dynamic_range_db = 20 * np.log10(max_val / (min_val + 1e-10))
+        print(f"RD map dynamic range: {dynamic_range_db:.2f} dB")
+        debug_info['dynamic_range_db'] = dynamic_range_db
+        
+        # Step 9: Calculate noise floor
+        # Sort magnitude values and take the median of the lower half as noise floor
+        sorted_magnitude = np.sort(magnitude.flatten())
+        noise_floor = np.median(sorted_magnitude[:len(sorted_magnitude)//2])
+        print(f"Estimated noise floor: {noise_floor:.6e}")
+        debug_info['noise_floor'] = noise_floor
+        
+        # Step 10: Calculate peak-to-noise ratio
+        peak_value = np.max(magnitude)
+        peak_to_noise_db = 20 * np.log10(peak_value / (noise_floor + 1e-10))
+        print(f"Peak-to-noise ratio: {peak_to_noise_db:.2f} dB")
+        debug_info['peak_to_noise_db'] = peak_to_noise_db
+        
+        if visualize:
+            # Visualize intermediate steps
+            self._visualize_debug_steps(rx_signal, windowed_signal, range_fft, doppler_fft, rd_map, debug_info)
+        
+        return rd_map, debug_info
+
+    def _visualize_debug_steps(self, rx_signal, windowed_signal, range_fft, doppler_fft, rd_map, debug_info):
+        """
+        Visualize intermediate steps in the range-Doppler processing pipeline
+        
+        Args:
+            rx_signal: Original received signal
+            windowed_signal: Signal after windowing
+            range_fft: Signal after range FFT
+            doppler_fft: Signal after Doppler FFT
+            rd_map: Final range-Doppler map
+            debug_info: Dictionary with debug information
+        """
+        # Create directory for debug visualizations
+        debug_dir = os.path.join(self.save_path, "debug")
+        os.makedirs(debug_dir, exist_ok=True)
+        
+        # 1. Visualize original signal (first RX, first chirp)
+        plt.figure(figsize=(10, 6))
+        plt.subplot(2, 1, 1)
+        plt.plot(np.real(rx_signal[0, 0, :]))
+        plt.title("Original Signal (First RX, First Chirp)")
+        plt.ylabel("Real Part")
+        plt.grid(True)
+        
+        plt.subplot(2, 1, 2)
+        plt.plot(np.imag(rx_signal[0, 0, :]))
+        plt.ylabel("Imaginary Part")
+        plt.xlabel("Sample Index")
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(os.path.join(debug_dir, f"debug_original_signal{IMG_FORMAT}"))
+        plt.close()
+        
+        # 2. Visualize windowed signal
+        plt.figure(figsize=(10, 6))
+        plt.subplot(2, 1, 1)
+        plt.plot(np.real(windowed_signal[0, 0, :]))
+        plt.title("Windowed Signal (First RX, First Chirp)")
+        plt.ylabel("Real Part")
+        plt.grid(True)
+        
+        plt.subplot(2, 1, 2)
+        plt.plot(np.imag(windowed_signal[0, 0, :]))
+        plt.ylabel("Imaginary Part")
+        plt.xlabel("Sample Index")
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(os.path.join(debug_dir, f"debug_windowed_signal{IMG_FORMAT}"))
+        plt.close()
+        
+        # 3. Visualize range FFT magnitude (first RX, first chirp)
+        plt.figure(figsize=(10, 6))
+        plt.plot(np.abs(range_fft[0, 0, :]))
+        plt.title("Range FFT Magnitude (First RX, First Chirp)")
+        plt.xlabel("Range Bin")
+        plt.ylabel("Magnitude")
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(os.path.join(debug_dir, f"debug_range_fft{IMG_FORMAT}"))
+        plt.close()
+        
+        # 4. Visualize range FFT magnitude in dB
+        plt.figure(figsize=(10, 6))
+        range_fft_db = 20 * np.log10(np.abs(range_fft[0, 0, :]) + 1e-10)
+        plt.plot(range_fft_db)
+        plt.title("Range FFT Magnitude (dB)")
+        plt.xlabel("Range Bin")
+        plt.ylabel("Magnitude (dB)")
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(os.path.join(debug_dir, f"debug_range_fft_db{IMG_FORMAT}"))
+        plt.close()
+        
+        # 5. Visualize Doppler FFT magnitude for a specific range bin
+        range_bin = np.argmax(np.abs(range_fft[0, 0, :]))  # Use the strongest range bin
+        plt.figure(figsize=(10, 6))
+        plt.plot(np.abs(doppler_fft[0, :, range_bin]))
+        plt.title(f"Doppler FFT Magnitude (Range Bin {range_bin})")
+        plt.xlabel("Doppler Bin")
+        plt.ylabel("Magnitude")
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(os.path.join(debug_dir, f"debug_doppler_fft{IMG_FORMAT}"))
+        plt.close()
+        
+        # 6. Visualize final range-Doppler map
+        plt.figure(figsize=(12, 8))
+        magnitude = np.sqrt(rd_map[0]**2 + rd_map[1]**2)
+        plt.imshow(magnitude, aspect='auto', cmap='viridis', 
+                extent=[0, self.max_range, -self.max_velocity, self.max_velocity])
+        plt.colorbar(label='Magnitude')
+        plt.xlabel('Range (m)')
+        plt.ylabel('Velocity (m/s)')
+        plt.title('Range-Doppler Map')
+        plt.grid(True, linestyle='--', alpha=0.5)
+        plt.tight_layout()
+        plt.savefig(os.path.join(debug_dir, f"debug_rd_map{IMG_FORMAT}"))
+        plt.close()
+        
+        # 7. Visualize range-Doppler map in dB scale
+        plt.figure(figsize=(12, 8))
+        magnitude_db = 20 * np.log10(magnitude + 1e-10)
+        vmin = np.max(magnitude_db) - debug_info['dynamic_range_db']  # Set min to dynamic range below max
+        plt.imshow(magnitude_db, aspect='auto', cmap='viridis', 
+                extent=[0, self.max_range, -self.max_velocity, self.max_velocity],
+                vmin=vmin)
+        plt.colorbar(label='Magnitude (dB)')
+        plt.xlabel('Range (m)')
+        plt.ylabel('Velocity (m/s)')
+        plt.title('Range-Doppler Map (dB scale)')
+        plt.grid(True, linestyle='--', alpha=0.5)
+        plt.tight_layout()
+        plt.savefig(os.path.join(debug_dir, f"debug_rd_map_db{IMG_FORMAT}"))
+        plt.close()
+        
+        # 8. Visualize 3D surface plot of range-Doppler map
+        fig = plt.figure(figsize=(12, 8))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        # Create meshgrid for 3D plot
+        x = np.linspace(0, self.max_range, magnitude.shape[1])
+        y = np.linspace(-self.max_velocity, self.max_velocity, magnitude.shape[0])
+        X, Y = np.meshgrid(x, y)
+        
+        # Plot surface
+        surf = ax.plot_surface(X, Y, magnitude, cmap='viridis', linewidth=0, antialiased=True)
+        
+        # Add labels and colorbar
+        ax.set_xlabel('Range (m)')
+        ax.set_ylabel('Velocity (m/s)')
+        ax.set_zlabel('Magnitude')
+        ax.set_title('3D Range-Doppler Map')
+        fig.colorbar(surf, ax=ax, shrink=0.5, aspect=5)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(debug_dir, f"debug_rd_map_3d{IMG_FORMAT}"))
+        plt.close()
+        
+        # 9. Create a summary plot with key metrics
+        plt.figure(figsize=(10, 6))
+        plt.axis('off')
+        plt.text(0.1, 0.9, "Range-Doppler Processing Debug Summary", fontsize=16, weight='bold')
+        plt.text(0.1, 0.8, f"Signal Power: {debug_info['signal_power']:.6e}", fontsize=12)
+        plt.text(0.1, 0.75, f"Windowed Power: {debug_info['windowed_power']:.6e}", fontsize=12)
+        plt.text(0.1, 0.7, f"Range FFT Power: {debug_info['range_fft_power']:.6e}", fontsize=12)
+        plt.text(0.1, 0.65, f"Doppler FFT Power: {debug_info['doppler_fft_power']:.6e}", fontsize=12)
+        plt.text(0.1, 0.6, f"RD Map Power: {debug_info['rd_map_power']:.6e}", fontsize=12)
+        plt.text(0.1, 0.55, f"Dynamic Range: {debug_info['dynamic_range_db']:.2f} dB", fontsize=12)
+        plt.text(0.1, 0.5, f"Noise Floor: {debug_info['noise_floor']:.6e}", fontsize=12)
+        plt.text(0.1, 0.45, f"Peak-to-Noise Ratio: {debug_info['peak_to_noise_db']:.2f} dB", fontsize=12)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(debug_dir, f"debug_summary{IMG_FORMAT}"))
+        plt.close()
+        
+        print(f"Debug visualizations saved to {debug_dir}")
+
+
+    def _visualize_debug_comparison(self, rd_map, target_info, expected_pos, actual_pos, 
+                                title="Debug Comparison", save_path=None):
+        """
+        Visualize the range-Doppler map with markers for expected and actual target positions
+        
+        Args:
+            rd_map: Range-Doppler map with shape [2, num_doppler_bins, num_range_bins]
+            target_info: List of target dictionaries
+            expected_pos: Tuple of (range_bin, velocity_bin) for expected position
+            actual_pos: Tuple of (range_bin, velocity_bin) for actual peak position
+            title: Plot title
+            save_path: Path to save the figure
+        """
+        # Convert complex RD map to magnitude
+        magnitude = np.abs(rd_map[0] + 1j * rd_map[1])
+        
+        # Create figure
+        plt.figure(figsize=(12, 8))
+        
+        # Plot the range-Doppler map
+        plt.imshow(magnitude, aspect='auto', cmap='viridis', 
+                extent=[0, self.max_range, -self.max_velocity, self.max_velocity])
+        
+        # Mark expected position with a red circle
+        expected_range_bin, expected_velocity_bin = expected_pos
+        expected_range = expected_range_bin / self.num_range_bins * self.max_range
+        expected_velocity = (expected_velocity_bin / self.num_doppler_bins * 2 * self.max_velocity) - self.max_velocity
+        plt.scatter(expected_range, expected_velocity, color='red', s=100, marker='o', 
+                label=f'Expected: ({expected_range:.1f}m, {expected_velocity:.1f}m/s)')
+        
+        # Mark actual peak position with a green cross
+        actual_range_bin, actual_velocity_bin = actual_pos
+        actual_range = actual_range_bin / self.num_range_bins * self.max_range
+        actual_velocity = (actual_velocity_bin / self.num_doppler_bins * 2 * self.max_velocity) - self.max_velocity
+        plt.scatter(actual_range, actual_velocity, color='green', s=100, marker='x', 
+                label=f'Actual: ({actual_range:.1f}m, {actual_velocity:.1f}m/s)')
+        
+        # Add target ground truth markers
+        for i, target in enumerate(target_info):
+            plt.scatter(target['distance'], target['velocity'], color='white', s=80, marker='+',
+                    label=f'Ground Truth: ({target["distance"]:.1f}m, {target["velocity"]:.1f}m/s)')
+        
+        # Add labels and title
+        plt.xlabel('Range (m)')
+        plt.ylabel('Velocity (m/s)')
+        plt.title(title)
+        plt.colorbar(label='Magnitude')
+        plt.legend()
+        plt.grid(True, linestyle='--', alpha=0.5)
+        
+        # Save figure if path is provided
+        if save_path:
+            plt.savefig(save_path, bbox_inches='tight', dpi=300)
+            print(f"Saved debug comparison to {save_path}")
+        
+        plt.close()
+
     def _simulate_radar_channel(self, rx_signal, tx_signal, targets=None, 
                            add_crosstalk=True, add_ground_clutter=True, add_system_noise=True,
                            crosstalk_isolation_db=30, crosstalk_delay_samples=5,
@@ -464,7 +1035,7 @@ class RadarDataset(Dataset):
         
         return rx_signal
 
-    def _add_target_reflection(self, rx_signal, tx_signal, distance, velocity, rcs=1.0, attenuation_scale=1.0):
+    def _add_target_reflection(self, rx_signal, tx_signal, distance, velocity, rcs=1.0, attenuation_scale=1e3):
         """
         Add a target reflection to the received signal
         

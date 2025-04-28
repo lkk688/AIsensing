@@ -86,7 +86,10 @@ class RadarProcessing:
         # Maximum unambiguous range (determined by chirp duration and sample rate)
         # Longer chirp duration or higher sample rate increases maximum range
         self.max_range = self.range_resolution * self.num_range_bins
-        
+
+        # Calculate minimum and maximum range
+        self.min_range, self.max_range = self.calculate_range_limits()
+    
         # Velocity resolution (determined by center frequency, chirp duration, and number of chirps)
         # Higher center frequency, longer total measurement time (chirp_duration * num_chirps) improves velocity resolution
         self.velocity_resolution = self.wavelength / (2 * self.chirp_duration * self.num_chirps)
@@ -226,6 +229,15 @@ class RadarProcessing:
                 "formula": "velocity_resolution * (num_doppler_bins // 2)"
             }
         }
+
+        # Add minimum range to metrics
+        metrics["min_range"] = {
+            "value": self.min_range,
+            "unit": "m",
+            "description": "Minimum detectable range (blind zone)",
+            "dependencies": "Limited by TX/RX isolation, ADC recovery time, and range resolution",
+            "formula": "max(range_resolution * isolation_factor, adc_recovery_samples * range_resolution, min_beat_freq * c / (2 * chirp_slope))"
+        }
         
         # Add signal-type specific metrics
         if self.signal_type in ['FMCW', 'OFDM_FMCW', 'Sine_FMCW']:
@@ -323,11 +335,55 @@ class RadarProcessing:
         total_observation_time = self.num_chirps * self.chirp_duration
         return wavelength / (2 * total_observation_time)
     
-    def _calculate_max_range(self):
-        """Calculate maximum unambiguous range"""
+    def calculate_range_limits(self):
+        """
+        Calculate both minimum and maximum detectable range based on radar parameters
+        
+        Returns:
+            Tuple of (min_range, max_range) in meters
+        """
+        speed_of_light = 3e8  # m/s
+        
+        # Calculate minimum detectable range
+        # For FMCW radar, minimum range is often limited by the range resolution
+        # and transmit/receive isolation
+        range_resolution = self.speed_of_light / (2 * self.bandwidth)
+        
+        # Typical isolation factor (depends on antenna design and circulator performance)
+        # Higher values mean better isolation and lower minimum range
+        tx_rx_isolation_factor = 2.0  # Typical value for automotive radar
+        
+        # ADC recovery time factor (depends on hardware)
+        # This represents the minimum time needed for ADC to start sampling after TX
+        adc_recovery_samples = 5  # Typical value for radar systems
+        adc_recovery_range = adc_recovery_samples * range_resolution
+        
+        # Calculate minimum range based on these factors
+        min_range_resolution = range_resolution * tx_rx_isolation_factor
+        
+        # For FMCW, there's also a limitation based on the beat frequency
+        # Minimum beat frequency that can be detected reliably
+        min_beat_freq = 10e3  # 10 kHz, typical for FMCW systems
+        
+        # Calculate chirp slope if not already available
+        if hasattr(self, 'chirp_slope') and self.chirp_slope is not None:
+            chirp_slope = self.chirp_slope
+        else:
+            chirp_slope = self.bandwidth / self.chirp_duration
+        
+        min_range_beat_freq = (min_beat_freq * speed_of_light) / (2 * chirp_slope)
+        
+        # Take the maximum of all constraints (worst case)
+        min_range = max(min_range_resolution, adc_recovery_range, min_range_beat_freq)
+        
+        # Apply practical minimum (can't be less than physical antenna separation)
+        # Typical antenna separation for automotive radar
+        antenna_separation = 0.05  # 5 cm
+        min_range = max(min_range, antenna_separation)
+        
+        # Calculate maximum unambiguous range
         # Calculate unambiguous range based on pulse repetition frequency (PRF)
         # For FMCW radar, PRF is 1/chirp_duration
-        speed_of_light = 3e8  # m/s
         prf = 1.0 / self.chirp_duration  # Pulse repetition frequency
         unambiguous_range = speed_of_light / (2 * prf)
         
@@ -351,19 +407,21 @@ class RadarProcessing:
         
         # Calculate power-limited max range
         power_max_range = ((tx_power_watts * antenna_gain**2 * wavelength**2 * radar_cross_section) / 
-                          ((4 * np.pi)**3 * min_detectable_power))**(1/4)
+                        ((4 * np.pi)**3 * min_detectable_power))**(1/4)
         
         # Take the minimum of all constraints
-        practical_max_range = min(theoretical_max_range, power_max_range, 150.0)
+        max_range = min(theoretical_max_range, power_max_range, 150.0)
         
         if theoretical_max_range > 500 or power_max_range > 500:
             print(f"Warning: Calculated max ranges exceed practical limits:")
             print(f"  - Unambiguous range: {unambiguous_range:.2f}m")
             print(f"  - Sampling max range: {sampling_max_range:.2f}m")
             print(f"  - Power-limited max range: {power_max_range:.2f}m")
-            print(f"Setting max range to {practical_max_range:.2f}m")
-            
-        return practical_max_range
+            print(f"Setting max range to {max_range:.2f}m")
+        
+        print(f"Calculated minimum range: {min_range:.2f}m")
+        
+        return min_range, max_range
     
     def _calculate_max_velocity(self):
         """Calculate maximum unambiguous velocity"""
