@@ -8,10 +8,72 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import time
 from datetime import datetime
+import math
+import torch.nn.functional as F
 
 # Import custom modules
 from AIradar_datasetraytracing import RayTracingRadarDataset
 from AIradar_processing import RadarProcessing
+
+def radar_collate_fn(batch):
+    """
+    Custom collate function for radar data with variable dimensions
+    
+    Args:
+        batch: List of samples from the dataset
+        
+    Returns:
+        Batched tensors with consistent dimensions
+    """
+    # Extract data from batch
+    time_domain_data = [item['time_domain'] for item in batch]
+    feature_2d_data = [item['feature_2d'] for item in batch]
+    labels_data = [item['labels'] for item in batch]
+    target_info = [item['target_info'] for item in batch]
+    
+    # Get maximum dimensions
+    max_rx = max(data.shape[0] for data in time_domain_data)
+    max_chirps = max(data.shape[1] for data in time_domain_data)
+    max_samples = max(data.shape[2] for data in time_domain_data)
+    
+    max_feature_dim1 = max(data.shape[0] for data in feature_2d_data)
+    max_feature_dim2 = max(data.shape[1] for data in feature_2d_data)
+    max_feature_dim3 = max(data.shape[2] for data in feature_2d_data)
+    
+    max_label_dim1 = max(data.shape[0] for data in labels_data)
+    max_label_dim2 = max(data.shape[1] for data in labels_data)
+    max_label_dim3 = max(data.shape[2] for data in labels_data)
+    
+    # Create padded batches
+    batch_size = len(batch)
+    
+    # Pad time domain data
+    time_domain_batch = torch.zeros(batch_size, max_rx, max_chirps, max_samples, 2)
+    for i, data in enumerate(time_domain_data):
+        rx, chirps, samples, channels = data.shape
+        time_domain_batch[i, :rx, :chirps, :samples, :] = torch.tensor(data, dtype=torch.float32)
+    
+    # Pad feature 2D data
+    feature_2d_batch = torch.zeros(batch_size, max_feature_dim1, max_feature_dim2, max_feature_dim3)
+    for i, data in enumerate(feature_2d_data):
+        dim1, dim2, dim3 = data.shape
+        feature_2d_batch[i, :dim1, :dim2, :dim3] = torch.tensor(data, dtype=torch.float32)
+    
+    # Pad labels data
+    labels_batch = torch.zeros(batch_size, max_label_dim1, max_label_dim2, max_label_dim3)
+    for i, data in enumerate(labels_data):
+        dim1, dim2, dim3 = data.shape
+        labels_batch[i, :dim1, :dim2, :dim3] = torch.tensor(data, dtype=torch.float32)
+    
+    # Create batched dictionary
+    batched_sample = {
+        'time_domain': time_domain_batch,
+        'feature_2d': feature_2d_batch,
+        'labels': labels_batch,
+        'target_info': target_info
+    }
+    
+    return batched_sample
 
 # Set random seeds for reproducibility
 torch.manual_seed(42)
@@ -133,53 +195,64 @@ class PositionalEncoding1(nn.Module):
         return self.dropout(x)
 
 class RadarTransformer(nn.Module):
-    """Transformer-based FMCW Radar Target Detection Network"""
+    """Transformer-based FMCW Radar Target Detection Network with dimension checks"""
     def __init__(self, num_rx=4, num_chirps=128, samples_per_chirp=400):
         super().__init__()
-        self.input_conv = nn.Conv2d(num_rx, 64, kernel_size=(3,3), padding=1)
+        self.num_rx = num_rx
+        self.num_chirps = num_chirps
+        self.samples_per_chirp = samples_per_chirp
+        
+        # Input processing (I/Q channels)
+        self.input_conv = nn.Conv2d(num_rx * 2, 64, kernel_size=(3,3), padding=1)
         self.position_enc = PositionalEncoding2D(64)
         
-        # Cross-Talk Suppression Module
+        # Cross-Talk Suppression
         self.crosstalk_attn = nn.MultiheadAttention(64, 4)
         
-        # Transformer Encoder
+        # Transformer Encoder with dimension preservation
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=64, nhead=8, dim_feedforward=256,
             batch_first=True
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, 4)
         
-        # Multi-Task Detection Head
-        self.range_doppler_head = nn.Sequential(
-            nn.Conv2d(64, 128, 3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(128, 2, 1)  # Output I/Q components
-        )
+        # Detection Head with dimension validation
         self.detection_head = nn.Sequential(
             nn.Conv2d(64, 1, 1),
-            nn.Sigmoid()  # Binary detection mask
+            nn.Sigmoid()
         )
 
     def forward(self, x):
-        # x: [batch, rx, chirps, samples]
-        x = self.input_conv(x)
+        # Input: [batch, rx, chirps, samples, 2]
+        batch_size, num_rx, num_chirps, samples_per_chirp, channels = x.shape
+        
+        # Validate input dimensions
+        assert num_rx == self.num_rx, f"Expected {self.num_rx} RX channels, got {num_rx}"
+        assert num_chirps == self.num_chirps, f"Expected {self.num_chirps} chirps, got {num_chirps}"
+        assert samples_per_chirp == self.samples_per_chirp, f"Expected {self.samples_per_chirp} samples/chirp, got {samples_per_chirp}"
+
+        # Reshape for convolution
+        x = x.permute(0, 1, 4, 2, 3)  # [batch, rx, 2, chirps, samples]
+        x = x.reshape(batch_size, num_rx * 2, num_chirps, samples_per_chirp)
+        x = self.input_conv(x)  # [batch, 64, chirps, samples]
         x = self.position_enc(x)
-        
-        # Crosstalk Attention
-        x_flat = x.flatten(2).permute(0, 2, 1)
+
+        # Attention processing
+        x_flat = x.flatten(2).permute(0, 2, 1)  # [batch, seq_len, features]
         attn_out, _ = self.crosstalk_attn(x_flat, x_flat, x_flat)
-        x = attn_out.permute(0, 2, 1).view_as(x)
-        
-        # Transformer Processing
+        x = attn_out.permute(0, 2, 1).view_as(x)  # Restore original shape
+
+        # Transformer processing with dimension preservation
         x = x.permute(0, 2, 3, 1)  # [batch, chirps, samples, features]
+        orig_shape = x.shape
+        x = x.reshape(orig_shape[0], -1, orig_shape[3])  # [batch, chirps*samples, 64]
         x = self.transformer(x)
-        x = x.permute(0, 3, 1, 2)
-        
-        # Multi-Task Output
-        rd_map = self.range_doppler_head(x)
+        x = x.reshape(orig_shape)  # Restore original dimensions
+        x = x.permute(0, 3, 1, 2)  # [batch, features, chirps, samples]
+
+        # Final detection mask
         detection_mask = self.detection_head(x)
-        
-        return rd_map, detection_mask
+        return detection_mask  # [batch, 1, chirps, samples]
 
 
 class PositionalEncoding2D(nn.Module):
@@ -191,24 +264,46 @@ class PositionalEncoding2D(nn.Module):
         batch, channels, height, width = x.size()
         pos_enc = torch.zeros((batch, channels, height, width), device=x.device)
         
-        # Create 2D positional encodings
-        y_pos = torch.arange(height, device=x.device).unsqueeze(1).float()
-        x_pos = torch.arange(width, device=x.device).unsqueeze(0).float()
+        # Create positional encoding components
+        y_pos = torch.arange(height, device=x.device).float().view(-1, 1)
+        x_pos = torch.arange(width, device=x.device).float().view(1, -1)
         
-        div_term = torch.exp(torch.arange(0, channels, 2, device=x.device).float() * 
-                            (-math.log(10000.0) / channels))
+        # Calculate frequency terms for both dimensions
+        max_dim = max(height, width)
+        div_term = torch.exp(torch.arange(0, max_dim, device=x.device).float() *
+                           (-math.log(10000.0) / max_dim))
         
-        # Apply sine to even indices and cosine to odd indices
-        pos_enc[:, 0::4, :, :] = torch.sin(y_pos * div_term[:channels//4].view(1, -1, 1)) \
-                                .unsqueeze(0).unsqueeze(3).repeat(batch, 1, 1, width)
-        pos_enc[:, 1::4, :, :] = torch.cos(y_pos * div_term[:channels//4].view(1, -1, 1)) \
-                                .unsqueeze(0).unsqueeze(3).repeat(batch, 1, 1, width)
-        pos_enc[:, 2::4, :, :] = torch.sin(x_pos * div_term[:channels//4].view(1, -1)) \
-                                .unsqueeze(0).unsqueeze(2).repeat(batch, 1, height, 1)
-        pos_enc[:, 3::4, :, :] = torch.cos(x_pos * div_term[:channels//4].view(1, -1)) \
-                                .unsqueeze(0).unsqueeze(2).repeat(batch, 1, height, 1)
+        # Create separate terms for height and width
+        div_term_y = div_term[:height].view(-1, 1)
+        div_term_x = div_term[:width].view(1, -1)
+        
+        # Apply positional encoding to each channel group
+        if channels >= 4:
+            for i in range(0, channels, 4):
+                # Height encodings
+                if i < channels:
+                    pos_enc[:, i, :, :] = torch.sin(y_pos * div_term_y)
+                if i+1 < channels:
+                    pos_enc[:, i+1, :, :] = torch.cos(y_pos * div_term_y)
+                # Width encodings
+                if i+2 < channels:
+                    pos_enc[:, i+2, :, :] = torch.sin(x_pos * div_term_x)
+                if i+3 < channels:
+                    pos_enc[:, i+3, :, :] = torch.cos(x_pos * div_term_x)
         
         return x + pos_enc
+
+def get_device(gpuid='0', useamp=False):
+    if torch.cuda.is_available():
+        device = torch.device('cuda:'+str(gpuid))  # CUDA GPU 0
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+        useamp = False
+    else:
+        device = torch.device("cpu")
+        useamp = False
+    print("Using device:", device)
+    return device, useamp
 
 def train_radar_transformer(output_dir='data/radar_transformer', 
                            num_samples=1000,
@@ -236,14 +331,15 @@ def train_radar_transformer(output_dir='data/radar_transformer',
     os.makedirs(output_dir, exist_ok=True)
     
     # Set device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    #device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device, useamp = get_device()
     print(f"Using device: {device}")
     
     # Default dataset parameters
     if dataset_params is None:
         dataset_params = {
             'num_range_bins': 256,
-            'num_doppler_bins': 128,
+            'num_doppler_bins': 150, #128,
             'sample_rate': 3e6,
             'chirp_duration': 50e-6,
             'num_chirps': 32,
@@ -268,9 +364,13 @@ def train_radar_transformer(output_dir='data/radar_transformer',
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
     
     # Create data loaders
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
-    
+    # train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
+    # val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, 
+                         num_workers=4, collate_fn=radar_collate_fn)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, 
+                       num_workers=4, collate_fn=radar_collate_fn)
+
     # Get sample dimensions
     sample = dataset[0]
     time_domain_shape = sample['time_domain'].shape
@@ -330,14 +430,15 @@ def train_radar_transformer(output_dir='data/radar_transformer',
                 
                 # Forward pass
                 optimizer.zero_grad()
-                rd_map, detection_mask = model(time_domain)
+                #rd_map, detection_mask = model(time_domain)
+                detection_mask = model(time_domain)
                 
                 # Calculate losses for each task
-                rd_loss = rd_map_criterion(rd_map, feature_2d)
+                #rd_loss = rd_map_criterion(rd_map, feature_2d)
                 detection_loss = detection_criterion(detection_mask, labels)
                 
                 # Combined loss with weights
-                loss = rd_map_weight * rd_loss + detection_weight * detection_loss
+                loss = detection_loss #rd_map_weight * rd_loss + detection_weight * detection_loss
                 
                 # Backward pass and optimize
                 loss.backward()
@@ -345,18 +446,18 @@ def train_radar_transformer(output_dir='data/radar_transformer',
                 
                 # Update statistics
                 train_loss += loss.item()
-                train_rd_loss += rd_loss.item()
+                #train_rd_loss += rd_loss.item()
                 train_detection_loss += detection_loss.item()
                 
                 pbar.set_postfix({
                     'loss': loss.item(),
-                    'rd_loss': rd_loss.item(),
+                    #'rd_loss': rd_loss.item(),
                     'det_loss': detection_loss.item()
                 })
         
         # Calculate average training losses
         train_loss /= len(train_loader)
-        train_rd_loss /= len(train_loader)
+        #train_rd_loss /= len(train_loader)
         train_detection_loss /= len(train_loader)
         
         # Validation phase
@@ -376,18 +477,19 @@ def train_radar_transformer(output_dir='data/radar_transformer',
                     feature_2d = torch.tensor(batch['feature_2d'], dtype=torch.float32).to(device)
                     
                     # Forward pass
-                    rd_map, detection_mask = model(time_domain)
+                    #rd_map, detection_mask = model(time_domain)
+                    detection_mask = model(time_domain)
                     
                     # Calculate losses for each task
-                    rd_loss = rd_map_criterion(rd_map, feature_2d)
+                    #rd_loss = rd_map_criterion(rd_map, feature_2d)
                     detection_loss = detection_criterion(detection_mask, labels)
                     
                     # Combined loss with weights
-                    loss = rd_map_weight * rd_loss + detection_weight * detection_loss
+                    loss = detection_loss #rd_map_weight * rd_loss + detection_weight * detection_loss
                     
                     # Update statistics
                     val_loss += loss.item()
-                    val_rd_loss += rd_loss.item()
+                    #val_rd_loss += rd_loss.item()
                     val_detection_loss += detection_loss.item()
                     
                     # Calculate detection accuracy
@@ -397,13 +499,13 @@ def train_radar_transformer(output_dir='data/radar_transformer',
                     
                     pbar.set_postfix({
                         'loss': loss.item(),
-                        'rd_loss': rd_loss.item(),
+                        #'rd_loss': rd_loss.item(),
                         'det_loss': detection_loss.item()
                     })
         
         # Calculate average validation loss and detection accuracy
         val_loss /= len(val_loader)
-        val_rd_loss /= len(val_loader)
+        #val_rd_loss /= len(val_loader)
         val_detection_loss /= len(val_loader)
         detection_accuracy = correct_detections / total_detections
         
@@ -415,7 +517,7 @@ def train_radar_transformer(output_dir='data/radar_transformer',
         history['train_loss'].append(train_loss)
         history['val_loss'].append(val_loss)
         history['detection_accuracy'].append(detection_accuracy)
-        history['rd_map_loss'].append(val_rd_loss)
+        #history['rd_map_loss'].append(val_rd_loss)
         history['detection_loss'].append(val_detection_loss)
         history['learning_rate'].append(current_lr)
         
@@ -423,7 +525,7 @@ def train_radar_transformer(output_dir='data/radar_transformer',
         print(f"Epoch {epoch+1}/{num_epochs} - "
               f"Train Loss: {train_loss:.6f}, "
               f"Val Loss: {val_loss:.6f}, "
-              f"RD Loss: {val_rd_loss:.6f}, "
+              #f"RD Loss: {val_rd_loss:.6f}, "
               f"Det Loss: {val_detection_loss:.6f}, "
               f"Detection Accuracy: {detection_accuracy:.4f}, "
               f"LR: {current_lr:.8f}")
@@ -438,7 +540,7 @@ def train_radar_transformer(output_dir='data/radar_transformer',
                 'val_loss': val_loss,
                 'train_loss': train_loss,
                 'detection_accuracy': detection_accuracy,
-                'rd_map_loss': val_rd_loss,
+                #'rd_map_loss': val_rd_loss,
                 'detection_loss': val_detection_loss,
                 'history': history
             }, os.path.join(output_dir, 'best_radar_transformer.pth'))
@@ -512,8 +614,9 @@ def visualize_radar_results(model, dataset, device, output_dir, epoch=None, is_t
             ground_truth_rd = sample['feature_2d']
             
             # Get model prediction
-            rd_map_pred, detection_mask_pred = model(time_domain)
-            rd_map_pred = rd_map_pred.cpu().numpy()[0]
+            #rd_map_pred, detection_mask_pred = model(time_domain)
+            detection_mask_pred = model(time_domain)
+            #rd_map_pred = rd_map_pred.cpu().numpy()[0]
             detection_mask_pred = detection_mask_pred.cpu().numpy()[0]
             
             # Create visualization
@@ -554,14 +657,14 @@ def visualize_radar_results(model, dataset, device, output_dir, epoch=None, is_t
             plt.ylabel('Doppler Bin')
             
             # Plot predicted range-Doppler map (magnitude)
-            plt.subplot(2, 3, 5)
-            # Compute magnitude from I/Q components
-            pred_magnitude = np.sqrt(rd_map_pred[0]**2 + rd_map_pred[1]**2)
-            plt.imshow(pred_magnitude, aspect='auto', cmap='jet')
-            plt.colorbar(label='Magnitude')
-            plt.title('Predicted Range-Doppler Map')
-            plt.xlabel('Range Bin')
-            plt.ylabel('Doppler Bin')
+            # plt.subplot(2, 3, 5)
+            # # Compute magnitude from I/Q components
+            # pred_magnitude = np.sqrt(rd_map_pred[0]**2 + rd_map_pred[1]**2)
+            # plt.imshow(pred_magnitude, aspect='auto', cmap='jet')
+            # plt.colorbar(label='Magnitude')
+            # plt.title('Predicted Range-Doppler Map')
+            # plt.xlabel('Range Bin')
+            # plt.ylabel('Doppler Bin')
             
             # Plot error between ground truth and predicted range-Doppler maps
             plt.subplot(2, 3, 6)
@@ -685,8 +788,11 @@ def test_radar_transformer(model_path, output_dir, test_dataset=None, num_test_s
     model.eval()
     
     # Create data loader
-    test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=4)
-    
+    #test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=4)
+    # In your test_radar_transformer function
+    test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, 
+                        num_workers=4, collate_fn=radar_collate_fn)
+
     # Initialize metrics
     test_loss = 0.0
     rd_map_loss = 0.0
@@ -815,10 +921,10 @@ if __name__ == "__main__":
     )
     
     # Test model
-    test_metrics = test_radar_transformer(
-        model_path=os.path.join(output_dir, 'best_radar_transformer.pth'),
-        output_dir=os.path.join(output_dir, 'test_results'),
-        num_test_samples=200
-    )
+    # test_metrics = test_radar_transformer(
+    #     model_path=os.path.join(output_dir, 'best_radar_transformer.pth'),
+    #     output_dir=os.path.join(output_dir, 'test_results'),
+    #     num_test_samples=200
+    # )
     
     print("Training and testing completed successfully!")

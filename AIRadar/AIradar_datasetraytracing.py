@@ -212,56 +212,78 @@ class RayTracingRadarDataset:
                 - target_info: List of dictionaries containing target information
         """
         # Check if we have a cached dataset
-        if hasattr(self, 'dataset') and self.dataset is not None:
-            # Get data from the cached dataset
-            time_domain_data = self.dataset['time_domain_data'][idx]
-            range_doppler_map = self.dataset['range_doppler_maps'][idx]
-            target_mask = self.dataset['target_masks'][idx]
-            target_info = self.dataset['target_info'][idx]
-        else:
-            # Generate a single sample on-the-fly
-            # Set random seed based on idx for reproducibility
-            np.random.seed(idx)
-            random.seed(idx)
-            
-            # Generate TX signal
-            tx_signal = self._generate_tx_signal()
-            
-            # Generate random targets
-            targets = self._generate_random_targets()
-            
-            # Perform ray-tracing simulation
-            rx_signal = self._ray_tracing_simulation(tx_signal, targets, perfect_mode=True)
-            
-            # Add noise to the received signal
-            snr_db = random.uniform(self.snr_min, self.snr_max)
-            rx_signal = self._add_noise(rx_signal, snr_db)
-            
-            # Process the received signal to generate range-Doppler map
-            range_doppler_map = self._time_to_range_doppler(
-                rx_signal,
-                apply_mti=True,
-                apply_doppler_centering=True,
-                apply_notch_filter=True,
-                notch_width=5,
-                use_blackman_window=True,
-                dynamic_range_db=50
-            )
-            
-            # Create target mask (ground truth)
-            target_mask = self._create_target_mask(targets)
-            
-            # Convert complex rx_signal to real/imag components
-            time_domain_data = np.zeros((self.num_rx, self.num_chirps, self.samples_per_chirp, 2), dtype=self.precision)
-            time_domain_data[:, :, :, 0] = np.real(rx_signal)
-            time_domain_data[:, :, :, 1] = np.imag(rx_signal)
-            
-            # Store target info
-            target_info = targets
-            
-            # Reset random seed
-            np.random.seed(None)
-            random.seed(None)
+        # Generate a single sample on-the-fly
+        # Set random seed based on idx for reproducibility
+        np.random.seed(idx)
+        random.seed(idx)
+        
+        # Generate TX signal
+        tx_signal = self._generate_tx_signal()
+        
+        # Generate random targets
+        targets = self._generate_random_targets()
+        
+        # Perform ray-tracing simulation
+        rx_signal = self._ray_tracing_simulation(tx_signal, targets, perfect_mode=True)
+        
+        # Add noise to the received signal
+        snr_db = random.uniform(self.snr_min, self.snr_max)
+        rx_signal = self._add_noise(rx_signal, snr_db)
+        
+        # Process the received signal to generate range-Doppler map
+        range_doppler_map = self._time_to_range_doppler(
+            rx_signal,
+            apply_mti=True,
+            apply_doppler_centering=True,
+            apply_notch_filter=True,
+            notch_width=5,
+            use_blackman_window=True,
+            dynamic_range_db=50
+        )
+        
+        # Create target mask (ground truth)
+        target_mask = self._create_target_mask(targets)
+        
+        # Convert complex rx_signal to real/imag components
+        time_domain_data = np.zeros((self.num_rx, self.num_chirps, self.samples_per_chirp, 2), dtype=self.precision)
+        time_domain_data[:, :, :, 0] = np.real(rx_signal)
+        time_domain_data[:, :, :, 1] = np.imag(rx_signal)
+        
+        # Store target info
+        target_info = targets
+        
+        # Reset random seed
+        np.random.seed(None)
+        random.seed(None)
+        
+        # Ensure consistent dimensions for all samples
+        # Ensure time_domain has shape [num_rx, num_chirps, samples_per_chirp, 2]
+        if time_domain_data.shape != (self.num_rx, self.num_chirps, self.samples_per_chirp, 2):
+            # Resize or pad to match expected dimensions
+            correct_shape = (self.num_rx, self.num_chirps, self.samples_per_chirp, 2)
+            temp_data = np.zeros(correct_shape, dtype=self.precision)
+            # Copy what we can from the original data
+            slices = tuple(slice(0, min(dim, src_dim)) for dim, src_dim in zip(correct_shape, time_domain_data.shape))
+            temp_data[slices] = time_domain_data[slices]
+            time_domain_data = temp_data
+        
+        # Ensure feature_2d has shape [2, num_doppler_bins, num_range_bins]
+        if range_doppler_map.shape != (2, self.num_doppler_bins, self.num_range_bins):
+            correct_shape = (2, self.num_doppler_bins, self.num_range_bins)
+            temp_data = np.zeros(correct_shape, dtype=self.precision)
+            # Copy what we can from the original data
+            slices = tuple(slice(0, min(dim, src_dim)) for dim, src_dim in zip(correct_shape, range_doppler_map.shape))
+            temp_data[slices] = range_doppler_map[slices]
+            range_doppler_map = temp_data
+        
+        # Ensure labels has shape [num_doppler_bins, num_range_bins, 1]
+        if target_mask.shape != (self.num_doppler_bins, self.num_range_bins, 1):
+            correct_shape = (self.num_doppler_bins, self.num_range_bins, 1)
+            temp_data = np.zeros(correct_shape, dtype=self.precision)
+            # Copy what we can from the original data
+            slices = tuple(slice(0, min(dim, src_dim)) for dim, src_dim in zip(correct_shape, target_mask.shape))
+            temp_data[slices] = target_mask[slices]
+            target_mask = temp_data
         
         # Create sample dictionary
         sample = {
