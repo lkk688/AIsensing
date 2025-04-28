@@ -198,27 +198,30 @@ class RadarTransformer(nn.Module):
     """Transformer-based FMCW Radar Target Detection Network with dimension checks"""
     def __init__(self, num_rx=4, num_chirps=128, samples_per_chirp=400):
         super().__init__()
+        d_model = 32
+        nhead =4
+        multiheadAttention_head=2 #4
         self.num_rx = num_rx
         self.num_chirps = num_chirps
         self.samples_per_chirp = samples_per_chirp
         
         # Input processing (I/Q channels)
-        self.input_conv = nn.Conv2d(num_rx * 2, 64, kernel_size=(3,3), padding=1)
-        self.position_enc = PositionalEncoding2D(64)
+        self.input_conv = nn.Conv2d(num_rx * 2, d_model, kernel_size=(3,3), padding=1)
+        self.position_enc = PositionalEncoding2D(d_model)
         
         # Cross-Talk Suppression
-        self.crosstalk_attn = nn.MultiheadAttention(64, 4)
+        self.crosstalk_attn = nn.MultiheadAttention(d_model, multiheadAttention_head)
         
         # Transformer Encoder with dimension preservation
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=64, nhead=8, dim_feedforward=256,
+            d_model=d_model, nhead=nhead, dim_feedforward=128,
             batch_first=True
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, 4)
+        self.transformer = nn.TransformerEncoder(encoder_layer, multiheadAttention_head)
         
         # Detection Head with dimension validation
         self.detection_head = nn.Sequential(
-            nn.Conv2d(64, 1, 1),
+            nn.Conv2d(d_model, 1, 1),
             nn.Sigmoid()
         )
 
