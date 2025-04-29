@@ -14,6 +14,81 @@ import torch.nn.functional as F
 # Import custom modules
 from AIradar_datasetraytracing import RayTracingRadarDataset
 from AIradar_processing import RadarProcessing
+from AIradar_trainv3 import RadarNet #RadarTimeToFreqNet 
+
+class RadarTimeToFreqNet(nn.Module):
+    def __init__(self, num_rx=2, num_chirps=12, samples_per_chirp=20, out_doppler_bins=12, out_range_bins=64):
+        super(RadarTimeToFreqNet, self).__init__()
+        self.num_rx = num_rx
+        self.num_chirps = num_chirps
+        self.samples_per_chirp = samples_per_chirp
+        self.out_doppler_bins = out_doppler_bins
+        self.out_range_bins = out_range_bins
+
+        # Learnable CNN-based time-to-frequency transformation
+        self.time_encoder = nn.Sequential(
+            nn.Conv3d(2, 64, kernel_size=(1, 3, 3), padding=(0, 1, 1)),
+            nn.BatchNorm3d(64),
+            nn.ReLU(),
+            nn.Conv3d(64, 128, kernel_size=(1, 3, 3), padding=(0, 1, 1)),
+            nn.BatchNorm3d(128),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool3d((None, out_doppler_bins, out_range_bins))
+        )
+
+        # Attention mechanism for temporal relationships
+        self.chirp_attention = nn.MultiheadAttention(
+            embed_dim=128,
+            num_heads=4,
+            kdim=self.samples_per_chirp,
+            vdim=self.samples_per_chirp
+        )
+        
+        # Final projection layers
+        self.projection = nn.Sequential(
+            nn.Conv2d(128, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.Conv2d(64, 2, kernel_size=3, padding=1),
+            nn.Tanh()
+        )
+
+        self.radar_net = RadarNet(in_channels=2, out_channels=1)
+
+    def time_to_frequency(self, x):
+        # x shape: [batch, num_rx, num_chirps, samples_per_chirp, 2]
+        batch_size = x.shape[0]
+        
+        # Combine RX and chirp dimensions
+        x = x.view(batch_size * self.num_rx, self.num_chirps, self.samples_per_chirp, 2)
+        x = x.permute(0, 3, 1, 2)  # [batch*rx, 2, chirps, samples]
+        
+        # Add channel dimension for 3D conv
+        x = x.unsqueeze(2)  # [batch*rx, 2, 1, chirps, samples]
+        
+        # Process through encoder
+        x = self.time_encoder(x)  # [batch*rx, 128, 1, doppler_bins, range_bins]
+        x = x.squeeze(2)  # [batch*rx, 128, doppler_bins, range_bins]
+        
+        # Apply attention across chirps
+        x_attn = x.view(batch_size, self.num_rx, 128, self.out_doppler_bins, self.out_range_bins)
+        x_attn = x_attn.permute(0, 3, 1, 2, 4)  # [batch, doppler, rx, 128, range]
+        x_attn = x_attn.reshape(-1, self.num_rx, 128, self.out_range_bins)
+        attn_out, _ = self.chirp_attention(x_attn, x_attn, x_attn)
+        x = attn_out.reshape(batch_size, self.out_doppler_bins, self.num_rx, 128, self.out_range_bins)
+        x = x.permute(0, 2, 3, 1, 4)  # [batch, rx, 128, doppler, range]
+        
+        # Project to final dimensions
+        x = self.projection(x.reshape(-1, 128, self.out_doppler_bins, self.out_range_bins))
+        x = x.reshape(batch_size, self.num_rx, 2, self.out_doppler_bins, self.out_range_bins)
+        x = x.mean(dim=1)  # Combine RX channels
+        
+        return x.permute(0, 1, 3, 2)  # [batch, 2, doppler, range]
+
+    def forward(self, x):
+        rd_map = self.time_to_frequency(x)
+        detection = self.radar_net(rd_map)
+        return detection
 
 def radar_collate_fn(batch):
     """
@@ -176,7 +251,7 @@ class RadarTransformer_basic(nn.Module):
 
 class PositionalEncoding1(nn.Module):
     def __init__(self, d_model, dropout=0.1, max_len=5000):
-        super(PositionalEncoding, self).__init__()
+        super(PositionalEncoding1, self).__init__()
         self.dropout = nn.Dropout(p=dropout)
 
         position = torch.arange(max_len).unsqueeze(1)
@@ -342,7 +417,7 @@ def train_radar_transformer(output_dir='data/radar_transformer',
     if dataset_params is None:
         dataset_params = {
             'num_range_bins': 256,
-            'num_doppler_bins': 150, #128,
+            'num_doppler_bins': 128, #128,
             'sample_rate': 3e6,
             'chirp_duration': 50e-6,
             'num_chirps': 32,
@@ -380,11 +455,23 @@ def train_radar_transformer(output_dir='data/radar_transformer',
     label_shape = sample['labels'].shape
     
     # Create model
-    model = RadarTransformer(
-        num_rx=time_domain_shape[0],
-        num_chirps=time_domain_shape[1],
-        samples_per_chirp=time_domain_shape[2]
-    ).to(device)
+    model_type = "time_to_freq"  # Can make this configurable via command line args
+    if model_type == "transformer":
+        model = RadarTransformer(
+            num_rx=time_domain_shape[0],
+            num_chirps=time_domain_shape[1],
+            samples_per_chirp=time_domain_shape[2]
+        ).to(device)
+    elif model_type == "time_to_freq":
+        model = RadarTimeToFreqNet(
+            num_rx=time_domain_shape[0],
+            num_chirps=time_domain_shape[1],
+            samples_per_chirp=time_domain_shape[2],
+            out_doppler_bins=128,  # Match your dataset's Doppler bin count
+            out_range_bins=256     # Match your dataset's range bin count
+        ).to(device)
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
     
     # Define loss function and optimizer
     # Define loss functions for multi-task learning
@@ -900,6 +987,8 @@ if __name__ == "__main__":
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = f'data/radar_transformer_{timestamp}'
     
+    num_range_bins = 256
+    num_doppler_bins = 128
     # Train model
     model, history = train_radar_transformer(
         output_dir=output_dir,

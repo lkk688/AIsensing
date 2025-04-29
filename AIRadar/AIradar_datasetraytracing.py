@@ -19,10 +19,10 @@ class RayTracingRadarDataset:
                 num_samples=20,
                  num_range_bins=256,
                  num_doppler_bins=128,
-                 sample_rate=8e6,
+                 sample_rate=50e6,
                  bandwidth=200e6,
                  center_freq=77e9,
-                 chirp_duration=50e-6, #50e-6,
+                 chirp_duration=100e-6, #50e-6,
                  num_chirps=128,
                  num_rx=4,
                  num_tx=2,
@@ -71,47 +71,122 @@ class RayTracingRadarDataset:
         self.save_path = save_path
         self.precision = precision
         
-        # Calculate derived parameters
-        self.samples_per_chirp = int(self.sample_rate * self.chirp_duration)
-        self.wavelength = 3e8 / self.center_freq  # Wavelength in meters (e.g., ~3.9mm for 77GHz)
-        self.speed_of_light = 3e8  # Speed of light in m/s
-
-        # === Range Performance ===
-        self.range_resolution = self.speed_of_light / (2 * self.bandwidth)  # ΔR = c/(2*BW)
-        self.max_range = (self.sample_rate * self.speed_of_light * self.chirp_duration) / (2 * self.bandwidth)  # R_max = (fs * c * T_chirp)/(2*BW)
-        self.min_range = self.range_resolution  # Practical minimum (can be higher due to Tx/Rx coupling)
-
-        # === Velocity/Doppler Performance ===
-        self.doppler_resolution = self.wavelength / (2 * self.num_chirps * self.chirp_duration)  # Δv = λ/(2*N*T_chirp)
-        self.max_unambiguous_velocity = self.wavelength / (4 * self.chirp_duration)  # v_max = λ/(4*T_chirp)
-        self.max_velocity = self.max_unambiguous_velocity  # Practical maximum (can be lower due to Doppler shift)
-        self.velocity_resolution = self.wavelength / (2 * self.num_chirps * self.chirp_duration)
+        # Configure and validate radar parameters
+        self._configure_radar_parameters()
         
-        # === SNR & Processing Metrics ===
-        self.range_fft_size = self.num_range_bins  # Typically matches samples_per_chirp (zero-padded if needed)
-        self.doppler_fft_size = self.num_doppler_bins  # Affects velocity resolution
-        self.pulse_repetition_interval = self.chirp_duration  # PRI = T_chirp (for FMCW)
-        self.pulse_repetition_frequency = 1 / self.chirp_duration  # PRF = 1/T_chirp
-
-        # === Print Key Metrics === (Optional, for debugging)
-        print(f"Range Resolution: {self.range_resolution:.2f} m")
-        print(f"Max Unambiguous Range: {self.max_range:.2f} m")
-        print(f"Doppler Resolution: {self.doppler_resolution:.2f} m/s")
-        print(f"Max Unambiguous Velocity: {self.max_unambiguous_velocity:.2f} m/s")
-        print(f"PRF: {self.pulse_repetition_frequency/1e3:.2f} kHz")
-
         # Create directory for saving data
         os.makedirs(self.save_path, exist_ok=True)
         
         # Print radar parameters
         self._print_radar_parameters()
     
+    def _configure_radar_parameters(self):
+        """
+        Configure and validate radar parameters based on physical constraints.
+        
+        This function handles:
+        1. Basic parameter calculation
+        2. Physical constraint enforcement
+        3. Parameter adjustment for realistic operation
+        4. Validation of FMCW chirp configuration
+        
+        Key Equations:
+        - Range resolution: ΔR = c/(2B)
+        - Maximum range: R_max = (f_s·c·T_c)/(2B)
+        - Beat frequency: f_beat = (2·R·B)/(c·T_c)
+        - Velocity resolution: Δv = λ/(2·N·T_c)
+        - Max unambiguous velocity: v_max = λ/(4·T_c)
+        """
+        # Physical constants
+        self.speed_of_light = 3e8  # Speed of light in m/s
+        self.wavelength = self.speed_of_light / self.center_freq
+        
+        # Calculate bandwidth based on target range resolution
+        # Range resolution = c/(2*bandwidth)
+        self.bandwidth = self.speed_of_light / (2 * self.range_resolution) if hasattr(self, 'range_resolution') else self.bandwidth
+        
+        # Limit bandwidth to practical values
+        if self.bandwidth > 4e9:
+            self.bandwidth = 4e9
+            self.range_resolution = self.speed_of_light / (2 * self.bandwidth)
+        
+        # Calculate basic chirp time based on maximum range
+        basic_chirp_time = (2 * self.max_range) / self.speed_of_light if hasattr(self, 'max_range') else (2 * 300) / self.speed_of_light
+        self.chirp_duration = max(5.5 * basic_chirp_time, 20e-6)
+        
+        # Calculate appropriate sample rate
+        self.sample_rate = min(max(4 * self.bandwidth, 2 * self.bandwidth), 50e6)
+        
+        # Phase step adjustment loop to ensure proper sampling
+        max_sample_rate = 50e6  # Set maximum allowed sample rate
+        phase_step = (2 * np.pi * self.bandwidth) / self.sample_rate
+        
+        while phase_step >= np.pi/2:
+            # Try increasing sample rate first
+            if self.sample_rate < max_sample_rate:
+                self.sample_rate *= 1.5
+                if self.sample_rate > max_sample_rate:
+                    self.sample_rate = max_sample_rate
+            else:
+                # If sample rate is maxed out, reduce bandwidth
+                self.bandwidth *= 0.9
+            phase_step = (2 * np.pi * self.bandwidth) / self.sample_rate
+        
+        # After adjustment, recalculate samples per chirp and FFT size
+        self.samples_per_chirp = int(self.sample_rate * self.chirp_duration)
+        self.range_fft_size = 2 ** int(np.ceil(np.log2(self.samples_per_chirp)))
+        
+        # Calculate velocity resolution based on existing parameters
+        self.velocity_resolution = self.wavelength / (2 * self.num_chirps * self.chirp_duration)
+        
+        # Ensure number of chirps is reasonable (cap at 512 if needed)
+        if self.num_chirps > 512:
+            self.num_chirps = 512
+            # Recalculate velocity resolution with capped chirp count
+            self.velocity_resolution = self.wavelength / (2 * self.num_chirps * self.chirp_duration)
+        
+        # Recalculate FFT sizes
+        self.range_fft_size = 2 ** int(np.ceil(np.log2(self.sample_rate * self.chirp_duration)))
+        self.doppler_fft_size = 2 ** int(np.ceil(np.log2(self.num_chirps)))
+        
+        # Calculate derived parameters
+        self.range_resolution = self.speed_of_light / (2 * self.bandwidth)
+        max_range_calculated = (self.sample_rate * self.speed_of_light * self.chirp_duration) / (2 * self.bandwidth)
+        self.max_range = min(max_range_calculated, 300)  # Limit max range to 300 meters
+        self.min_range = self.range_resolution
+        
+        # Velocity parameters
+        self.doppler_resolution = self.wavelength / (2 * self.num_chirps * self.chirp_duration)
+        self.max_unambiguous_velocity = self.wavelength / (4 * self.chirp_duration)
+        
+        # Constrain maximum velocity (≤ 60 m/s ~ 216 km/h)
+        max_reasonable_velocity = 60.0  # m/s
+        if self.max_unambiguous_velocity > max_reasonable_velocity:
+            self.max_velocity = max_reasonable_velocity
+        else:
+            self.max_velocity = self.max_unambiguous_velocity
+            
+        # Calculate repetition parameters
+        self.pulse_repetition_interval = self.chirp_duration
+        self.pulse_repetition_frequency = 1 / self.chirp_duration
+        
+        # Processing parameters
+        self.range_fft_size = self.num_range_bins
+        self.doppler_fft_size = self.num_doppler_bins
+        
+        # Validate FMCW chirp configuration
+        max_beat_freq = (2 * self.max_range * self.bandwidth) / (self.speed_of_light * self.chirp_duration)
+        if self.sample_rate < 2 * max_beat_freq:
+            print(f"Sample rate {self.sample_rate/1e6:.1f}MHz < {2*max_beat_freq/1e6:.1f}MHz required for {self.max_range:.1f}m range")
+            self.sample_rate = 2 * max_beat_freq
+            print(f"Adjusting Sample rate to {self.sample_rate/1e6:.1f}MHz")
+
     def _print_radar_parameters(self):
         """Print the radar system parameters."""
         print("\n=== Ray-Tracing Radar Simulation Parameters ===")
         print(f"Range Resolution: {self.range_resolution:.2f} m")
         print(f"Maximum Range: {self.max_range:.2f} m")
-        print(f"Velocity Resolution: {self.velocity_resolution:.2f} m/s")
+        #print(f"Velocity Resolution: {self.velocity_resolution:.2f} m/s")
         print(f"Maximum Velocity: {self.max_velocity:.2f} m/s")
         print(f"Samples per Chirp: {self.samples_per_chirp}")
         print(f"Wavelength: {self.wavelength:.4f} m")
@@ -157,17 +232,66 @@ class RayTracingRadarDataset:
             
             # Perform ray-tracing simulation
             rx_signal = self._ray_tracing_simulation(tx_signal, targets, perfect_mode=True)  # Enable perfect mode
-            
+            #(4, 128, 1000) complex
+
+            # Add direct coupling component (TX leakage)
+            direct_coupling_power = 0.01  # Adjust based on desired coupling strength
+            for rx_idx in range(self.num_rx):
+                # Direct coupling is a delayed and attenuated version of TX signal
+                delay_samples = int(0.1 * self.samples_per_chirp)  # Small delay for direct path
+                for chirp_idx in range(self.num_chirps):
+                    # Add attenuated TX signal with small delay
+                    tx_chirp = self._generate_fmcw_chirp(chirp_idx)
+                    delayed_tx = np.zeros_like(tx_chirp)
+                    delayed_tx[delay_samples:] = tx_chirp[:-delay_samples] if delay_samples > 0 else tx_chirp
+                    rx_signal[rx_idx, chirp_idx] += np.sqrt(direct_coupling_power) * delayed_tx
+
+            # Add environmental clutter (static reflections)
+            if self.apply_realistic_effects:
+                num_clutter_points = random.randint(5, 15)
+                for _ in range(num_clutter_points):
+                    clutter_range = random.uniform(5, self.max_range)
+                    clutter_rcs = random.uniform(-40, -20)  # dBsm
+                    clutter_power = self._calculate_received_power(clutter_range, clutter_rcs)
+                    
+                    # Add clutter to all chirps with same range (static)
+                    for rx_idx in range(self.num_rx):
+                        for chirp_idx in range(self.num_chirps):
+                            delay_samples = int((2 * clutter_range / self.speed_of_light) * self.sample_rate)
+                            if delay_samples < self.samples_per_chirp:
+                                # Phase randomization for each clutter point
+                                phase = random.uniform(0, 2 * np.pi)
+                                rx_signal[rx_idx, chirp_idx, delay_samples:] += np.sqrt(clutter_power) * np.exp(1j * phase)
+                                
             # Add noise to the received signal
             snr_db = random.uniform(self.snr_min, self.snr_max)
             rx_signal = self._add_noise(rx_signal, snr_db)
+
+            # Demodulate the signal to baseband
+            beat_signal = np.zeros_like(rx_signal) #(4, 128, 400) complex
+            for chirp_idx in range(self.num_chirps): #num_chirps=128
+                tx_chirp = self._generate_fmcw_chirp(chirp_idx) #(400,) complex
+                for rx_idx in range(self.num_rx):
+                    beat_signal[rx_idx, chirp_idx] = self._demodulate_fmcw_chirp(
+                        tx_chirp, rx_signal[rx_idx, chirp_idx], chirp_idx
+                    )
+            
+            if visualize: # and i == 0:  # Only for the first sample to avoid too many plots
+                self._visualize_beat_signal(
+                    self._generate_fmcw_chirp(0),  # First chirp
+                    rx_signal[0, 0],               # First RX, first chirp
+                    beat_signal[0, 0],             # Beat signal for first RX, first chirp
+                    sample_idx=i,
+                    chirp_idx=0,
+                    rx_idx=0
+                )
             
             # Process the received signal to generate range-Doppler map
             #rd_map = self._time_to_range_doppler(rx_signal) #(4, 128, 400) complex
             #(2, 128, 256)
             # Process the received signal to generate range-Doppler map
             rd_map = self._time_to_range_doppler(
-                rx_signal,
+                beat_signal,  # Use demodulated signal instead of raw RX,
                 apply_mti=True,               # Enable MTI for stationary target suppression
                 apply_doppler_centering=True,
                 apply_notch_filter=True,
@@ -177,10 +301,10 @@ class RayTracingRadarDataset:
             )
 
             # Perform target detection using CFAR
-            detection_results = self._cfar_detection(rd_map)
+            detection_results = self._cfar_detection(rd_map)#(2, 128, 256)
             
             # Create target mask (ground truth)
-            target_mask = self._create_target_mask(targets)
+            target_mask = self._create_target_mask(targets) #(128, 256, 1)
             
             # Store data
             dataset['time_domain_data'][i, :, :, :, 0] = np.real(rx_signal)
@@ -197,6 +321,65 @@ class RayTracingRadarDataset:
         print("Dataset generation complete!")
         return dataset
     
+    def _generate_fmcw_chirp(self, chirp_idx):
+        """Generate a single FMCW chirp signal with phase continuity"""
+        t = np.linspace(0, self.chirp_duration, self.samples_per_chirp)
+        
+        # Calculate phase with proper phase continuity between chirps
+        freq_sweep = self.bandwidth/self.chirp_duration * t
+        phase_accumulation = 2 * np.pi * chirp_idx * self.bandwidth * self.chirp_duration
+        phase = 2 * np.pi * (self.center_freq * t + 0.5 * freq_sweep * t) + phase_accumulation
+        
+        return np.exp(1j * phase)
+
+    def _demodulate_fmcw_chirp(self, tx_chirp, rx_chirp, chirp_idx=0):
+        """
+        Perform FMCW de-chirping with proper phase handling
+        The function now accounts for phase accumulation between chirps, which is critical for accurate Doppler processing.
+        By passing the chirp index, the demodulation can properly match the phase characteristics of the transmitted signal.
+
+        Args:
+            tx_chirp: Transmitted chirp signal
+            rx_chirp: Received chirp signal
+            chirp_idx: Index of current chirp (for phase continuity)
+            
+        Returns:
+            Complex beat signal after mixing and filtering
+        """
+        # Mix transmitted and received signals (conjugate mixing)
+        # This preserves the phase information needed for Doppler processing
+        mixed = rx_chirp * np.conj(tx_chirp)
+        
+        # Apply phase correction to account for phase accumulation between chirps
+        # This ensures phase continuity matching the _generate_tx_signal implementation
+        phase_accumulation = 2 * np.pi * chirp_idx * self.bandwidth * self.chirp_duration
+        phase_correction = np.exp(-1j * phase_accumulation)
+        
+        # Apply phase correction to the mixed signal
+        mixed_corrected = mixed * phase_correction
+        
+        # Apply low-pass filtering with better window function
+        # The window size is calculated to prevent aliasing based on bandwidth
+        window_size = max(3, int(self.sample_rate / (2 * self.bandwidth)))
+        window = np.hamming(window_size) / np.sum(np.hamming(window_size))
+        
+        # Apply filtering to remove high-frequency components
+        filtered_signal = np.convolve(mixed_corrected, window, mode='same')
+        
+        return filtered_signal
+
+    # def _demodulate_signal(self, tx_chirp, rx_chirp):
+    #     """Perform FMCW de-chirping (beat signal generation)"""
+    #     # Mix transmitted and received signals (conjugate mixing)
+    #     mixed = rx_chirp * np.conj(tx_chirp)
+        
+    #     # Apply low-pass filtering with better window function
+    #     window_size = max(3, int(self.sample_rate / (2 * self.bandwidth)))  # anti-aliasing
+    #     window = np.hamming(window_size) / np.sum(np.hamming(window_size))  # Normalized Hamming window
+        
+    #     # Apply filtering and return
+    #     return np.convolve(mixed, window, mode='same')
+
     def __getitem__(self, idx):
         """
         Fetch a sample from the dataset
@@ -230,9 +413,18 @@ class RayTracingRadarDataset:
         snr_db = random.uniform(self.snr_min, self.snr_max)
         rx_signal = self._add_noise(rx_signal, snr_db)
         
-        # Process the received signal to generate range-Doppler map
+        # Demodulate the signal to baseband
+        beat_signal = np.zeros_like(rx_signal)
+        for chirp_idx in range(self.num_chirps):
+            tx_chirp = self._generate_fmcw_chirp(chirp_idx)
+            for rx_idx in range(self.num_rx):
+                beat_signal[rx_idx, chirp_idx] = self._demodulate_signal(
+                    tx_chirp, rx_signal[rx_idx, chirp_idx]
+                )
+        
+        # Update processing to use beat signal
         range_doppler_map = self._time_to_range_doppler(
-            rx_signal,
+            beat_signal,  # Use demodulated signal instead of raw RX
             apply_mti=True,
             apply_doppler_centering=True,
             apply_notch_filter=True,
@@ -339,7 +531,7 @@ class RayTracingRadarDataset:
             List of dictionaries containing target parameters
         """
         # Generate random number of targets (1 to max_targets) - ensure at least 1 target
-        num_targets = random.randint(1, self.max_targets)
+        num_targets = 1 #random.randint(1, self.max_targets)
         
         # List to store target information
         targets = []
@@ -536,31 +728,24 @@ class RayTracingRadarDataset:
         
         return rx_signal
     
-    def _add_noise(self, rx_signal, snr_db):
-        """
-        Add white Gaussian noise to the received signal.
-        
-        Args:
-            rx_signal: Received signal
-            snr_db: Signal-to-Noise Ratio in dB
-            
-        Returns:
-            Noisy received signal
-        """
+    def _add_noise(self, signal, snr_db):
+        """Add realistic noise to the signal"""
         # Calculate signal power
-        signal_power = np.mean(np.abs(rx_signal)**2)
+        signal_power = np.mean(np.abs(signal)**2)
+        
+        # Ensure minimum signal power for noise calculation
+        min_power = 1e-10
+        signal_power = max(signal_power, min_power)
         
         # Calculate noise power based on SNR
-        noise_power = signal_power / (10 ** (snr_db / 10))
+        noise_power = signal_power / (10**(snr_db/10))
         
-        # Generate complex noise
-        noise = np.random.normal(0, np.sqrt(noise_power/2), rx_signal.shape) + \
-               1j * np.random.normal(0, np.sqrt(noise_power/2), rx_signal.shape)
+        # Generate complex Gaussian noise
+        noise = np.sqrt(noise_power/2) * (np.random.normal(0, 1, signal.shape) + 
+                                        1j * np.random.normal(0, 1, signal.shape))
         
         # Add noise to signal
-        noisy_signal = rx_signal + noise
-        
-        return noisy_signal
+        return signal + noise
     
     def _time_to_range_doppler(self, rx_signal, 
                           apply_mti=True,  # Changed default
@@ -694,83 +879,66 @@ class RayTracingRadarDataset:
         # Convert complex RD map to magnitude
         rd_magnitude = np.sqrt(rd_map[0]**2 + rd_map[1]**2)
         
-        # Define CFAR parameters - increase guard cells and training cells
+        # Define CFAR parameters - increased guard and training cells
         guard_cells = (3, 3)  # Increased from (2, 2)
         training_cells = (6, 6)  # Increased from (4, 4)
-        pfa = 1e-5  # Reduced from 1e-4 for stricter detection
+        pfa = 1e-5  # Reduced probability of false alarm
         
         # Initialize CFAR detection map
         cfar_map = np.zeros((self.num_doppler_bins, self.num_range_bins), dtype=bool)
         
-        # Apply CFAR detection
+        # Apply CFAR detection with boundary checks
         for d_idx in range(self.num_doppler_bins):
             for r_idx in range(self.num_range_bins):
-                # Define cell under test (CUT)
                 cut_value = rd_magnitude[d_idx, r_idx]
                 
-                # Define guard and training cell ranges
+                # Calculate window boundaries with safe limits
                 d_min = max(0, d_idx - guard_cells[0] - training_cells[0])
                 d_max = min(self.num_doppler_bins - 1, d_idx + guard_cells[0] + training_cells[0])
                 r_min = max(0, r_idx - guard_cells[1] - training_cells[1])
                 r_max = min(self.num_range_bins - 1, r_idx + guard_cells[1] + training_cells[1])
                 
-                # Extract training cells (excluding guard cells)
+                # Extract training cells excluding guard area
                 training_region = []
                 for di in range(d_min, d_max + 1):
                     for ri in range(r_min, r_max + 1):
-                        # Skip guard cells and CUT
-                        if (abs(di - d_idx) <= guard_cells[0] and abs(ri - r_idx) <= guard_cells[1]):
-                            continue
-                        training_region.append(rd_magnitude[di, ri])
+                        if abs(di - d_idx) > guard_cells[0] or abs(ri - r_idx) > guard_cells[1]:
+                            training_region.append(rd_magnitude[di, ri])
                 
-                # Calculate threshold from training cells
+                # Ordered statistic CFAR with adaptive threshold
                 if len(training_region) > 0:
-                    # Use ordered statistic CFAR with higher scaling factor
                     training_region.sort()
                     k = int(len(training_region) * (1 - pfa))
-                    threshold = training_region[min(k, len(training_region) - 1)]
-                    
-                    # Add a scaling factor to increase threshold
-                    threshold *= 1.5  # Increase threshold by 50%
-                    
-                    # Apply threshold
+                    threshold = training_region[min(k, len(training_region) - 1)] * 1.5
                     cfar_map[d_idx, r_idx] = cut_value > threshold
-        
-        # Apply additional filtering to remove isolated detections (likely false alarms)
+
+        # Post-processing to remove isolated detections
         filtered_cfar_map = np.zeros_like(cfar_map)
         for d_idx in range(1, self.num_doppler_bins-1):
             for r_idx in range(1, self.num_range_bins-1):
                 if cfar_map[d_idx, r_idx]:
-                    # Count neighbors (3x3 window)
-                    neighbor_count = np.sum(cfar_map[d_idx-1:d_idx+2, r_idx-1:r_idx+2]) - 1  # -1 to exclude self
-                    # Keep detection only if it has at least one neighbor
-                    filtered_cfar_map[d_idx, r_idx] = neighbor_count > 0
-        
-        # Extract detected targets
+                    neighbor_count = np.sum(cfar_map[d_idx-1:d_idx+2, r_idx-1:r_idx+2])
+                    filtered_cfar_map[d_idx, r_idx] = neighbor_count > 1
+
+        # Extract and validate targets
         detected_targets = []
         for d_idx in range(self.num_doppler_bins):
             for r_idx in range(self.num_range_bins):
                 if filtered_cfar_map[d_idx, r_idx]:
-                    # Calculate distance and velocity
                     distance = r_idx * self.range_resolution
                     velocity = (d_idx - self.num_doppler_bins // 2) * self.velocity_resolution
-                    
-                    # Calculate SNR (approximation)
                     noise_floor = np.median(rd_magnitude)
                     snr_db = 20 * np.log10(rd_magnitude[d_idx, r_idx] / (noise_floor + 1e-10))
                     
-                    # Only include targets with sufficient SNR
-                    if snr_db > 10.0:  # Minimum SNR threshold
-                        # Store target information
-                        target = {
+                    if snr_db > 10.0:  # SNR threshold
+                        detected_targets.append({
                             'range_bin': r_idx,
                             'doppler_bin': d_idx,
                             'distance': distance,
                             'velocity': velocity,
                             'snr': snr_db
-                        }
-                        detected_targets.append(target)
-        
+                        })
+
         return detected_targets
     
     def _create_target_mask(self, targets):
@@ -821,6 +989,66 @@ class RayTracingRadarDataset:
         
         return target_mask
     
+    def _visualize_beat_signal(self, tx_chirp, rx_chirp, beat_signal, sample_idx=0, chirp_idx=0, rx_idx=0):
+        """
+        Visualize the beat signal generation process for a specific chirp and RX channel
+        
+        Args:
+            tx_chirp: Transmitted chirp signal
+            rx_chirp: Received chirp signal
+            beat_signal: Beat signal after mixing
+            chirp_idx: Chirp index for title
+            rx_idx: RX antenna index for title
+        """
+        # Create figure with 3 subplots
+        fig, axs = plt.subplots(4, 1, figsize=(12, 10))
+        
+        # Time vector for x-axis
+        t = np.linspace(0, self.chirp_duration, self.samples_per_chirp)
+        
+        # Plot transmitted signal
+        axs[0].plot(t, np.real(tx_chirp), 'b-', label='Real')
+        axs[0].plot(t, np.imag(tx_chirp), 'r-', label='Imag')
+        axs[0].set_title(f'Transmitted Chirp Signal (Chirp {chirp_idx}, RX {rx_idx})')
+        axs[0].set_xlabel('Time (s)')
+        axs[0].set_ylabel('Amplitude')
+        axs[0].legend()
+        axs[0].grid(True)
+        
+        # Plot received signal
+        axs[1].plot(t, np.real(rx_chirp), 'b-', label='Real')
+        axs[1].plot(t, np.imag(rx_chirp), 'r-', label='Imag')
+        axs[1].set_title(f'Received Chirp Signal (Chirp {chirp_idx}, RX {rx_idx})')
+        axs[1].set_xlabel('Time (s)')
+        axs[1].set_ylabel('Amplitude')
+        axs[1].legend()
+        axs[1].grid(True)
+        
+        # Plot beat signal
+        axs[2].plot(t, np.real(beat_signal), 'b-', label='Real')
+        axs[2].plot(t, np.imag(beat_signal), 'r-', label='Imag')
+        axs[2].set_title(f'Beat Signal (Chirp {chirp_idx}, RX {rx_idx})')
+        axs[2].set_xlabel('Time (s)')
+        axs[2].set_ylabel('Amplitude')
+        axs[2].legend()
+        axs[2].grid(True)
+        
+        # Plot frequency spectrum of beat signal
+        freq = np.fft.fftshift(np.fft.fftfreq(self.samples_per_chirp, 1/self.sample_rate))
+        beat_fft = np.fft.fftshift(np.fft.fft(beat_signal))
+        axs[3].plot(freq, 20*np.log10(np.abs(beat_fft) + 1e-10), 'g-')
+        axs[3].set_title(f'Beat Signal Spectrum (Chirp {chirp_idx}, RX {rx_idx})')
+        axs[3].set_xlabel('Frequency (Hz)')
+        axs[3].set_ylabel('Magnitude (dB)')
+        axs[3].grid(True)
+        
+        # Set tight layout and save figure
+        plt.tight_layout()
+        os.makedirs(os.path.join(self.save_path, 'visualizations'), exist_ok=True)
+        plt.savefig(f'{self.save_path}/visualizations/beat_signal{sample_idx}_chirp{chirp_idx}_rx{rx_idx}.png')
+        #plt.savefig(f'{self.save_path}/beat_signal_chirp{chirp_idx}_rx{rx_idx}.png')
+        plt.close()
+
     def _visualize_sample(self, sample_idx, tx_signal, rx_signal, rd_map, targets, detection_results):
         """
         Visualize radar data for a single sample.
