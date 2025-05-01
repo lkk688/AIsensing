@@ -344,49 +344,30 @@ class RayTracingRadarDataset:
         
         # Generate samples
         for i in tqdm(range(self.num_samples), desc="Generating samples"):
-            # Generate TX signal
-            
-            #self.new_pipeline()
-            testing_newpipe = False
-            if testing_newpipe==True:
-                tx_signal = self._generate_tx_signal(return_full=True) #(153600,) (4, 128, 400) complex
-                rx_signal = self.simulate_single_target_echo(
-                    tx_full=tx_signal,
-                    fs=self.sample_rate,
-                    target_range=50,        # meters
-                    target_velocity=15,     # m/s
-                    center_freq=self.center_freq,
-                )#(153600,)
-                self.num_rx = 1
-                rx_signal = rx_signal.reshape(1, -1)
-                targets = []
-            else:
-                #tx_signal = self._generate_tx_signal(return_full=True, idle_time_ratio=self.idle_time_ratio, edge_ratio=0, window_type=None) #(128, 400) complex
-            #(153600,)
-                tx_signal = self._generate_tx_signal2(num_chirps=self.num_chirps,
-                        total_samples_per_chirp=self.total_samples_per_chirp,
-                        active_samples=self.active_samples,
-                        sample_rate=self.sample_rate,
-                        slope=self.slope, return_full=True, window_type=None) #(128, 400) complex
-
-                # Extract a single chirp from the full TX signal for visualization
-                tx_chirp = tx_signal[:self.active_samples]  # Get first chirp's active samples
-                self.visualize_tx_chirp_with_window(
-                    tx_signal=tx_chirp,  # Pass the extracted TX chirp
-                    sample_rate=self.sample_rate,
+            tx_signal = self._generate_tx_signal2(num_chirps=self.num_chirps,
+                    total_samples_per_chirp=self.total_samples_per_chirp,
                     active_samples=self.active_samples,
-                    bandwidth=self.bandwidth,
-                    slope=self.slope,
-                    center_freq=self.center_freq,
-                    edge_ratio=0.1,
-                    window_type='edge'
-                )
-                # Generate random targets
-                self.max_targets =1 
-                targets = self._generate_random_targets()
-                # Perform ray-tracing simulation
-                rx_signal = self._ray_tracing_simulation(tx_signal, targets, perfect_mode=True, flatten_output=True)
-                #The shape should be (4, 153600) [num_rx, num_chirps*samples_per_chirp]
+                    sample_rate=self.sample_rate,
+                    slope=self.slope, return_full=True, window_type=None) #(128, 400) complex
+            #(51200,) 128*400
+            # Extract a single chirp from the full TX signal for visualization
+            tx_chirp = tx_signal[:self.active_samples]  # Get first chirp's active samples
+            self.visualize_tx_chirp_with_window(
+                tx_signal=tx_chirp,  # Pass the extracted TX chirp
+                sample_rate=self.sample_rate,
+                active_samples=self.active_samples,
+                bandwidth=self.bandwidth,
+                slope=self.slope,
+                center_freq=self.center_freq,
+                edge_ratio=0.1,
+                window_type='edge'
+            )
+            # Generate random targets
+            self.max_targets =1 
+            targets = self._generate_random_targets()
+            # Perform ray-tracing simulation
+            rx_signal = self._ray_tracing_simulation(tx_signal, targets, perfect_mode=True, flatten_output=True)
+            #The shape should be (4, 153600) [num_rx, num_chirps*samples_per_chirp]
 
             # Add noise to the received signal (even in perfect mode, we need some minimal noise)
             snr_db = 40 #random.uniform(self.snr_min, self.snr_max)
