@@ -1852,22 +1852,13 @@ class RayTracingRadarDataset:
         """Visualize the beat signal for a specific chirp with improved FFT resolution and frequency accuracy."""
         os.makedirs(os.path.join(self.save_path, 'visualizations'), exist_ok=True)
 
-        # Parameters
-        #samples_per_chirp = self.samples_per_chirp
-        #idle_time_ratio = getattr(self, 'idle_time_ratio', 0.2)
-        #samples_per_idle = int(self.sample_rate * self.chirp_duration * idle_time_ratio)
-        #total_samples_per_chirp = samples_per_chirp + samples_per_idle
-        #samples_per_idle = total_samples_per_chirp - activesamples_per_chirp
-        #c = self.speed_of_light
-        #slope = self.bandwidth / self.chirp_duration
-
         # FFT size for improved resolution
         N_fft = 8192
 
         # TX extraction
         if tx_signal.ndim == 1:
             start = chirp_idx * total_samples_per_chirp
-            end = start + total_samples_per_chirp#activesamples_per_chirp
+            end = start + total_samples_per_chirp
             tx_chirp = tx_signal[start:end] if end <= len(tx_signal) else np.zeros(activesamples_per_chirp, dtype=complex)
         else:
             tx_chirp = tx_signal[chirp_idx] if chirp_idx < tx_signal.shape[0] else np.zeros(activesamples_per_chirp, dtype=complex)
@@ -1875,11 +1866,11 @@ class RayTracingRadarDataset:
         # RX extraction
         if rx_signal.ndim == 1:
             start = chirp_idx * total_samples_per_chirp
-            end = start + total_samples_per_chirp#activesamples_per_chirp
+            end = start + total_samples_per_chirp
             rx_chirp = rx_signal[start:end] if end <= len(rx_signal) else np.zeros(activesamples_per_chirp, dtype=complex)
         elif rx_signal.ndim == 2:
             start = chirp_idx * activesamples_per_chirp
-            end = start + total_samples_per_chirp#activesamples_per_chirp
+            end = start + total_samples_per_chirp
             rx_chirp = rx_signal[rx_idx, start:end] if rx_idx < rx_signal.shape[0] else np.zeros(activesamples_per_chirp, dtype=complex)
         else:
             rx_chirp = rx_signal[rx_idx, chirp_idx] if rx_idx < rx_signal.shape[0] and chirp_idx < rx_signal.shape[1] else np.zeros(activesamples_per_chirp, dtype=complex)
@@ -1887,70 +1878,165 @@ class RayTracingRadarDataset:
         # Beat signal
         beat_chirp = beat_signal[rx_idx, chirp_idx] if rx_idx < beat_signal.shape[0] and chirp_idx < beat_signal.shape[1] else np.zeros(activesamples_per_chirp, dtype=complex)
 
+        # Add small noise for numerical stability in spectrum calculation
+        noise_level = 1e-6
+        for signal in [tx_chirp, rx_chirp, beat_chirp]:
+            noise_real = np.random.normal(0, noise_level, len(signal))
+            noise_imag = np.random.normal(0, noise_level, len(signal))
+            signal += noise_real + 1j * noise_imag
+
         # Time and frequency axes
         t = np.linspace(0, total_chirp_duration, total_samples_per_chirp)
         freq_axis = np.fft.fftshift(np.fft.fftfreq(N_fft, d=1 / sample_rate)) / 1e6  # MHz
 
-        # FFTs with zero-padding
-        tx_fft = np.fft.fftshift(np.fft.fft(tx_chirp, n=N_fft))
-        rx_fft = np.fft.fftshift(np.fft.fft(rx_chirp, n=N_fft))
-        beat_fft = np.fft.fftshift(np.fft.fft(beat_chirp, n=N_fft))
+        # Apply window functions to reduce spectral leakage
+        window_blackman = np.blackman(len(tx_chirp))
+        
+        # Original and windowed signals
+        tx_chirp_orig = tx_chirp.copy()
+        rx_chirp_orig = rx_chirp.copy()
+        beat_chirp_orig = beat_chirp.copy()
+        
+        # Apply window to copies for FFT
+        tx_chirp_windowed = tx_chirp * window_blackman
+        rx_chirp_windowed = rx_chirp * window_blackman
+        beat_chirp_windowed = beat_chirp * window_blackman
+
+        # FFTs with zero-padding (original and windowed)
+        tx_fft_orig = np.fft.fftshift(np.fft.fft(tx_chirp_orig, n=N_fft))
+        rx_fft_orig = np.fft.fftshift(np.fft.fft(rx_chirp_orig, n=N_fft))
+        beat_fft_orig = np.fft.fftshift(np.fft.fft(beat_chirp_orig, n=N_fft))
+        
+        tx_fft = np.fft.fftshift(np.fft.fft(tx_chirp_windowed, n=N_fft))
+        rx_fft = np.fft.fftshift(np.fft.fft(rx_chirp_windowed, n=N_fft))
+        beat_fft = np.fft.fftshift(np.fft.fft(beat_chirp_windowed, n=N_fft))
+
+        # Calculate spectra in dB
+        tx_spectrum_orig = 20 * np.log10(np.abs(tx_fft_orig) + 1e-10)
+        rx_spectrum_orig = 20 * np.log10(np.abs(rx_fft_orig) + 1e-10)
+        beat_spectrum_orig = 20 * np.log10(np.abs(beat_fft_orig) + 1e-10)
+        
+        tx_spectrum = 20 * np.log10(np.abs(tx_fft) + 1e-10)
+        rx_spectrum = 20 * np.log10(np.abs(rx_fft) + 1e-10)
+        beat_spectrum = 20 * np.log10(np.abs(beat_fft) + 1e-10)
+        
+        # Normalize spectra for better comparison
+        # First, find the maximum value across both TX and RX spectra
+        max_tx_rx = max(np.max(tx_spectrum), np.max(rx_spectrum))
+        
+        # Normalize both spectra to the same reference
+        tx_spectrum_norm = tx_spectrum - np.max(tx_spectrum) + max_tx_rx
+        rx_spectrum_norm = rx_spectrum - np.max(rx_spectrum) + max_tx_rx
 
         # Create figure
         fig, axs = plt.subplots(3, 2, figsize=(15, 12))
         fig.suptitle(f'Beat Signal Analysis - Sample {sample_idx}, Chirp {chirp_idx}, RX {rx_idx}', fontsize=16)
 
         # TX Time Domain
-        axs[0, 0].plot(t, np.real(tx_chirp), 'b-', label='Real')
-        axs[0, 0].plot(t, np.imag(tx_chirp), 'r--', label='Imag')
+        axs[0, 0].plot(t, np.real(tx_chirp_orig), 'b-', label='Real', alpha=0.7)
+        axs[0, 0].plot(t, np.imag(tx_chirp_orig), 'r--', label='Imag', alpha=0.7)
+        axs[0, 0].plot(t, window_blackman * np.max(np.abs(tx_chirp_orig)), 'g-', label='Window', alpha=0.3)
         axs[0, 0].set_title('TX Signal (Time Domain)')
         axs[0, 0].set_xlabel('Time (s)')
         axs[0, 0].set_ylabel('Amplitude')
         axs[0, 0].legend()
         axs[0, 0].grid(True)
 
-        # TX Spectrum
-        axs[0, 1].plot(freq_axis, 20 * np.log10(np.abs(tx_fft) + 1e-10))
-        axs[0, 1].set_title('TX Signal Spectrum')
+        # TX Spectrum - with and without windowing
+        axs[0, 1].plot(freq_axis, tx_spectrum_orig, 'b-', label='Original', alpha=0.5)
+        axs[0, 1].plot(freq_axis, tx_spectrum, 'r-', label='Blackman Window', alpha=0.8)
+        axs[0, 1].set_title('TX Signal Spectrum (Windowed vs Original)')
         axs[0, 1].set_xlabel('Frequency (MHz)')
         axs[0, 1].set_ylabel('Magnitude (dB)')
         axs[0, 1].grid(True)
+        axs[0, 1].legend()
+        
+        # Set y-axis limits to focus on the relevant part of the spectrum
+        y_min_tx = max(-100, np.min(tx_spectrum))
+        y_max_tx = np.max(tx_spectrum) + 10
+        axs[0, 1].set_ylim([y_min_tx, y_max_tx])
+        
+        # Highlight bandwidth region in TX spectrum
+        bandwidth_mhz = self.bandwidth / 1e6
+        f_start = -bandwidth_mhz / 2  # Convert to MHz
+        f_end = bandwidth_mhz / 2
+        axs[0, 1].axvline(f_start, color='red', linestyle='--', linewidth=1.5, 
+                        label=f'Start: {f_start:.2f} MHz')
+        axs[0, 1].axvline(f_end, color='green', linestyle='--', linewidth=1.5,
+                        label=f'End: {f_end:.2f} MHz')
+        axs[0, 1].axvspan(f_start, f_end, alpha=0.2, color='yellow')
+        
+        # Zoom in on bandwidth region with margin
+        margin = bandwidth_mhz * 0.5  # 50% margin
+        axs[0, 1].set_xlim([f_start - margin, f_end + margin])
 
         # RX Time Domain
-        axs[1, 0].plot(t, np.real(rx_chirp), 'g-', label='Real')
-        axs[1, 0].plot(t, np.imag(rx_chirp), 'g--', label='Imag')
+        axs[1, 0].plot(t, np.real(rx_chirp_orig), 'g-', label='Real', alpha=0.7)
+        axs[1, 0].plot(t, np.imag(rx_chirp_orig), 'g--', label='Imag', alpha=0.7)
+        axs[1, 0].plot(t, window_blackman * np.max(np.abs(rx_chirp_orig)), 'b-', label='Window', alpha=0.3)
         axs[1, 0].set_title('RX Signal (Time Domain)')
         axs[1, 0].set_xlabel('Time (s)')
         axs[1, 0].set_ylabel('Amplitude')
         axs[1, 0].legend()
         axs[1, 0].grid(True)
 
-        # RX Spectrum
-        axs[1, 1].plot(freq_axis, 20 * np.log10(np.abs(rx_fft) + 1e-10))
-        axs[1, 1].set_title('RX Signal Spectrum')
+        # RX Spectrum - with and without windowing
+        axs[1, 1].plot(freq_axis, rx_spectrum_orig, 'g-', label='Original', alpha=0.5)
+        axs[1, 1].plot(freq_axis, rx_spectrum, 'r-', label='Blackman Window', alpha=0.8)
+        axs[1, 1].set_title('RX Signal Spectrum (Windowed vs Original)')
         axs[1, 1].set_xlabel('Frequency (MHz)')
         axs[1, 1].set_ylabel('Magnitude (dB)')
         axs[1, 1].grid(True)
+        axs[1, 1].legend()
+        
+        # Apply same y-axis limits and zoom as TX for comparison
+        axs[1, 1].set_ylim([y_min_tx, y_max_tx])
+        axs[1, 1].set_xlim([f_start - margin, f_end + margin])
+        
+        # Highlight bandwidth region in RX spectrum
+        axs[1, 1].axvline(f_start, color='red', linestyle='--', linewidth=1.5)
+        axs[1, 1].axvline(f_end, color='green', linestyle='--', linewidth=1.5)
+        axs[1, 1].axvspan(f_start, f_end, alpha=0.2, color='yellow')
 
         # Beat Time Domain
-        axs[2, 0].plot(t[0:len(beat_chirp)], np.real(beat_chirp), 'b-', label='Real')
-        axs[2, 0].plot(t[0:len(beat_chirp)], np.imag(beat_chirp), 'b--', label='Imag')
+        axs[2, 0].plot(t[0:len(beat_chirp)], np.real(beat_chirp_orig), 'b-', label='Real', alpha=0.7)
+        axs[2, 0].plot(t[0:len(beat_chirp)], np.imag(beat_chirp_orig), 'b--', label='Imag', alpha=0.7)
+        if len(beat_chirp) == len(window_blackman):
+            axs[2, 0].plot(t[0:len(beat_chirp)], window_blackman * np.max(np.abs(beat_chirp_orig)), 'g-', label='Window', alpha=0.3)
         axs[2, 0].set_title('Beat Signal (Time Domain)')
         axs[2, 0].set_xlabel('Time (s)')
         axs[2, 0].set_ylabel('Amplitude')
         axs[2, 0].legend()
         axs[2, 0].grid(True)
 
-        # Beat Spectrum
-        axs[2, 1].plot(freq_axis, 20 * np.log10(np.abs(beat_fft) + 1e-10))
-        axs[2, 1].set_title('Beat Signal Spectrum')
+        # Beat Spectrum - with and without windowing
+        axs[2, 1].plot(freq_axis, beat_spectrum_orig, 'b-', label='Original', alpha=0.5)
+        axs[2, 1].plot(freq_axis, beat_spectrum, 'r-', label='Blackman Window', alpha=0.8)
+        axs[2, 1].set_title('Beat Signal Spectrum (Windowed vs Original)')
         axs[2, 1].set_xlabel('Frequency (MHz)')
         axs[2, 1].set_ylabel('Magnitude (dB)')
         axs[2, 1].grid(True)
-
-        # Estimate range from beat frequency
+        axs[2, 1].legend()
+        
+        # Set y-axis limits for beat spectrum
+        y_min_beat = max(-100, np.min(beat_spectrum))
+        y_max_beat = np.max(beat_spectrum) + 10
+        axs[2, 1].set_ylim([y_min_beat, y_max_beat])
+        
+        # Find beat frequency from windowed spectrum for better accuracy
         beat_freq_idx = np.argmax(np.abs(beat_fft[N_fft // 2:]))  # Peak in positive freq
         beat_freq = np.fft.fftshift(np.fft.fftfreq(N_fft, 1 / sample_rate))[N_fft // 2 + beat_freq_idx]
+        beat_freq_mhz = beat_freq / 1e6
+        
+        # Set x-axis limits to focus on the beat frequency with some margin
+        margin_beat = 20  # MHz
+        axs[2, 1].set_xlim([beat_freq_mhz - margin_beat, beat_freq_mhz + margin_beat])
+        
+        # Highlight beat frequency
+        axs[2, 1].axvline(beat_freq_mhz, color='red', linestyle='-', linewidth=2, 
+                        label=f'Beat: {beat_freq_mhz:.2f} MHz')
+        
+        # Estimate range from beat frequency
         estimated_range = (beat_freq * c) / (2 * slope)
 
         # Display radar parameters
@@ -1959,7 +2045,8 @@ class RayTracingRadarDataset:
             f'Sample Rate: {sample_rate / 1e6:.1f} MHz',
             f'Slope: {slope / 1e12:.2f} THz/s',
             f'Peak Beat Freq: {beat_freq / 1e3:.2f} kHz',
-            f'Est. Range: {estimated_range:.2f} m'
+            f'Est. Range: {estimated_range:.2f} m',
+            f'Window: Blackman'
         ))
         props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
         axs[2, 1].text(0.05, 0.95, textstr, transform=axs[2, 1].transAxes, fontsize=10,
