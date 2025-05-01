@@ -276,6 +276,7 @@ class RayTracingRadarDataset:
                         tx_chirp, rx_signal[rx_idx, chirp_idx], chirp_idx
                     )
             
+            #beat_signal = self._remove_direct_coupling(beat_signal)
             if visualize: # and i == 0:  # Only for the first sample to avoid too many plots
                 self._visualize_beat_signal(
                     self._generate_fmcw_chirp(0),  # First chirp
@@ -321,6 +322,45 @@ class RayTracingRadarDataset:
         print("Dataset generation complete!")
         return dataset
     
+    def _remove_direct_coupling(self, beat_signal):
+        """
+        Remove direct coupling/leakage component from beat signal
+        
+        Args:
+            beat_signal: Complex beat signal array (num_rx, num_chirps, samples_per_chirp)
+            
+        Returns:
+            Processed beat signal with direct coupling removed
+        """
+        # Create a copy of the input signal
+        processed_signal = beat_signal.copy()
+        
+        # For each RX channel
+        for rx_idx in range(beat_signal.shape[0]):
+            # Compute average spectrum across all chirps
+            avg_spectrum = np.zeros(self.samples_per_chirp, dtype=complex)
+            for chirp_idx in range(beat_signal.shape[1]):
+                avg_spectrum += np.fft.fft(beat_signal[rx_idx, chirp_idx])
+            avg_spectrum /= beat_signal.shape[1]
+            
+            # Find the peak frequency bin
+            peak_idx = np.argmax(np.abs(avg_spectrum))
+            
+            # Create notch filter centered at the peak frequency
+            notch_width = 3  # Width of notch in frequency bins
+            notch_filter = np.ones(self.samples_per_chirp, dtype=complex)
+            for i in range(max(0, peak_idx-notch_width), min(self.samples_per_chirp, peak_idx+notch_width+1)):
+                # Apply cosine taper for smooth transition
+                notch_filter[i] = 0.5 * (1 - np.cos(np.pi * (i - (peak_idx-notch_width)) / (2*notch_width)))
+            
+            # Apply filter to each chirp
+            for chirp_idx in range(beat_signal.shape[1]):
+                spectrum = np.fft.fft(beat_signal[rx_idx, chirp_idx])
+                filtered_spectrum = spectrum * notch_filter
+                processed_signal[rx_idx, chirp_idx] = np.fft.ifft(filtered_spectrum)
+        
+        return processed_signal
+
     def _generate_fmcw_chirp(self, chirp_idx):
         """Generate a single FMCW chirp signal with phase continuity"""
         t = np.linspace(0, self.chirp_duration, self.samples_per_chirp)
@@ -418,8 +458,8 @@ class RayTracingRadarDataset:
         for chirp_idx in range(self.num_chirps):
             tx_chirp = self._generate_fmcw_chirp(chirp_idx)
             for rx_idx in range(self.num_rx):
-                beat_signal[rx_idx, chirp_idx] = self._demodulate_signal(
-                    tx_chirp, rx_signal[rx_idx, chirp_idx]
+                beat_signal[rx_idx, chirp_idx] = self._demodulate_fmcw_chirp(
+                    tx_chirp, rx_signal[rx_idx, chirp_idx], chirp_idx
                 )
         
         # Update processing to use beat signal
