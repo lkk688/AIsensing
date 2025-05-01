@@ -87,98 +87,116 @@ class RayTracingRadarDataset:
     def _configure_radar_parameters(self):
         """
         Configure and validate radar parameters based on physical constraints.
+        
+        This function handles:
+        1. Basic parameter calculation
+        2. Physical constraint enforcement
+        3. Parameter adjustment for realistic operation
+        4. Validation of FMCW chirp configuration
+        
+        Key Equations:
+        - Range resolution: ΔR = c/(2B)
+        - Maximum range: R_max = (f_s·c·T_c)/(2B)
+        - Beat frequency: f_beat = (2·R·B)/(c·T_c)
+        - Velocity resolution: Δv = λ/(2·N·T_c)
+        - Max unambiguous velocity: v_max = λ/(4·T_c)
         """
-        # --- Constants and defaults ---
-        c = self.speed_of_light = 3e8  # Speed of light (m/s)
-        f0 = self.center_freq           # Center frequency (Hz)
-        λ = self.wavelength = c / f0
-        max_bandwidth = 4e9
-        max_sample_rate = 500e6
-        max_range_default = 300
-        max_velocity = 60.0  # m/s
-
-        # --- Bandwidth and range resolution ---
-        if hasattr(self, 'range_resolution'):
-            self.bandwidth = c / (2 * self.range_resolution)
-        self.bandwidth = min(getattr(self, 'bandwidth', 500e6), max_bandwidth)
-        self.range_resolution = c / (2 * self.bandwidth)
-
-        # --- Chirp duration ---
-        max_range = getattr(self, 'max_range', max_range_default)
-        Tc_min = max(5.5 * (2 * max_range) / c, 20e-6)
-        self.chirp_duration = Tc_min
-
-        # Step: Calculate FMCW slope
-        self.slope = self.bandwidth / self.chirp_duration  # Hz/s
-
-        # Slope check: Prevent multiple chirp sweeps per chirp cycle
-        max_allowed_slope = 100e12  # 100 THz/s typical max for radar chipsets
-
-        if self.slope > max_allowed_slope:
-            print(f"Warning: Chirp slope {self.slope/1e12:.2f} THz/s exceeds hardware limit of {max_allowed_slope/1e12:.1f} THz/s")
-            # Adjust chirp duration to reduce slope
-            self.chirp_duration = self.bandwidth / max_allowed_slope
-            self.slope = self.bandwidth / self.chirp_duration
-            self.samples_per_chirp = int(self.sample_rate * self.chirp_duration)
-            print(f"Adjusted chirp duration to {self.chirp_duration*1e6:.1f} µs to stay within slope limit.")
-
-        f_beat_max = (2 * self.max_range * self.bandwidth) / (self.speed_of_light * self.chirp_duration)
-        sample_rate_raw = min(2.2 * f_beat_max, max_sample_rate)
-        self.sample_rate = np.ceil(sample_rate_raw / 1e6) * 1e6  # Round up to nearest MHz
-        # --- Samples per chirp ---
+        # Physical constants
+        self.speed_of_light = 3e8  # Speed of light in m/s
+        self.wavelength = self.speed_of_light / self.center_freq
+        
+        # Calculate bandwidth based on target range resolution
+        # Range resolution = c/(2*bandwidth)
+        self.bandwidth = self.speed_of_light / (2 * self.range_resolution) if hasattr(self, 'range_resolution') else self.bandwidth
+        
+        # Limit bandwidth to practical values
+        if self.bandwidth > 4e9:
+            self.bandwidth = 4e9
+            self.range_resolution = self.speed_of_light / (2 * self.bandwidth)
+        
+        # Calculate basic chirp time based on maximum range
+        basic_chirp_time = (2 * self.max_range) / self.speed_of_light if hasattr(self, 'max_range') else (2 * 300) / self.speed_of_light
+        self.chirp_duration = max(5.5 * basic_chirp_time, 20e-6)
+        
+        # Calculate appropriate sample rate
+        self.sample_rate = min(max(4 * self.bandwidth, 2 * self.bandwidth), 50e6)
+        
+        # Phase step adjustment loop to ensure proper sampling
+        max_sample_rate = 50e6  # Set maximum allowed sample rate
+        phase_step = (2 * np.pi * self.bandwidth) / self.sample_rate
+        
+        while phase_step >= np.pi/2:
+            # Try increasing sample rate first
+            if self.sample_rate < max_sample_rate:
+                self.sample_rate *= 1.5
+                if self.sample_rate > max_sample_rate:
+                    self.sample_rate = max_sample_rate
+            else:
+                # If sample rate is maxed out, reduce bandwidth
+                self.bandwidth *= 0.9
+            phase_step = (2 * np.pi * self.bandwidth) / self.sample_rate
+        
+        # After adjustment, recalculate samples per chirp and FFT size
         self.samples_per_chirp = int(self.sample_rate * self.chirp_duration)
-
-        # --- Chirp count & velocity resolution ---
-        self.num_chirps = min(getattr(self, 'num_chirps', 128), 512)
-        self.velocity_resolution = λ / (2 * self.num_chirps * self.chirp_duration)
-        self.max_unambiguous_velocity = λ / (4 * self.chirp_duration)
-        self.max_velocity = min(self.max_unambiguous_velocity, max_velocity)
-
-        # --- FFT sizes ---
         self.range_fft_size = 2 ** int(np.ceil(np.log2(self.samples_per_chirp)))
+        
+        # Calculate velocity resolution based on existing parameters
+        self.velocity_resolution = self.wavelength / (2 * self.num_chirps * self.chirp_duration)
+        
+        # Ensure number of chirps is reasonable (cap at 512 if needed)
+        if self.num_chirps > 512:
+            self.num_chirps = 512
+            # Recalculate velocity resolution with capped chirp count
+            self.velocity_resolution = self.wavelength / (2 * self.num_chirps * self.chirp_duration)
+        
+        # Recalculate FFT sizes
+        self.range_fft_size = 2 ** int(np.ceil(np.log2(self.sample_rate * self.chirp_duration)))
         self.doppler_fft_size = 2 ** int(np.ceil(np.log2(self.num_chirps)))
-
-        # --- Max range check and chirp adjustment ---
-        achievable_range = (self.sample_rate * c * self.chirp_duration) / (2 * self.bandwidth)
-        if achievable_range > max_range_default:
-            self.chirp_duration = (max_range_default * 2 * self.bandwidth) / (self.sample_rate * c)
-            self.samples_per_chirp = int(self.sample_rate * self.chirp_duration)
-            self.range_fft_size = 2 ** int(np.ceil(np.log2(self.samples_per_chirp)))
-            achievable_range = max_range_default
-
-        self.max_range = achievable_range
+        
+        # Calculate derived parameters
+        self.range_resolution = self.speed_of_light / (2 * self.bandwidth)
+        max_range_calculated = (self.sample_rate * self.speed_of_light * self.chirp_duration) / (2 * self.bandwidth)
+        self.max_range = min(max_range_calculated, 300)  # Limit max range to 300 meters
         self.min_range = self.range_resolution
-
-        # --- Repetition parameters ---
+        
+        # Velocity parameters
+        self.doppler_resolution = self.wavelength / (2 * self.num_chirps * self.chirp_duration)
+        self.max_unambiguous_velocity = self.wavelength / (4 * self.chirp_duration)
+        
+        # Constrain maximum velocity (≤ 60 m/s ~ 216 km/h)
+        max_reasonable_velocity = 60.0  # m/s
+        if self.max_unambiguous_velocity > max_reasonable_velocity:
+            self.max_velocity = max_reasonable_velocity
+        else:
+            self.max_velocity = self.max_unambiguous_velocity
+            
+        # Calculate repetition parameters
         self.pulse_repetition_interval = self.chirp_duration
         self.pulse_repetition_frequency = 1 / self.chirp_duration
-        self.chirp_repetition_interval = self.chirp_duration
-
-        # --- FMCW configuration check ---
-        max_beat_freq = (2 * self.max_range * self.bandwidth) / (c * self.chirp_duration)
+        
+        # Processing parameters
+        self.range_fft_size = self.num_range_bins
+        self.doppler_fft_size = self.num_doppler_bins
+        
+        # Validate FMCW chirp configuration
+        max_beat_freq = (2 * self.max_range * self.bandwidth) / (self.speed_of_light * self.chirp_duration)
         if self.sample_rate < 2 * max_beat_freq:
+            print(f"Sample rate {self.sample_rate/1e6:.1f}MHz < {2*max_beat_freq/1e6:.1f}MHz required for {self.max_range:.1f}m range")
             self.sample_rate = 2 * max_beat_freq
-            print(f"Adjusted sample rate to {self.sample_rate / 1e6:.1f} MHz for max range {self.max_range:.1f} m")
+            print(f"Adjusting Sample rate to {self.sample_rate/1e6:.1f}MHz")
 
-        # --- Slope calculation ---
-        self.slope = self.bandwidth / self.chirp_duration
-        print(f"New Sample rage: {self.sample_rate / 1e6:.1f} MHz")
-        print(f"New FMCW Slope: {self.slope / 1e12:.2f} THz/s")
-
-        self.idle_time_ratio = 0.2 #used for tx signal
-        if self.idle_time_ratio>0:
-            total_chirp_duration = self.chirp_duration * (1 + self.idle_time_ratio)
-            samples_per_chirp = int(self.sample_rate * self.chirp_duration)
-            self.total_samples_per_chirp = int(self.sample_rate * total_chirp_duration)
-            self.active_samples = int(samples_per_chirp * (1 - self.idle_time_ratio))
+         # --- TX signal idle time configuration (optional) ---
+        self.idle_time_ratio = 0.2
+        if self.idle_time_ratio > 0:
             self.idle_time = self.chirp_duration * self.idle_time_ratio
-            self.chirp_repetition_interval = total_chirp_duration
-            self.total_chirp_duration = total_chirp_duration
+            self.total_chirp_duration = self.chirp_duration + self.idle_time
+            self.chirp_repetition_interval = self.total_chirp_duration
+            self.total_samples_per_chirp = int(self.sample_rate * self.total_chirp_duration)
+            self.active_samples = int(self.samples_per_chirp * (1 - self.idle_time_ratio))
         else:
+            self.total_chirp_duration = self.chirp_duration
             self.total_samples_per_chirp = self.samples_per_chirp
             self.active_samples = self.samples_per_chirp
-            self.total_chirp_duration = self.chirp_duration
-            #self.chirp_repetition_interval
 
     def _configure_radar_parameters2(self):
         """
@@ -265,7 +283,7 @@ class RayTracingRadarDataset:
         print(f"✅ RF Sweep Band      : {f_start/1e9:.2f}–{f_end/1e9:.2f} GHz")
 
         # --- TX signal idle time configuration (optional) ---
-        self.idle_time_ratio = 0.2
+        self.idle_time_ratio = 0
         if self.idle_time_ratio > 0:
             self.idle_time = self.chirp_duration * self.idle_time_ratio
             self.total_chirp_duration = self.chirp_duration + self.idle_time
@@ -386,6 +404,14 @@ class RayTracingRadarDataset:
             #Beat signal with shape (4, 128, 1000) [num_rx, num_chirps, samples_per_chirp]
             if visualize: # and i == 0:  # Only for the first sample to avoid too many plots
                 self._visualize_beat_signal(
+                    self._generate_fmcw_chirp(0),  # First chirp
+                    rx_signal[0, 0],               # First RX, first chirp
+                    beat_signal[0, 0],             # Beat signal for first RX, first chirp
+                    sample_idx=i,
+                    chirp_idx=0,
+                    rx_idx=0
+                )
+                self._visualize_beat_signal2(
                     tx_signal=tx_signal,  # Pass complete signals
                     rx_signal=rx_signal,               # Complete RX signal
                     beat_signal=beat_signal,             # Complete beat signal
@@ -424,7 +450,9 @@ class RayTracingRadarDataset:
             
             # Visualize if requested
             if visualize: # and (i % 10 == 0 or i == self.num_samples - 1):
-                self._visualize_sample(i, self.chirp_duration,
+                self._visualize_sample(i, tx_signal, rx_signal, rd_map, targets, detection_results)
+        
+                self._visualize_sample2(i, self.chirp_duration,
                         self.total_samples_per_chirp, tx_signal, rx_signal, rd_map, targets, detection_results, save_path=self.save_path)
                         # Create target mask (ground truth)
             if targets is not None:
@@ -1190,7 +1218,7 @@ class RayTracingRadarDataset:
         slope = slope or self.slope
         
         # Create directory for visualizations if it doesn't exist
-        os.makedirs(os.path.join(self.save_path, 'visualizations'), exist_ok=True)
+        os.makedirs(os.path.join(self.save_path, 'visualizations2'), exist_ok=True)
 
         # Signal setup
         samples = active_samples
@@ -1332,7 +1360,7 @@ class RayTracingRadarDataset:
         axs[1, 1].axis('off')
 
         plt.tight_layout(rect=[0, 0, 1, 0.95])
-        out_path = os.path.join(self.save_path, "visualizations", "tx_chirp_window_visualization_rf.png")
+        out_path = os.path.join(self.save_path, "visualizations2", "tx_chirp_window_visualization_rf.png")
         plt.savefig(out_path)
         plt.close()
         print(f"Saved TX chirp visualization to: {out_path}")
@@ -1849,9 +1877,267 @@ class RayTracingRadarDataset:
         
         return target_mask
     
-    def _visualize_beat_signal(self, tx_signal, rx_signal, beat_signal, total_samples_per_chirp, activesamples_per_chirp, total_chirp_duration, slope, c, sample_rate, bandwidth, sample_idx=0, chirp_idx=0, rx_idx=0):
-        """Visualize the beat signal for a specific chirp with improved FFT resolution and frequency accuracy."""
+    def _visualize_beat_signal(self, tx_chirp, rx_chirp, beat_signal, sample_idx=0, chirp_idx=0, rx_idx=0):
+        """
+        Visualize the beat signal generation process for a specific chirp and RX channel
+        
+        Args:
+            tx_chirp: Transmitted chirp signal
+            rx_chirp: Received chirp signal
+            beat_signal: Beat signal after mixing
+            chirp_idx: Chirp index for title
+            rx_idx: RX antenna index for title
+        """
+        # Create figure with 3 subplots
+        fig, axs = plt.subplots(4, 1, figsize=(12, 10))
+        
+        # Time vector for x-axis
+        t = np.linspace(0, self.chirp_duration, self.samples_per_chirp)
+        
+        # Plot transmitted signal
+        axs[0].plot(t, np.real(tx_chirp), 'b-', label='Real')
+        axs[0].plot(t, np.imag(tx_chirp), 'r-', label='Imag')
+        axs[0].set_title(f'Transmitted Chirp Signal (Chirp {chirp_idx}, RX {rx_idx})')
+        axs[0].set_xlabel('Time (s)')
+        axs[0].set_ylabel('Amplitude')
+        axs[0].legend()
+        axs[0].grid(True)
+        
+        # Plot received signal
+        axs[1].plot(t, np.real(rx_chirp), 'b-', label='Real')
+        axs[1].plot(t, np.imag(rx_chirp), 'r-', label='Imag')
+        axs[1].set_title(f'Received Chirp Signal (Chirp {chirp_idx}, RX {rx_idx})')
+        axs[1].set_xlabel('Time (s)')
+        axs[1].set_ylabel('Amplitude')
+        axs[1].legend()
+        axs[1].grid(True)
+        
+        # Plot beat signal
+        axs[2].plot(t, np.real(beat_signal), 'b-', label='Real')
+        axs[2].plot(t, np.imag(beat_signal), 'r-', label='Imag')
+        axs[2].set_title(f'Beat Signal (Chirp {chirp_idx}, RX {rx_idx})')
+        axs[2].set_xlabel('Time (s)')
+        axs[2].set_ylabel('Amplitude')
+        axs[2].legend()
+        axs[2].grid(True)
+        
+        # Plot frequency spectrum of beat signal
+        freq = np.fft.fftshift(np.fft.fftfreq(self.samples_per_chirp, 1/self.sample_rate))
+        beat_fft = np.fft.fftshift(np.fft.fft(beat_signal))
+        axs[3].plot(freq, 20*np.log10(np.abs(beat_fft) + 1e-10), 'g-')
+        axs[3].set_title(f'Beat Signal Spectrum (Chirp {chirp_idx}, RX {rx_idx})')
+        axs[3].set_xlabel('Frequency (Hz)')
+        axs[3].set_ylabel('Magnitude (dB)')
+        axs[3].grid(True)
+        
+        # Set tight layout and save figure
+        plt.tight_layout()
         os.makedirs(os.path.join(self.save_path, 'visualizations'), exist_ok=True)
+        plt.savefig(f'{self.save_path}/visualizations/beat_signal{sample_idx}_chirp{chirp_idx}_rx{rx_idx}.png')
+        #plt.savefig(f'{self.save_path}/beat_signal_chirp{chirp_idx}_rx{rx_idx}.png')
+        plt.close()
+
+    def _visualize_sample(self, sample_idx, tx_signal, rx_signal, rd_map, targets, detection_results):
+        """
+        Visualize radar data for a single sample.
+        
+        Args:
+            sample_idx: Sample index
+            tx_signal: Transmitted signal
+            rx_signal: Received signal
+            rd_map: Range-Doppler map
+            targets: List of ground truth targets
+            detection_results: List of detected targets
+        """
+        # Create directory for visualizations
+        os.makedirs(os.path.join(self.save_path, 'visualizations'), exist_ok=True)
+        
+        # Time vector for one chirp (in microseconds)
+        t = np.linspace(0, self.chirp_duration * 1e6, self.samples_per_chirp)
+        
+        # Figure 1: TX/RX Signal Analysis
+        fig1 = plt.figure(figsize=(12, 10))
+        plt.suptitle(f"TX/RX Signal Analysis - Sample {sample_idx}", fontsize=16)
+        
+        # TX signal time domain
+        plt.subplot(2, 2, 1)
+        plt.plot(t, np.real(tx_signal[0]), 'b-', label='Real')
+        plt.plot(t, np.imag(tx_signal[0]), 'r-', label='Imag')
+        plt.xlabel('Time (μs)')
+        plt.ylabel('Amplitude')
+        plt.title('TX Signal (Time Domain)')
+        plt.legend()
+        plt.grid(True)
+        
+        # TX signal instantaneous frequency
+        plt.subplot(2, 2, 2)
+        # Calculate instantaneous frequency by taking the derivative of the phase
+        inst_phase_tx = np.unwrap(np.angle(tx_signal[0]))
+        inst_freq_tx = np.diff(inst_phase_tx) / (2 * np.pi * (self.chirp_duration / self.samples_per_chirp))
+        # Pad with the first value to maintain array size
+        inst_freq_tx = np.concatenate(([inst_freq_tx[0]], inst_freq_tx))
+        
+        plt.plot(t, inst_freq_tx / 1e6, 'g-')  # Convert to MHz for display
+        plt.xlabel('Time (μs)')
+        plt.ylabel('Frequency (MHz)')
+        plt.title('TX FMCW Instantaneous Frequency')
+        plt.grid(True)
+        
+        # RX signal time domain (first RX antenna, first chirp)
+        plt.subplot(2, 2, 3)
+        plt.plot(t, np.real(rx_signal[0, 0]), 'b-', label='Real')
+        plt.plot(t, np.imag(rx_signal[0, 0]), 'r-', label='Imag')
+        plt.xlabel('Time (μs)')
+        plt.ylabel('Amplitude')
+        plt.title('RX Signal (Time Domain)')
+        plt.legend()
+        plt.grid(True)
+        
+        # RX signal instantaneous frequency
+        plt.subplot(2, 2, 4)
+        # Calculate instantaneous frequency by taking the derivative of the phase
+        inst_phase_rx = np.unwrap(np.angle(rx_signal[0, 0]))
+        inst_freq_rx = np.diff(inst_phase_rx) / (2 * np.pi * (self.chirp_duration / self.samples_per_chirp))
+        # Pad with the first value to maintain array size
+        inst_freq_rx = np.concatenate(([inst_freq_rx[0]], inst_freq_rx))
+        
+        plt.plot(t, inst_freq_rx / 1e6, 'g-')  # Convert to MHz for display
+        plt.xlabel('Time (μs)')
+        plt.ylabel('Frequency (MHz)')
+        plt.title('RX FMCW Instantaneous Frequency')
+        plt.grid(True)
+        
+        plt.tight_layout(rect=[0, 0, 1, 0.95])  # Adjust for suptitle
+        plt.savefig(os.path.join(self.save_path, 'visualizations', f'sample_{sample_idx}_signals.png'))
+        plt.close(fig1)
+        
+        # Figure 2: Range-Doppler Map with Ground Truth
+        fig2 = plt.figure(figsize=(12, 10))
+        plt.suptitle(f"Range-Doppler Map with Ground Truth - Sample {sample_idx}", fontsize=16)
+        
+                # 2D Range-Doppler map
+        plt.subplot(2, 1, 1)
+        rd_magnitude = np.sqrt(rd_map[0]**2 + rd_map[1]**2)
+        rd_db = 20 * np.log10(rd_magnitude + 1e-10)
+        vmin = np.max(rd_db) - 40  # Dynamic range of 40 dB
+        plt.imshow(rd_db, aspect='auto', cmap='jet', vmin=vmin)
+        plt.colorbar(label='Magnitude (dB)')
+        plt.xlabel('Range Bin')
+        plt.ylabel('Doppler Bin')
+        plt.title('Range-Doppler Map')
+        
+        # Print target information for debugging
+        print(f"\nTarget Information for Sample {sample_idx}:")
+        for i, target in enumerate(targets):
+            print(f"Target {i+1}:")
+            print(f"  Distance: {target['distance']:.2f} m")
+            print(f"  Velocity: {target['velocity']:.2f} m/s")
+            print(f"  RCS: {target['rcs']:.2f} m²")
+            
+            # Calculate range and Doppler bins
+            range_bin = int(target['distance'] / self.range_resolution)
+            doppler_bin = int(self.num_doppler_bins // 2 + target['velocity'] / self.velocity_resolution)
+            print(f"  Range Bin: {range_bin}")
+            print(f"  Doppler Bin: {doppler_bin}")
+            print(f"  In Range? {0 <= range_bin < self.num_range_bins}")
+            print(f"  In Doppler? {0 <= doppler_bin < self.num_doppler_bins}")
+            
+            # Check if target is within valid range and Doppler bins
+            if (0 <= range_bin < self.num_range_bins and 
+                0 <= doppler_bin < self.num_doppler_bins):
+                # Plot target with larger marker and different color for better visibility
+                plt.plot(range_bin, doppler_bin, 'ro', markersize=10, markeredgecolor='white')
+                
+                # Add text with target information
+                # Position text to avoid overlap and ensure visibility
+                plt.text(range_bin + 2, doppler_bin, 
+                      f"Target {i+1}\nR: {target['distance']:.1f}m\nV: {target['velocity']:.1f}m/s\nRCS: {target['rcs']:.1f}m²", 
+                      color='white', fontsize=9, backgroundcolor='black',
+                      bbox=dict(facecolor='black', alpha=0.7, edgecolor='white', boxstyle='round'))
+            else:
+                print(f"  WARNING: Target {i+1} is outside the visible range-Doppler map!")
+                
+        # Add a note if no targets are in range
+        if len(targets) == 0:
+            plt.text(self.num_range_bins//2, self.num_doppler_bins//2, 
+                  "No targets in this scene", 
+                  color='white', fontsize=12, backgroundcolor='red',
+                  ha='center', va='center')
+        
+        # 3D Range-Doppler map
+        ax = fig2.add_subplot(2, 1, 2, projection='3d')
+        X, Y = np.meshgrid(np.arange(self.num_range_bins), np.arange(self.num_doppler_bins))
+        surf = ax.plot_surface(X, Y, rd_db, cmap='jet', linewidth=0, antialiased=True)
+        ax.set_xlabel('Range Bin')
+        ax.set_ylabel('Doppler Bin')
+        ax.set_zlabel('Magnitude (dB)')
+        ax.set_title('3D Range-Doppler Map with Ground Truth')
+        
+        # Add ground truth targets to 3D plot
+        for target in targets:
+            range_bin = int(target['distance'] / self.range_resolution)
+            doppler_bin = int(self.num_doppler_bins // 2 + target['velocity'] / self.velocity_resolution)
+            
+            if (0 <= range_bin < self.num_range_bins and 
+                0 <= doppler_bin < self.num_doppler_bins):
+                # Get z-value at target location
+                z_val = rd_db[doppler_bin, range_bin]
+                ax.scatter([range_bin], [doppler_bin], [z_val], color='r', s=50, marker='o')
+        
+        plt.tight_layout(rect=[0, 0, 1, 0.95])  # Adjust for suptitle
+        plt.savefig(os.path.join(self.save_path, 'visualizations', f'sample_{sample_idx}_rd_map.png'))
+        plt.close(fig2)
+        
+        # Figure 3: CFAR Detection vs Ground Truth
+        fig3 = plt.figure(figsize=(12, 10))
+        plt.suptitle(f"CFAR Detection vs Ground Truth - Sample {sample_idx}", fontsize=16)
+        
+        # Ground truth target mask
+        plt.subplot(2, 1, 1)
+        target_mask = self._create_target_mask(targets)
+        plt.imshow(target_mask[:, :, 0], aspect='auto', cmap='gray')
+        plt.colorbar(label='Target Presence')
+        plt.xlabel('Range Bin')
+        plt.ylabel('Doppler Bin')
+        plt.title('Ground Truth Target Mask')
+        
+        # Add ground truth targets
+        for target in targets:
+            range_bin = int(target['distance'] / self.range_resolution)
+            doppler_bin = int(self.num_doppler_bins // 2 + target['velocity'] / self.velocity_resolution)
+            
+            if (0 <= range_bin < self.num_range_bins and 
+                0 <= doppler_bin < self.num_doppler_bins):
+                plt.plot(range_bin, doppler_bin, 'ro', markersize=8)
+                plt.text(range_bin + 1, doppler_bin + 1, 
+                      f"R: {target['distance']:.1f}m\nV: {target['velocity']:.1f}m/s", 
+                      color='white', fontsize=8, backgroundcolor='black')
+        
+        # CFAR detection results
+        plt.subplot(2, 1, 2)
+        cfar_map = np.zeros((self.num_doppler_bins, self.num_range_bins))
+        for target in detection_results:
+            cfar_map[target['doppler_bin'], target['range_bin']] = 1
+        plt.imshow(cfar_map, aspect='auto', cmap='gray')
+        plt.colorbar(label='Detection')
+        plt.xlabel('Range Bin')
+        plt.ylabel('Doppler Bin')
+        plt.title('CFAR Detection Results')
+        
+        # Add detected targets
+        for target in detection_results:
+            plt.plot(target['range_bin'], target['doppler_bin'], 'bo', markersize=8)
+            plt.text(target['range_bin'] + 1, target['doppler_bin'] + 1, 
+                  f"R: {target['distance']:.1f}m\nV: {target['velocity']:.1f}m/s\nSNR: {target['snr']:.1f}dB", 
+                  color='white', fontsize=8, backgroundcolor='blue')
+        
+        plt.tight_layout(rect=[0, 0, 1, 0.95])  # Adjust for suptitle
+        plt.savefig(os.path.join(self.save_path, 'visualizations', f'sample_{sample_idx}_detection.png'))
+        plt.close(fig3)
+
+    def _visualize_beat_signal2(self, tx_signal, rx_signal, beat_signal, total_samples_per_chirp, activesamples_per_chirp, total_chirp_duration, slope, c, sample_rate, bandwidth, sample_idx=0, chirp_idx=0, rx_idx=0):
+        """Visualize the beat signal for a specific chirp with improved FFT resolution and frequency accuracy."""
+        os.makedirs(os.path.join(self.save_path, 'visualizations2'), exist_ok=True)
 
         # FFT size for improved resolution
         N_fft = 8192
@@ -2057,10 +2343,10 @@ class RayTracingRadarDataset:
         # Save and clean up
         plt.tight_layout(rect=[0, 0, 1, 0.96])
         save_name = f'beat_signal_s{sample_idx}_c{chirp_idx}_rx{rx_idx}.png'
-        plt.savefig(os.path.join(self.save_path, 'visualizations', save_name))
+        plt.savefig(os.path.join(self.save_path, 'visualizations2', save_name))
         plt.close()
 
-    def _visualize_sample(self, sample_idx, 
+    def _visualize_sample2(self, sample_idx, 
                         chirp_duration,
                         samples_per_chirp,
                         tx_signal, 
@@ -2083,7 +2369,7 @@ class RayTracingRadarDataset:
             detection_results: List of detected targets
         """
         # Create directory for visualizations
-        os.makedirs(os.path.join(save_path, 'visualizations'), exist_ok=True)
+        os.makedirs(os.path.join(save_path, 'visualizations2'), exist_ok=True)
         
         # Time vector for one chirp (in microseconds)
         t = np.linspace(0, chirp_duration * 1e6, samples_per_chirp)
@@ -2155,7 +2441,7 @@ class RayTracingRadarDataset:
         plt.grid(True)
         
         plt.tight_layout(rect=[0, 0, 1, 0.95])  # Adjust for suptitle
-        plt.savefig(os.path.join(save_path, 'visualizations', f'sample_{sample_idx}_signals.png'))
+        plt.savefig(os.path.join(save_path, 'visualizations2', f'sample_{sample_idx}_signals.png'))
         plt.close(fig1)
         
 # Calculate distance and velocity axes based on whether FFT shifting was applied
@@ -2226,7 +2512,7 @@ class RayTracingRadarDataset:
                               color='green', fontsize=8, backgroundcolor='black')
         
         plt.tight_layout()
-        plt.savefig(os.path.join(self.save_path, 'visualizations', f'sample_{sample_idx}_rd_magnitude.png'))
+        plt.savefig(os.path.join(self.save_path, 'visualizations2', f'sample_{sample_idx}_rd_magnitude.png'))
         plt.close()
         
         # Figure 2: Phase information
@@ -2251,7 +2537,7 @@ class RayTracingRadarDataset:
             plt.plot(target['distance'], target['velocity'], 'ro', markersize=8, markeredgecolor='white')
         
         plt.tight_layout()
-        plt.savefig(os.path.join(self.save_path, 'visualizations', f'sample_{sample_idx}_rd_phase.png'))
+        plt.savefig(os.path.join(self.save_path, 'visualizations2', f'sample_{sample_idx}_rd_phase.png'))
         plt.close()
         
         # Figure 3: CFAR Detection vs Ground Truth
@@ -2298,7 +2584,7 @@ class RayTracingRadarDataset:
                   color='white', fontsize=8, backgroundcolor='blue')
         
         plt.tight_layout(rect=[0, 0, 1, 0.95])  # Adjust for suptitle
-        plt.savefig(os.path.join(self.save_path, 'visualizations', f'sample_{sample_idx}_detection.png'))
+        plt.savefig(os.path.join(self.save_path, 'visualizations2', f'sample_{sample_idx}_detection.png'))
         plt.close(fig3)
     
     def save_dataset(self, dataset, format='hdf5'):
