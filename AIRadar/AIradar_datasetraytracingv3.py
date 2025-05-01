@@ -325,11 +325,11 @@ class RayTracingRadarDataset:
         print(f"Generating {self.num_samples} radar samples using ray-tracing simulation...")
         
         # Calculate the actual flattened length including idle time
-        idle_time_ratio = getattr(self, 'idle_time_ratio', 0.2)  # Default to 0.2 if not defined
-        samples_per_chirp = self.samples_per_chirp
-        samples_per_idle = int(self.sample_rate * self.chirp_duration * idle_time_ratio)
-        total_samples_per_chirp = samples_per_chirp + samples_per_idle
-        flattened_length = self.num_chirps * total_samples_per_chirp
+        #idle_time_ratio = self.idle_time_ratio #getattr(self, 'idle_time_ratio', 0.2)  # Default to 0.2 if not defined
+        #samples_per_chirp = self.samples_per_chirp
+        #samples_per_idle = int(self.sample_rate * self.chirp_duration * idle_time_ratio)
+        #total_samples_per_chirp = samples_per_chirp + samples_per_idle
+        flattened_length = self.num_chirps * self.total_samples_per_chirp
         
         dataset = {
             'time_domain_data': np.zeros((self.num_samples, self.num_rx, flattened_length, 2), 
@@ -361,11 +361,14 @@ class RayTracingRadarDataset:
                 rx_signal = rx_signal.reshape(1, -1)
                 targets = []
             else:
-                self.idle_time_ratio = 0.2
                 #tx_signal = self._generate_tx_signal(return_full=True, idle_time_ratio=self.idle_time_ratio, edge_ratio=0, window_type=None) #(128, 400) complex
             #(153600,)
-                tx_signal = self._generate_tx_signal2(return_full=True) #(128, 400) complex
-            #(153600,)
+                tx_signal = self._generate_tx_signal2(num_chirps=self.num_chirps,
+                        total_samples_per_chirp=self.total_samples_per_chirp,
+                        active_samples=self.active_samples,
+                        sample_rate=self.sample_rate,
+                        slope=self.slope, return_full=True, window_type=None) #(128, 400) complex
+
                 # Extract a single chirp from the full TX signal for visualization
                 tx_chirp = tx_signal[:self.active_samples]  # Get first chirp's active samples
                 self.visualize_tx_chirp_with_window(
@@ -404,8 +407,8 @@ class RayTracingRadarDataset:
             #Beat signal with shape (4, 128, 1000) [num_rx, num_chirps, samples_per_chirp]
             if visualize: # and i == 0:  # Only for the first sample to avoid too many plots
                 self._visualize_beat_signal(
-                    self._generate_fmcw_chirp(0),  # First chirp
-                    rx_signal[0, 0],               # First RX, first chirp
+                    tx_signal, #self._generate_fmcw_chirp(0),  # First chirp
+                    rx_signal[0],               # First RX, first chirp
                     beat_signal[0, 0],             # Beat signal for first RX, first chirp
                     sample_idx=i,
                     chirp_idx=0,
@@ -1032,7 +1035,7 @@ class RayTracingRadarDataset:
         """Return the number of samples in the dataset"""
         return self.num_samples
 
-    def _generate_tx_signal2(self, tx_power=1.0, edge_ratio=0.1, window_type='edge', return_full=False):
+    def _generate_tx_signal2(self, num_chirps, total_samples_per_chirp, active_samples, sample_rate, slope, tx_power=1.0, edge_ratio=0.1, window_type='edge', return_full=False):
         """
         Generate realistic FMCW transmit signal with optional edge windowing and idle gaps.
 
@@ -1048,10 +1051,10 @@ class RayTracingRadarDataset:
             - If return_full=True: 1D waveform with all chirps concatenated
         """
         # Time and sweep rate for active portion
-        total_samples_per_chirp = int(self.total_samples_per_chirp)
-        active_samples = int(self.active_samples)
-        t_active = np.arange(active_samples) / self.sample_rate
-        sweep_rate = self.slope #self.bandwidth / self.chirp_duration
+        #total_samples_per_chirp = int(self.total_samples_per_chirp)
+        #active_samples = int(self.active_samples)
+        t_active = np.arange(active_samples) / sample_rate
+        sweep_rate = slope #self.bandwidth / self.chirp_duration
         
         # Generate base chirp (zero start phase)
         base_phase = 2 * np.pi * (0.5 * sweep_rate * t_active**2)
@@ -1097,15 +1100,15 @@ class RayTracingRadarDataset:
         # Allocate outputs
         if return_full:
             # Create a single continuous waveform with all chirps
-            tx_full = np.zeros(self.num_chirps * total_samples_per_chirp, dtype=np.complex128)
-            for i in range(self.num_chirps):
+            tx_full = np.zeros(num_chirps * total_samples_per_chirp, dtype=np.complex128)
+            for i in range(num_chirps):
                 start_idx = i * total_samples_per_chirp
                 tx_full[start_idx:start_idx + total_samples_per_chirp] = full_chirp
             return tx_full
         else:
             # Create array of individual chirps
-            tx_signal = np.zeros((self.num_chirps, total_samples_per_chirp), dtype=np.complex128)
-            for i in range(self.num_chirps):
+            tx_signal = np.zeros((num_chirps, total_samples_per_chirp), dtype=np.complex128)
+            for i in range(num_chirps):
                 tx_signal[i] = full_chirp
             return tx_signal
 
