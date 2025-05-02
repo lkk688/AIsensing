@@ -573,9 +573,9 @@ class RayTracingRadarDataset:
                 use_blackman_window=False,
                 dynamic_range_db=0          # Increase from 40dB
             )
-            #rd_map is [num_rx, 2, num_doppler_bins, num_range_bins]
+            #rd_map is [num_rx, 2(real+imaginary), num_doppler_bins, num_range_bins]
 
-            # Perform target detection using CFAR
+            # Perform target detection using CFAR for Range-Doppler map with shape [2, num_doppler_bins, num_range_bins]
             detection_results = self._cfar_detection(rd_map[0,:])#(2, 128, 256)
             
             # Visualize if requested
@@ -2003,7 +2003,7 @@ class RayTracingRadarDataset:
             List of detected targets with range and Doppler information
         """
         # Convert complex RD map to magnitude
-        rd_magnitude = rd_map[0] #np.sqrt(rd_map[0]**2 + rd_map[1]**2)
+        rd_magnitude = np.sqrt(rd_map[0]**2 + rd_map[1]**2)
         
         # Define CFAR parameters - increased guard and training cells
         guard_cells = (3, 3)  # Increased from (2, 2)
@@ -2702,7 +2702,7 @@ class RayTracingRadarDataset:
         plt.suptitle(f"Range-Doppler Map (Magnitude) - Sample {sample_idx}", fontsize=16)
 
         # Get magnitude from first channel
-        magnitude_only = rd_map[0]
+        magnitude_only = np.sqrt(rd_map[0]**2 + rd_map[1]**2) #rd_map[0]
         magnitude_db = 20 * np.log10(magnitude_only + 1e-10)
         vmin_mag = np.max(magnitude_db) - 40  # Dynamic range of 40 dB
         
@@ -2758,7 +2758,8 @@ class RayTracingRadarDataset:
         plt.suptitle(f"Range-Doppler Phase - Sample {sample_idx}", fontsize=16)
         
         # Phase information is in the second channel
-        phase_data = rd_map[1]
+        phase_data = np.arctan2(rd_map[1], rd_map[0]) #rd_map[1]
+        #The result is in radians, ranging from -π to π
         
         # Plot with physical units on axes - use same axes as magnitude plot for consistency
         plt.imshow(phase_data, aspect='auto', cmap='hsv', vmin=0, vmax=1,
