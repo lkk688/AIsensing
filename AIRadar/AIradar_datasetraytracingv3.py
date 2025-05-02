@@ -510,14 +510,25 @@ class RayTracingRadarDataset:
             # Demodulate the signal to baseband
             # Demodulate the signal to baseband, reusing the TX signal
             #only for one RX antenna
-            beat_signal = self.fmcw_demodulate_new(tx_full=tx_signal, \
-                        rx_full=rx_signal[0,:], \
-                        total_samples_per_chirp=self.total_samples_per_chirp, \
-                        beat_samples_per_chirp=self.active_samples, \
-                        num_chirps=self.num_chirps)
-            # Reshape to add RX dimension: (num_rx, num_chirps, samples_per_chirp)
-            beat_signal = np.expand_dims(beat_signal, axis=0)  # Shape becomes (1, num_chirps, samples_per_chirp)
-            self.num_rx = 1
+            # beat_signal = self.fmcw_demodulate_new(tx_full=tx_signal, \
+            #             rx_full=rx_signal[0,:], \
+            #             total_samples_per_chirp=self.total_samples_per_chirp, \
+            #             beat_samples_per_chirp=self.active_samples, \
+            #             num_chirps=self.num_chirps)
+            # # Reshape to add RX dimension: (num_rx, num_chirps, samples_per_chirp)
+            # beat_signal = np.expand_dims(beat_signal, axis=0)  # Shape becomes (1, num_chirps, samples_per_chirp)
+            # self.num_rx = 1
+            beat_signal_list = []
+            for rx_idx in range(self.num_rx):
+                beat = self.fmcw_demodulate_new(
+                    tx_full=tx_signal,
+                    rx_full=rx_signal[rx_idx, :],
+                    total_samples_per_chirp=self.total_samples_per_chirp,
+                    beat_samples_per_chirp=self.active_samples,
+                    num_chirps=self.num_chirps
+                )
+                beat_signal_list.append(beat)
+            beat_signal = np.stack(beat_signal_list, axis=0)  # Shape: (num_rx, num_chirps, samples_per_chirp)
             #beat_signal = self.fmcw_demodulate(rx_signal, tx_signal)
             #Beat signal with shape (4, 128, 1000) [num_rx, num_chirps, samples_per_chirp]
             if visualize: # and i == 0:  # Only for the first sample to avoid too many plots
@@ -549,7 +560,7 @@ class RayTracingRadarDataset:
             #(2, 128, 256)
             # Process the received signal to generate range-Doppler map
             self.apply_doppler_centering = True
-            rd_map = self._time_to_range_doppler(
+            rd_map = self._time_to_range_doppler2(
                 rx_signal=beat_signal,  # Use demodulated signal instead of raw RX,
                 num_chirps=self.num_chirps,
                 samples_per_chirp=self.total_samples_per_chirp,
@@ -1790,6 +1801,87 @@ class RayTracingRadarDataset:
         # Add noise to signal
         return signal + noise
     
+    def _time_to_range_doppler2(self, rx_signal,
+                          num_chirps,
+                          samples_per_chirp,
+                          num_doppler_bins,
+                          num_range_bins,
+                          apply_mti=False,  # Default to False for simple case
+                          apply_doppler_centering=True,  # Default to True to match line 338-345
+                          apply_notch_filter=False,  # Default to False for simple case
+                          notch_width=5,  # Parameter for notch filter
+                          use_blackman_window=False,  # Default to False for simple case
+                          dynamic_range_db=50):  # Keep dynamic range parameter
+        """
+        Convert time domain signal to range-Doppler map.
+        
+        Args:
+            rx_signal: Received signal with shape either:
+                      - [num_rx, num_chirps, samples_per_chirp] (standard format)
+                      - [num_rx, num_chirps * samples_per_chirp] (flattened format)
+            apply_mti: Whether to apply Moving Target Indication filtering
+            apply_doppler_centering: Whether to center the Doppler FFT
+            apply_notch_filter: Whether to apply a notch filter to suppress zero-Doppler
+            notch_width: Width of the notch filter in bins
+            use_blackman_window: Whether to use Blackman window instead of Hamming
+            dynamic_range_db: Dynamic range in dB for normalization
+            
+        Returns:
+            Range-Doppler map with shape [num_rx, 2, num_doppler_bins, num_range_bins]
+        """
+        # Check if input is flattened format and reshape if needed
+        if rx_signal.ndim == 2 and rx_signal.shape[1] == num_chirps * samples_per_chirp:
+            # Reshape from [num_rx, num_chirps * samples_per_chirp] to [num_rx, num_chirps, samples_per_chirp]
+            rx_signal = rx_signal.reshape(rx_signal.shape[0], num_chirps, samples_per_chirp)
+        
+        num_rx = rx_signal.shape[0]
+        rd_map = np.zeros((num_rx, 2, num_doppler_bins, num_range_bins), dtype=np.float32)
+        
+        for rx in range(num_rx):
+            processed_signal = rx_signal[rx]
+            
+            # Apply MTI filtering if requested (subtract consecutive chirps)
+            if apply_mti:
+                mti_signal = np.zeros_like(processed_signal)
+                mti_signal[1:] = processed_signal[1:] - processed_signal[:-1]
+                processed_signal = mti_signal
+            
+            # Apply windowing to each chirp if requested
+            if use_blackman_window:
+                range_window = np.blackman(samples_per_chirp)
+                range_window /= np.sum(range_window)  # Normalize window
+                doppler_window = np.blackman(num_chirps)
+                doppler_window /= np.sum(doppler_window)  # Normalize window
+                
+                # Apply windowing to each chirp (along fast-time/samples dimension)
+                processed_signal = processed_signal * range_window[np.newaxis, :]
+                
+                # Apply range FFT
+                range_fft = np.fft.fft(processed_signal, n=num_range_bins, axis=1)
+                
+                # Apply windowing to each range bin (along slow-time/chirps dimension)
+                range_fft = range_fft * doppler_window[:, np.newaxis]
+            else:
+                # Simple range FFT without windowing
+                range_fft = np.fft.fft(processed_signal, n=num_range_bins, axis=1)
+            
+            # Apply range FFT shifting if requested
+            if apply_doppler_centering:
+                range_fft = np.fft.fftshift(range_fft, axes=1)
+            
+            # Apply Doppler FFT
+            doppler_fft = np.fft.fft(range_fft, n=num_doppler_bins, axis=0)
+            
+            # Apply Doppler FFT shifting if requested
+            if apply_doppler_centering:
+                doppler_fft = np.fft.fftshift(doppler_fft, axes=0)
+            
+            # Store real and imaginary parts
+            rd_map[rx, 0, :, :] = np.real(doppler_fft)
+            rd_map[rx, 1, :, :] = np.imag(doppler_fft)
+        
+        return rd_map
+
     def _time_to_range_doppler(self, rx_signal,
                           num_chirps,
                           samples_per_chirp,
