@@ -76,7 +76,7 @@ class RayTracingRadarDataset:
         # Configure and validate radar parameters
         #self.range_resolution
         self.max_range = 300
-        self._configure_radar_parameters2()
+        self._configure_radar_parameters3()
         
         # Create directory for saving data
         os.makedirs(self.save_path, exist_ok=True)
@@ -197,6 +197,140 @@ class RayTracingRadarDataset:
             self.total_chirp_duration = self.chirp_duration
             self.total_samples_per_chirp = self.samples_per_chirp
             self.active_samples = self.samples_per_chirp
+
+    def _configure_radar_parameters3(self):
+        """
+        Configure and validate radar parameters for FMCW radar based on specified performance targets.
+        Prevent frequency sweep overflow/wraparound by iteratively optimizing parameters.
+        """
+        # --- Fixed parameters from requirements ---
+        self.max_range = 300.0
+        self.max_velocity = 50.0
+        self.center_freq = 10e9
+        self.num_chirps = 128
+        self.num_rx = 4
+        self.num_tx = 2
+
+        # --- Constants ---
+        c = self.speed_of_light = 3e8
+        f0 = self.center_freq
+        λ = self.wavelength = c / f0
+        max_bandwidth = 500e6
+        max_sample_rate = 100e6
+        max_rf_slope = 80e12
+        rf_min_freq = 9.5e9
+        rf_max_freq = 10.5e9
+
+        # --- Initial parameter guesses ---
+        target_range_res = 1.0
+        min_chirp_duration = λ / (4 * self.max_velocity)
+        self.chirp_duration = min_chirp_duration * 1.5
+        self.bandwidth = 500e6 #min(c / (2 * target_range_res), max_bandwidth)
+
+        # --- Iterative adjustment loop ---
+                # --- Robust iterative adjustment loop ---
+        for _ in range(20):
+            self.slope = self.bandwidth / self.chirp_duration
+            f_beat_max = (2 * self.max_range * self.bandwidth) / (c * self.chirp_duration)
+            required_sample_rate = 2.5 * f_beat_max
+            self.sample_rate = np.ceil(required_sample_rate / 1e6) * 1e6
+            nyquist_freq = self.sample_rate / 2
+
+            # 1. Sample rate constraint
+            if self.sample_rate > max_sample_rate:
+                self.sample_rate = max_sample_rate
+                self.bandwidth = (self.sample_rate * c * self.chirp_duration) / (2.5 * 2 * self.max_range)
+                self.bandwidth = min(self.bandwidth, max_bandwidth)
+                continue
+
+            # 2. Slope hardware constraint
+            if self.slope > max_rf_slope:
+                self.bandwidth = max_rf_slope * self.chirp_duration
+                self.slope = max_rf_slope
+                continue
+
+            # 3. Slope*duration must not exceed bandwidth
+            sweepband = self.slope * self.chirp_duration
+            print(f"sweepband: {sweepband/1e6:.2f} MHz")
+            print(f"bandwidth: {self.bandwidth/1e6:.2f} MHz")
+
+            if sweepband > self.bandwidth + 1e-6:
+                self.slope = self.bandwidth / self.chirp_duration
+                continue
+
+            # 4. RF sweep band constraint
+            f_start = f0 - self.bandwidth / 2
+            f_end = f0 + self.bandwidth / 2
+            if f_start < rf_min_freq or f_end > rf_max_freq:
+                max_allowed_bandwidth = min(f0 - rf_min_freq, rf_max_freq - f0) * 2
+                self.bandwidth = min(self.bandwidth, max_allowed_bandwidth)
+                continue
+
+            # 5. Final wraparound check
+            if f_beat_max > nyquist_freq:
+                # Increase chirp duration to reduce beat frequency
+                self.chirp_duration *= 1.1
+                continue
+
+            # All constraints satisfied
+            break
+
+        # --- Calculate samples per chirp ---
+        self.samples_per_chirp = int(self.sample_rate * self.chirp_duration)
+
+        # --- Calculate derived parameters ---
+        self.range_resolution = c / (2 * self.bandwidth)
+        self.velocity_resolution = λ / (2 * self.num_chirps * self.chirp_duration)
+        self.max_unambiguous_velocity = λ / (4 * self.chirp_duration)
+        self.min_range = self.range_resolution
+
+        # --- Check if max velocity is achievable ---
+        if self.max_unambiguous_velocity < self.max_velocity:
+            print(f"⚠️ Warning: Maximum unambiguous velocity {self.max_unambiguous_velocity:.2f} m/s is less than target {self.max_velocity:.2f} m/s")
+
+        # --- FFT sizes ---
+        self.range_fft_size = 2 ** int(np.ceil(np.log2(self.samples_per_chirp)))
+        self.doppler_fft_size = 2 ** int(np.ceil(np.log2(self.num_chirps)))
+
+        # --- Chirp repetition timing ---
+        self.pulse_repetition_interval = self.chirp_duration
+        self.pulse_repetition_frequency = 1 / self.chirp_duration
+        self.chirp_repetition_interval = self.chirp_duration
+
+        # --- TX signal idle time configuration (optional) ---
+        self.idle_time_ratio = 0
+        if self.idle_time_ratio > 0:
+            self.idle_time = self.chirp_duration * self.idle_time_ratio
+            self.total_chirp_duration = self.chirp_duration + self.idle_time
+            self.chirp_repetition_interval = self.total_chirp_duration
+            self.total_samples_per_chirp = int(self.sample_rate * self.total_chirp_duration)
+            self.active_samples = int(self.samples_per_chirp * (1 - self.idle_time_ratio))
+        else:
+            self.total_chirp_duration = self.chirp_duration
+            self.total_samples_per_chirp = self.samples_per_chirp
+            self.active_samples = self.samples_per_chirp
+
+        # --- Final diagnostics ---
+        print("\n=== Radar Performance Parameters ===")
+        print(f"✅ Maximum Range       : {self.max_range:.2f} m")
+        print(f"✅ Range Resolution    : {self.range_resolution:.2f} m")
+        print(f"✅ Maximum Velocity    : {self.max_velocity:.2f} m/s (Target)")
+        print(f"✅ Max Unambig. Velocity: {self.max_unambiguous_velocity:.2f} m/s (Actual)")
+        print(f"✅ Velocity Resolution : {self.velocity_resolution:.2f} m/s")
+        print(f"✅ Center Frequency    : {self.center_freq/1e9:.2f} GHz")
+        print(f"✅ Bandwidth           : {self.bandwidth/1e6:.2f} MHz")
+        print(f"✅ Sample Rate         : {self.sample_rate/1e6:.1f} MHz")
+        print(f"✅ Chirp Duration      : {self.chirp_duration*1e6:.2f} μs")
+        print(f"✅ FMCW Slope          : {self.slope/1e12:.2f} THz/s")
+        print(f"✅ Actual Sweep        : {(self.slope * self.chirp_duration)/1e6:.2f} MHz")
+        print(f"✅ RF Sweep Band       : {f_start/1e9:.2f}–{f_end/1e9:.2f} GHz")
+        print(f"✅ Samples per Chirp   : {self.samples_per_chirp}")
+        print(f"✅ Number of Chirps    : {self.num_chirps}")
+        print(f"✅ Number of RX Antennas: {self.num_rx}")
+        print(f"✅ Number of TX Antennas: {self.num_tx}")
+        print(f"✅ Beat Frequency Max  : {f_beat_max/1e6:.2f} MHz (Nyquist: {nyquist_freq/1e6:.2f} MHz)")
+        print(f"✅ Frequency Wraparound: {'No' if f_beat_max <= nyquist_freq else 'Yes'}")
+        print("=====================================\n")
 
     def _configure_radar_parameters2(self):
         """
@@ -388,8 +522,8 @@ class RayTracingRadarDataset:
             #Beat signal with shape (4, 128, 1000) [num_rx, num_chirps, samples_per_chirp]
             if visualize: # and i == 0:  # Only for the first sample to avoid too many plots
                 self._visualize_beat_signal(
-                    tx_signal, #self._generate_fmcw_chirp(0),  # First chirp
-                    rx_signal[0],               # First RX, first chirp
+                    tx_chirp, #self._generate_fmcw_chirp(0),  # First chirp
+                    rx_signal[0,:self.active_samples],               # First RX, first chirp
                     beat_signal[0, 0],             # Beat signal for first RX, first chirp
                     sample_idx=i,
                     chirp_idx=0,
@@ -434,7 +568,7 @@ class RayTracingRadarDataset:
             
             # Visualize if requested
             if visualize: # and (i % 10 == 0 or i == self.num_samples - 1):
-                self._visualize_sample(i, tx_signal, rx_signal, rd_map, targets, detection_results)
+                self._visualize_sample(i, tx_chirp, rx_signal[0,:self.active_samples], rd_map, targets, detection_results)
         
                 self._visualize_sample2(i, self.chirp_duration,
                         self.total_samples_per_chirp, tx_signal, rx_signal, rd_map, targets, detection_results, save_path=self.save_path)
@@ -1018,11 +1152,16 @@ class RayTracingRadarDataset:
 
     def _generate_tx_signal2(self, num_chirps, total_samples_per_chirp, active_samples, sample_rate, slope, tx_power=1.0, edge_ratio=0.1, window_type='edge', return_full=False):
         """
-        Generate realistic FMCW transmit signal with optional edge windowing and idle gaps.
+        Generate phase-continuous FMCW chirp signal with proper Doppler handling,
+        optional edge windowing and idle gaps.
 
         Args:
+            num_chirps: Number of chirps to generate
+            total_samples_per_chirp: Total samples per chirp including idle time
+            active_samples: Number of active samples in each chirp
+            sample_rate: Sampling rate in Hz
+            slope: Chirp slope in Hz/s
             tx_power: Transmission power scale (float)
-            idle_time_ratio: Idle time relative to chirp duration (0–1)
             edge_ratio: Proportion of chirp to taper at each edge (0–0.5)
             window_type: Windowing function ('edge', 'hann', 'hamming', or None)
             return_full: If True, return full TX signal; else per-chirp array
@@ -1031,18 +1170,24 @@ class RayTracingRadarDataset:
             - If return_full=False: [num_chirps, samples_per_chirp] complex array
             - If return_full=True: 1D waveform with all chirps concatenated
         """
-        # Time and sweep rate for active portion
-        #total_samples_per_chirp = int(self.total_samples_per_chirp)
-        #active_samples = int(self.active_samples)
-        t_active = np.arange(active_samples) / sample_rate
-        sweep_rate = slope #self.bandwidth / self.chirp_duration
+        # Create continuous time vector for entire frame
+        t_frame = np.arange(num_chirps * total_samples_per_chirp) / sample_rate
         
-        # Generate base chirp (zero start phase)
-        base_phase = 2 * np.pi * (0.5 * sweep_rate * t_active**2)
-        active_chirp = np.exp(1j * base_phase)
+        # Calculate chirp duration from active samples
+        chirp_duration = active_samples / sample_rate
         
-        # Apply windowing to active portion
+        # Generate phase-continuous signal
+        phase = 2 * np.pi * (
+            0.5 * slope * (t_frame % chirp_duration)**2 +  # Chirp phase
+            slope * chirp_duration * (t_frame // chirp_duration) * (t_frame % chirp_duration)  # Phase accumulation
+        )
+        
+        # Create continuous signal
+        continuous_signal = np.exp(1j * phase)
+        
+        # Apply windowing to active portion of each chirp
         if window_type:
+            # Create window function
             if window_type == 'hann':
                 window = np.hanning(active_samples)
             elif window_type == 'hamming':
@@ -1067,31 +1212,39 @@ class RayTracingRadarDataset:
                     window = np.concatenate([rise, flat, fall])
             else:  # No windowing
                 window = np.ones(active_samples)
-                
-            active_chirp *= window  # Apply window to amplitude
-        
-        # Create full chirp with idle time
-        full_chirp = np.zeros(total_samples_per_chirp, dtype=np.complex128)
-        full_chirp[:active_samples] = active_chirp
-        
-        # Power scaling
-        scale = np.sqrt(tx_power)
-        full_chirp *= scale
-        
-        # Allocate outputs
-        if return_full:
-            # Create a single continuous waveform with all chirps
-            tx_full = np.zeros(num_chirps * total_samples_per_chirp, dtype=np.complex128)
+            
+            # Apply window to each chirp's active portion
             for i in range(num_chirps):
                 start_idx = i * total_samples_per_chirp
-                tx_full[start_idx:start_idx + total_samples_per_chirp] = full_chirp
-            return tx_full
+                continuous_signal[start_idx:start_idx + active_samples] *= window
+        
+        # Apply power scaling
+        scale = np.sqrt(tx_power)
+        continuous_signal *= scale
+        
+        # Create zero padding for idle time in each chirp
+        if total_samples_per_chirp > active_samples:
+            # Create output with proper shape including idle time
+            if return_full:
+                # Single continuous waveform
+                tx_full = np.zeros(num_chirps * total_samples_per_chirp, dtype=np.complex128)
+                for i in range(num_chirps):
+                    start_idx = i * total_samples_per_chirp
+                    tx_full[start_idx:start_idx + active_samples] = continuous_signal[i * total_samples_per_chirp:i * total_samples_per_chirp + active_samples]
+                return tx_full
+            else:
+                # Array of individual chirps
+                tx_signal = np.zeros((num_chirps, total_samples_per_chirp), dtype=np.complex128)
+                for i in range(num_chirps):
+                    start_idx = i * total_samples_per_chirp
+                    tx_signal[i, :active_samples] = continuous_signal[start_idx:start_idx + active_samples]
+                return tx_signal
         else:
-            # Create array of individual chirps
-            tx_signal = np.zeros((num_chirps, total_samples_per_chirp), dtype=np.complex128)
-            for i in range(num_chirps):
-                tx_signal[i] = full_chirp
-            return tx_signal
+            # No idle time case
+            if return_full:
+                return continuous_signal
+            else:
+                return continuous_signal.reshape(num_chirps, total_samples_per_chirp)
 
     def _generate_tx_signal(self, tx_power=1.0, idle_time_ratio=0.2, edge_ratio=0.1, window_type='edge', return_full=False):
         """
@@ -1190,7 +1343,7 @@ class RayTracingRadarDataset:
             bandwidth: Sweep bandwidth (Hz).
             slope: Chirp slope (Hz/s).
             center_freq: RF carrier frequency (Hz), e.g., 77e9.
-            edge_ratio: Proportion of chirp to taper on each edge.
+            edge_ratio: Proportion of chirp to taper at each edge.
             min_edge_len: Minimum number of samples in each taper.
             window_type: 'edge', 'hann', 'hamming', or None.
             noise_level: Small noise level to add for numerical stability (default: 1e-6)
@@ -1202,7 +1355,7 @@ class RayTracingRadarDataset:
         slope = slope or self.slope
         
         # Create directory for visualizations if it doesn't exist
-        os.makedirs(os.path.join(self.save_path, 'visualizations2'), exist_ok=True)
+        os.makedirs(os.path.join(self.save_path, 'visualizations'), exist_ok=True)
 
         # Signal setup
         samples = active_samples
@@ -1250,13 +1403,17 @@ class RayTracingRadarDataset:
         # Apply window
         tx_chirp_windowed = tx_chirp_unwindowed * window
 
-        # FFT parameters
+        # FFT parameters - use baseband spectrum (subtract center frequency)
         N_fft = 8192
-        freqs = np.fft.fftshift(np.fft.fftfreq(N_fft, d=1 / sample_rate)) + center_freq
-        freqs = freqs / 1e9  # Convert to GHz
-
-        fft_unwindowed = np.fft.fftshift(np.fft.fft(tx_chirp_unwindowed, n=N_fft))
-        fft_windowed = np.fft.fftshift(np.fft.fft(tx_chirp_windowed, n=N_fft))
+        freqs = np.fft.fftshift(np.fft.fftfreq(N_fft, d=1 / sample_rate))
+        
+        # Apply Blackman window for better spectral estimation
+        fft_window = np.blackman(len(tx_chirp_unwindowed))
+        tx_for_fft = tx_chirp_unwindowed * fft_window
+        tx_windowed_for_fft = tx_chirp_windowed * fft_window
+        
+        fft_unwindowed = np.fft.fftshift(np.fft.fft(tx_for_fft, n=N_fft))
+        fft_windowed = np.fft.fftshift(np.fft.fft(tx_windowed_for_fft, n=N_fft))
 
         # Plotting
         fig, axs = plt.subplots(3, 2, figsize=(14, 10))
@@ -1287,10 +1444,13 @@ class RayTracingRadarDataset:
         axs[2, 0].legend()
         axs[2, 0].grid()
 
+        # Convert to MHz for display
+        freqs_mhz = freqs / 1e6
+        
         # Spectrum unwindowed
-        axs[0, 1].plot(freqs, 20 * np.log10(np.abs(fft_unwindowed) + 1e-10))
-        axs[0, 1].set_title("Original TX Chirp Spectrum")
-        axs[0, 1].set_xlabel("Frequency (GHz)")
+        axs[0, 1].plot(freqs_mhz, 20 * np.log10(np.abs(fft_unwindowed) + 1e-10))
+        axs[0, 1].set_title("Original TX Chirp Spectrum (Baseband)")
+        axs[0, 1].set_xlabel("Frequency (MHz)")
         axs[0, 1].set_ylabel("Magnitude (dB)")
         axs[0, 1].grid()
         
@@ -1299,16 +1459,17 @@ class RayTracingRadarDataset:
         y_max = np.max(20 * np.log10(np.abs(fft_unwindowed) + 1e-10)) + 10
         axs[0, 1].set_ylim([y_min, y_max])
         
-        # Zoom x-axis to focus on the bandwidth region with some margin
-        f_start = center_freq - bandwidth / 2
-        f_end = center_freq + bandwidth / 2
-        margin = bandwidth * 0.5  # 50% margin on each side
-        axs[0, 1].set_xlim([(f_start - margin) / 1e9, (f_end + margin) / 1e9])
+        # Zoom in on the bandwidth region with some margin
+        bandwidth_mhz = bandwidth / 1e6
+        f_start = -bandwidth_mhz / 2
+        f_end = bandwidth_mhz / 2
+        margin = bandwidth_mhz * 0.5  # 50% margin on each side
+        axs[0, 1].set_xlim([f_start - margin, f_end + margin])
 
         # Spectrum windowed
-        axs[2, 1].plot(freqs, 20 * np.log10(np.abs(fft_windowed) + 1e-10))
-        axs[2, 1].set_title("Windowed TX Chirp Spectrum")
-        axs[2, 1].set_xlabel("Frequency (GHz)")
+        axs[2, 1].plot(freqs_mhz, 20 * np.log10(np.abs(fft_windowed) + 1e-10))
+        axs[2, 1].set_title("Windowed TX Chirp Spectrum (Baseband)")
+        axs[2, 1].set_xlabel("Frequency (MHz)")
         axs[2, 1].set_ylabel("Magnitude (dB)")
         axs[2, 1].grid()
         
@@ -1318,24 +1479,24 @@ class RayTracingRadarDataset:
         axs[2, 1].set_ylim([y_min_w, y_max_w])
         
         # Apply same x-axis zoom
-        axs[2, 1].set_xlim([(f_start - margin) / 1e9, (f_end + margin) / 1e9])
+        axs[2, 1].set_xlim([f_start - margin, f_end + margin])
 
         # Highlight chirp bandwidth with more visible lines and shaded region
         for ax in [axs[0, 1], axs[2, 1]]:
             # Add vertical lines for bandwidth boundaries
-            ax.axvline(f_start / 1e9, color='red', linestyle='--', linewidth=1.5, 
-                    label=f'Start: {f_start/1e9:.2f} GHz')
-            ax.axvline(f_end / 1e9, color='green', linestyle='--', linewidth=1.5,
-                    label=f'End: {f_end/1e9:.2f} GHz')
+            ax.axvline(f_start, color='red', linestyle='--', linewidth=1.5, 
+                    label=f'Start: {f_start:.2f} MHz')
+            ax.axvline(f_end, color='green', linestyle='--', linewidth=1.5,
+                    label=f'End: {f_end:.2f} MHz')
             
             # Add shaded region to highlight bandwidth
-            ax.axvspan(f_start / 1e9, f_end / 1e9, alpha=0.2, color='yellow')
+            ax.axvspan(f_start, f_end, alpha=0.2, color='yellow')
             
             # Add legend
             ax.legend(loc='upper right', fontsize='small')
             
             # Add text annotation for bandwidth
-            ax.text(center_freq / 1e9, y_min + (y_max - y_min) * 0.1, 
+            ax.text(0, y_min + (y_max - y_min) * 0.1, 
                 f'BW: {bandwidth/1e6:.1f} MHz', 
                 bbox=dict(facecolor='white', alpha=0.7),
                 horizontalalignment='center')
@@ -1344,7 +1505,7 @@ class RayTracingRadarDataset:
         axs[1, 1].axis('off')
 
         plt.tight_layout(rect=[0, 0, 1, 0.95])
-        out_path = os.path.join(self.save_path, "visualizations2", "tx_chirp_window_visualization_rf.png")
+        out_path = os.path.join(self.save_path, "visualizations", "tx_chirp_window_visualization_rf.png")
         plt.savefig(out_path)
         plt.close()
         print(f"Saved TX chirp visualization to: {out_path}")
@@ -1749,7 +1910,7 @@ class RayTracingRadarDataset:
             List of detected targets with range and Doppler information
         """
         # Convert complex RD map to magnitude
-        rd_magnitude = np.sqrt(rd_map[0]**2 + rd_map[1]**2)
+        rd_magnitude = rd_map[0] #np.sqrt(rd_map[0]**2 + rd_map[1]**2)
         
         # Define CFAR parameters - increased guard and training cells
         guard_cells = (3, 3)  # Increased from (2, 2)
@@ -1927,8 +2088,8 @@ class RayTracingRadarDataset:
         
         Args:
             sample_idx: Sample index
-            tx_signal: Transmitted signal
-            rx_signal: Received signal
+            tx_signal: Transmitted signal for one chirp
+            rx_signal: Received signal for one chirp
             rd_map: Range-Doppler map
             targets: List of ground truth targets
             detection_results: List of detected targets
@@ -1945,8 +2106,8 @@ class RayTracingRadarDataset:
         
         # TX signal time domain
         plt.subplot(2, 2, 1)
-        plt.plot(t, np.real(tx_signal[0]), 'b-', label='Real')
-        plt.plot(t, np.imag(tx_signal[0]), 'r-', label='Imag')
+        plt.plot(t, np.real(tx_signal), 'b-', label='Real')
+        plt.plot(t, np.imag(tx_signal), 'r-', label='Imag')
         plt.xlabel('Time (μs)')
         plt.ylabel('Amplitude')
         plt.title('TX Signal (Time Domain)')
@@ -1956,7 +2117,7 @@ class RayTracingRadarDataset:
         # TX signal instantaneous frequency
         plt.subplot(2, 2, 2)
         # Calculate instantaneous frequency by taking the derivative of the phase
-        inst_phase_tx = np.unwrap(np.angle(tx_signal[0]))
+        inst_phase_tx = np.unwrap(np.angle(tx_signal))
         inst_freq_tx = np.diff(inst_phase_tx) / (2 * np.pi * (self.chirp_duration / self.samples_per_chirp))
         # Pad with the first value to maintain array size
         inst_freq_tx = np.concatenate(([inst_freq_tx[0]], inst_freq_tx))
@@ -1969,8 +2130,8 @@ class RayTracingRadarDataset:
         
         # RX signal time domain (first RX antenna, first chirp)
         plt.subplot(2, 2, 3)
-        plt.plot(t, np.real(rx_signal[0, 0]), 'b-', label='Real')
-        plt.plot(t, np.imag(rx_signal[0, 0]), 'r-', label='Imag')
+        plt.plot(t, np.real(rx_signal), 'b-', label='Real')
+        plt.plot(t, np.imag(rx_signal), 'r-', label='Imag')
         plt.xlabel('Time (μs)')
         plt.ylabel('Amplitude')
         plt.title('RX Signal (Time Domain)')
@@ -1980,7 +2141,7 @@ class RayTracingRadarDataset:
         # RX signal instantaneous frequency
         plt.subplot(2, 2, 4)
         # Calculate instantaneous frequency by taking the derivative of the phase
-        inst_phase_rx = np.unwrap(np.angle(rx_signal[0, 0]))
+        inst_phase_rx = np.unwrap(np.angle(rx_signal))
         inst_freq_rx = np.diff(inst_phase_rx) / (2 * np.pi * (self.chirp_duration / self.samples_per_chirp))
         # Pad with the first value to maintain array size
         inst_freq_rx = np.concatenate(([inst_freq_rx[0]], inst_freq_rx))
