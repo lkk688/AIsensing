@@ -10,6 +10,7 @@ from matplotlib import cm
 import time
 import scipy.signal
 #from scipy.signal import blackmanharris
+from datautil import *
 
 class RayTracingRadarDataset:
     """
@@ -540,21 +541,21 @@ class RayTracingRadarDataset:
                     chirp_idx=0,
                     rx_idx=0
                 )
-                self._visualize_beat_signal2(
-                    tx_signal=tx_signal,  # Pass complete signals
-                    rx_signal=rx_signal,               # Complete RX signal
-                    beat_signal=beat_signal[0,:],             # Complete beat signal
-                    total_samples_per_chirp=self.total_samples_per_chirp,
-                    activesamples_per_chirp=self.active_samples,
-                    total_chirp_duration=self.total_chirp_duration,
-                    slope=self.slope,
-                    c=self.speed_of_light,
-                    sample_rate=self.sample_rate,
-                    bandwidth=self.bandwidth,
-                    sample_idx=i,
-                    chirp_idx=0,
-                    rx_idx=0
-                )
+                # self._visualize_beat_signal2(
+                #     tx_signal=tx_signal,  # Pass complete signals
+                #     rx_signal=rx_signal[0,:],               # Complete RX signal
+                #     beat_signal=beat_signal[0,:],             # Complete beat signal
+                #     total_samples_per_chirp=self.total_samples_per_chirp,
+                #     activesamples_per_chirp=self.active_samples,
+                #     total_chirp_duration=self.total_chirp_duration,
+                #     slope=self.slope,
+                #     c=self.speed_of_light,
+                #     sample_rate=self.sample_rate,
+                #     bandwidth=self.bandwidth,
+                #     sample_idx=i,
+                #     chirp_idx=0,
+                #     rx_idx=0
+                # )
             # Process the received signal to generate range-Doppler map
             #rd_map = self._time_to_range_doppler(rx_signal) #(4, 128, 400) complex
             #(2, 128, 256)
@@ -2401,7 +2402,7 @@ class RayTracingRadarDataset:
             rx_chirp = rx_signal[rx_idx, chirp_idx] if rx_idx < rx_signal.shape[0] and chirp_idx < rx_signal.shape[1] else np.zeros(activesamples_per_chirp, dtype=complex)
 
         # Beat signal
-        beat_chirp = beat_signal[rx_idx, chirp_idx] if rx_idx < beat_signal.shape[0] and chirp_idx < beat_signal.shape[1] else np.zeros(activesamples_per_chirp, dtype=complex)
+        #beat_chirp = beat_signal[rx_idx, chirp_idx] if rx_idx < beat_signal.shape[0] and chirp_idx < beat_signal.shape[1] else np.zeros(activesamples_per_chirp, dtype=complex)
 
         # Add small noise for numerical stability in spectrum calculation
         noise_level = 1e-6
@@ -2760,7 +2761,7 @@ class RayTracingRadarDataset:
         # Phase information is in the second channel
         phase_data = np.arctan2(rd_map[1], rd_map[0]) #rd_map[1]
         #The result is in radians, ranging from -π to π
-        
+
         # Plot with physical units on axes - use same axes as magnitude plot for consistency
         plt.imshow(phase_data, aspect='auto', cmap='hsv', vmin=0, vmax=1,
                   extent=[distance_axis[0], distance_axis[-1], velocity_axis[0], velocity_axis[-1]])
