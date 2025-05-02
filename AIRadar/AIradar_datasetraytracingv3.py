@@ -543,7 +543,7 @@ class RayTracingRadarDataset:
                 self._visualize_beat_signal2(
                     tx_signal=tx_signal,  # Pass complete signals
                     rx_signal=rx_signal,               # Complete RX signal
-                    beat_signal=beat_signal,             # Complete beat signal
+                    beat_signal=beat_signal[0,:],             # Complete beat signal
                     total_samples_per_chirp=self.total_samples_per_chirp,
                     activesamples_per_chirp=self.active_samples,
                     total_chirp_duration=self.total_chirp_duration,
@@ -561,7 +561,7 @@ class RayTracingRadarDataset:
             # Process the received signal to generate range-Doppler map
             self.apply_doppler_centering = True
             rd_map = self._time_to_range_doppler2(
-                rx_signal=beat_signal,  # Use demodulated signal instead of raw RX,
+                rx_signal=beat_signal[0,:],  # Use demodulated signal instead of raw RX,
                 num_chirps=self.num_chirps,
                 samples_per_chirp=self.total_samples_per_chirp,
                 num_doppler_bins=self.num_doppler_bins,
@@ -573,9 +573,10 @@ class RayTracingRadarDataset:
                 use_blackman_window=False,
                 dynamic_range_db=0          # Increase from 40dB
             )
+            #rd_map is [num_rx, 2, num_doppler_bins, num_range_bins]
 
             # Perform target detection using CFAR
-            detection_results = self._cfar_detection(rd_map)#(2, 128, 256)
+            detection_results = self._cfar_detection(rd_map[0,:])#(2, 128, 256)
             
             # Visualize if requested
             if visualize: # and (i % 10 == 0 or i == self.num_samples - 1):
