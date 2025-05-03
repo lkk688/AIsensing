@@ -2,8 +2,32 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 
-import numpy as np
-import numpy as np
+
+def upconvert_signal(signal, center_freq, sample_rate):
+    """
+    Upconvert a baseband signal to the specified center frequency.
+    """
+    n = np.arange(len(signal))
+    t = n / sample_rate
+    return signal * np.exp(1j * 2 * np.pi * center_freq * t)
+
+def downconvert_signal(signal, center_freq, sample_rate):
+    """
+    Downconvert an RF signal to baseband.
+    """
+    # signal shape: (num_rx, num_samples) or (num_samples,)
+    if signal.ndim == 1:
+        n = np.arange(len(signal))
+        t = n / sample_rate
+        carrier = np.exp(-1j * 2 * np.pi * center_freq * t)
+        return signal * carrier
+    elif signal.ndim == 2:
+        n = np.arange(signal.shape[1])
+        t = n / sample_rate
+        carrier = np.exp(-1j * 2 * np.pi * center_freq * t)[None, :]  # shape (1, N)
+        return signal * carrier  # broadcasts over first axis
+    else:
+        raise ValueError("Signal must be 1D or 2D array")
 
 def calculate_radar_parameters(
     sample_rate,
@@ -202,13 +226,13 @@ def plot_range_doppler_map_with_ground_truth(
                 color='white', fontsize=9, backgroundcolor='black',
                 bbox=dict(facecolor='black', alpha=0.7, edgecolor='white', boxstyle='round')
             )
-    if len(targets) == 0:
-        plt.text(
-            num_range_bins//2, num_doppler_bins//2,
-            "No targets in this scene",
-            color='white', fontsize=12, backgroundcolor='red',
-            ha='center', va='center'
-        )
+    # if len(targets) == 0:
+    #     plt.text(
+    #         num_range_bins//2, num_doppler_bins//2,
+    #         "No targets in this scene",
+    #         color='white', fontsize=12, backgroundcolor='red',
+    #         ha='center', va='center'
+    #     )
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     if save_path is not None:
         plt.savefig(save_path)
@@ -222,12 +246,12 @@ def plot_range_doppler_map_with_ground_truth(
 def plot_3d_range_doppler_map_with_ground_truth(
     rd_map,
     targets,
-    sample_idx,
     range_resolution,
     velocity_resolution,
     num_range_bins,
     num_doppler_bins,
-    save_path
+    title_prefix='',
+    save_path=None
 ):
     """
     Plot a 3D Range-Doppler map with ground truth target annotations.
@@ -259,9 +283,14 @@ def plot_3d_range_doppler_map_with_ground_truth(
             z_val = rd_db[doppler_bin, range_bin]
             ax.scatter([range_bin], [doppler_bin], [z_val], color='r', s=50, marker='o')
     plt.tight_layout(rect=[0, 0, 1, 0.95])
-    os.makedirs(save_path, exist_ok=True)
-    plt.savefig(os.path.join(save_path, f'sample_{sample_idx}_rd_map_3d.png'))
-    plt.close(fig)
+    # os.makedirs(save_path, exist_ok=True)
+    # plt.savefig(os.path.join(save_path, f'sample_{sample_idx}_rd_map_3d.png'))
+    # plt.close(fig)
+    if save_path is not None:
+        plt.savefig(save_path)
+        plt.close()
+    else:
+        plt.show()
 
 def plot_cfar_vs_ground_truth(
     targets,
@@ -400,7 +429,11 @@ def plot_signal_time_and_spectrum(
     """
     t = np.linspace(0, total_duration, len(signal))
     signal_windowed, window = apply_window(signal, window_type=window_type)
-    freq_axis = np.fft.fftshift(np.fft.fftfreq(N_fft, d=1 / sample_rate)) / 1e6  # MHz
+    if center_freq is not None:
+        freq_axis = np.fft.fftshift(np.fft.fftfreq(N_fft, d=1 / sample_rate)) + center_freq
+    else:
+        freq_axis = np.fft.fftshift(np.fft.fftfreq(N_fft, d=1 / sample_rate))
+    freq_axis = freq_axis / 1e6  # MHz
 
     # Compute spectra
     spectrum_orig = calculate_spectrum(signal, N_fft)

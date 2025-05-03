@@ -8,7 +8,7 @@ from datetime import datetime
 #See qt debug information: export QT_DEBUG_PLUGINS=1
 import yaml
 
-Runtime = "Side6" #"Side6"
+Runtime = "QT5" #"Side6"
 if Runtime == "QT5":
     # from PyQt5.QtWidgets import QApplication, QWidget, QLabel
     from PyQt5.QtCore import Qt
@@ -98,7 +98,7 @@ import argparse
 parser = argparse.ArgumentParser(description='MyRadar')
 parser.add_argument('--configfile', default='sdradi/configs/radarconfig.yaml', type=str,
                     help='Radar configuration file')
-parser.add_argument('--datasetpath', default=None, type=str,
+parser.add_argument('--datasetpath', default='output/Radarsavedapp_2024_08_07_sinusoid_continuous_triangular_moving3.npy', type=str,
                     help='provide the dataset') #'output/Radarsavedapp_2024_08_07_sinusoid_continuous_triangular_moving3.npy'
 parser.add_argument('--tagname', default="static1", type=str,
                     help='name the saved data file')

@@ -23,11 +23,11 @@ class RadarDataset(Dataset):
                  num_samples=100,
                  num_range_bins=128,  # Increased from 64 for better range resolution
                  num_doppler_bins=16,  # Increased from 12 for better velocity resolution
-                 sample_rate=50e6, #1.5e6,    # reduce from 15MHz to 1.5MHz Adjusted to match hardware constraints
+                 sample_rate=500e6, #1.5e6,    # reduce from 15MHz to 1.5MHz Adjusted to match hardware constraints
                  transceiver_bandwidth=30e6,  # AD9361 bandwidth limitation
                  #chirp_duration=1e-4,  # reduce from 1ms to 0.1ms Increased to 1ms for better SNR (from 500μs)
                  num_chirps=32,       # Increased from 12 for better integration gain
-                 bandwidth=500e6,     # Fixed by CN0566 capabilities
+                 bandwidth=200e6,     # Fixed by CN0566 capabilities
                  transceiver_center_freq=2.1e9,  # AD9361 center frequency
                  center_freq=10e9,    # CN0566 output frequency
                  num_rx=4,            # 4 RX antennas (typical for Phaser)
@@ -111,6 +111,7 @@ class RadarDataset(Dataset):
         self.bandwidth = bandwidth
         self.center_freq = center_freq
         self.transceiver_center_freq = transceiver_center_freq
+        self.speed_of_light = 3e8  # Speed of light in m/s
         
         # For FMCW radar, we want to ensure the chirp rate is appropriate for visualization
         # A good rule of thumb is to have the chirp duration be proportional to the ratio of
@@ -124,18 +125,37 @@ class RadarDataset(Dataset):
             print(f"Limiting to {max_practical_sample_rate/1e6:.2f} MHz for practical simulation.")
             self.sample_rate = max_practical_sample_rate
         
-        # Base chirp duration that would work well for visualization
-        # Longer duration for higher carrier-to-bandwidth ratio
-        self.chirp_duration = (carrier_to_bw_ratio / 20) * 1e-4
-        
-        # Ensure chirp duration is within reasonable limits
-        self.chirp_duration = max(0.8e-4, min(5e-4, self.chirp_duration))
-        
-        print(f"Automatically calculated chirp duration: {self.chirp_duration:.2e} seconds")
+        desired_max_unambiguous_range = 100  # meters
+        speed_of_light = 3e8  # m/s
+        chirp_duration = 2 * desired_max_unambiguous_range / speed_of_light  # seconds
+        print(f"Set chirp_duration to {chirp_duration*1e6:.2f} us for max unambiguous range of {desired_max_unambiguous_range} m")
+        self.chirp_duration = chirp_duration
+        # Calculate slope
+        slope = bandwidth / chirp_duration
 
-        self.num_chirps = num_chirps
+        # Calculate maximum beat frequency for max_range
+        #Max beat frequency: f_beat_max = 2 * slope * max_range / c
+        f_beat_max = 2 * slope * desired_max_unambiguous_range / speed_of_light
+        # Calculate Nyquist frequency
+        nyquist_freq = sample_rate / 2
+
+        print(f"Max beat frequency: {f_beat_max/1e6:.2f} MHz")#equalivent to bandwidth
+        print(f"Nyquist frequency: {nyquist_freq/1e6:.2f} MHz")
+        if f_beat_max <= nyquist_freq:
+            print("✅ No frequency wraparound (aliasing).")
+        else:
+            print("❌ Frequency wraparound detected! Increase chirp_duration or sample_rate, or reduce bandwidth or max_range.")
+            
         
-        
+        #velocity resolution is given by: \Delta v = \frac{\lambda}{2 \cdot T_{\text{frame}}}
+        #where ( \lambda ) is the wavelength and ( T_{\text{frame}} ) is the total time of all chirps in a frame.
+        #To improve velocity resolution: Increase num_chirps, Increase the chirp duration ( chirp_duration), or Decrease the center frequency
+        self.num_chirps = 512
+        frame_duration = num_chirps * chirp_duration
+        refresh_rate = 1.0 / frame_duration if frame_duration > 0 else 0
+        print(f"Frame duration: {frame_duration*1e6:.2f} us")
+        print(f"Refresh rate: {refresh_rate:.2f} Hz")
+
         self.signal_freq = signal_freq #used for Sine_FMCW
         self.num_rx = num_rx
         self.num_tx = num_tx
@@ -210,71 +230,101 @@ class RadarDataset(Dataset):
             #self.generate_radar_data(save_data=True, format=savedataformat)
             self.generate_dataset(visualize=True)
 
-    def generate_dataset(self, fixedsnr_db=40, visualize=True):
+
+    def generate_dataset(self, fixedsnr_db=None, visualize=True, simulate_rf_chain=False, analog_sample_rate=None):
         """
         Generate a radar dataset using ray-tracing simulation.
-        
         Args:
             visualize: Whether to visualize the results
-            
+            simulate_rf_chain: If True, simulate analog upconversion/downconversion and ADC sampling
+            analog_sample_rate: The sample rate for analog processing (if None, defaults to 10x ADC rate)
         Returns:
             Dictionary containing the generated dataset
         """
         print(f"Generating {self.num_samples} radar samples using ray-tracing simulation...")
         if visualize:
-            savevis_path=os.path.join(self.save_path, "visualization")
+            savevis_path = os.path.join(self.save_path, "visualization")
             os.makedirs(savevis_path, exist_ok=True)
 
-        # Calculate the actual flattened length including idle time
         flattened_length = self.num_chirps * self.total_samples_per_chirp
-        
         dataset = {
-            'time_domain_data': np.zeros((self.num_samples, self.num_rx, flattened_length, 2), 
-                                        dtype=self.precision),
-            'range_doppler_maps': np.zeros((self.num_samples, self.num_rx, 2, self.num_doppler_bins, 
-                                           self.num_range_bins), dtype=self.precision),
-            'target_masks': np.zeros((self.num_samples, self.num_doppler_bins, 
-                                     self.num_range_bins, 1), dtype=self.precision),
+            'time_domain_data': np.zeros((self.num_samples, self.num_rx, flattened_length, 2), dtype=self.precision),
+            'range_doppler_maps': np.zeros((self.num_samples, self.num_rx, 2, self.num_doppler_bins, self.num_range_bins), dtype=self.precision),
+            'target_masks': np.zeros((self.num_samples, self.num_doppler_bins, self.num_range_bins, 1), dtype=self.precision),
             'target_info': [],
             'detection_results': []
         }
-        
-        # Generate samples
+
         for i in tqdm(range(self.num_samples), desc="Generating samples"):
-            tx_signal = self._generate_tx_signal(num_chirps=self.num_chirps,
+            targets = self._generate_random_targets()
+            if simulate_rf_chain:
+                # Use a higher analog sample rate for upconversion/downconversion
+                if analog_sample_rate is None:
+                    analog_sample_rate = self.sample_rate * 10  # e.g., 10x oversampling
+                # Generate TX at analog rate
+                total_analogsamples_per_chirp = int(self.total_samples_per_chirp * analog_sample_rate / self.sample_rate)
+                tx_signal_analog = self._generate_tx_signal(
+                    num_chirps=self.num_chirps,
+                    total_samples_per_chirp=total_analogsamples_per_chirp,
+                    active_samples=total_analogsamples_per_chirp,
+                    sample_rate=analog_sample_rate,
+                    slope=self.fmcw_slope, return_full=True, window_type=None
+                )
+                # Upconvert
+                tx_signal_rf = upconvert_signal(tx_signal_analog, self.center_freq, analog_sample_rate)
+                
+                if visualize:
+                    # Extract a single chirp from the full TX signal for visualization
+                    tx_chirp = tx_signal_rf[:total_analogsamples_per_chirp]  # Get first chirp's active samples
+                    # Visualize the time and spectrum of the TX chirp
+                    plot_signal_time_and_spectrum(
+                        signal=tx_chirp,
+                        sample_rate=analog_sample_rate,
+                        total_duration=self.chirp_duration,
+                        title_prefix="TX Chirp",
+                        #bandwidth=self.bandwidth,
+                        center_freq=self.center_freq,
+                        textstr=None,
+                        normalize=False,
+                        save_path=os.path.join(savevis_path, f"tx_rf_chirp_{i}{IMG_FORMAT}"),
+                        draw_window = False
+                    )
+                # Channel simulation at analog rate
+                rx_signal_rf = self._ray_tracing_simulation(tx_signal_rf, targets, perfect_mode=False, flatten_output=True)
+                
+                # === Add noise in the analog/RF domain ===
+                if fixedsnr_db is not None:
+                    snr_db = fixedsnr_db
+                else:
+                    snr_db = random.uniform(self.snr_min, self.snr_max)
+                rx_signal_rf = self._add_noise(rx_signal_rf, snr_db)
+                # === End noise addition ===
+                
+                # Downconvert
+                rx_signal_bb = downconvert_signal(rx_signal_rf, self.center_freq, analog_sample_rate)
+                # Decimate to ADC sample rate
+                decimation_factor = int(analog_sample_rate // self.sample_rate)
+                rx_signal = scipy.signal.decimate(rx_signal_bb, decimation_factor, axis=-1, zero_phase=True)
+                tx_signal = scipy.signal.decimate(tx_signal_analog, decimation_factor, axis=-1, zero_phase=True)
+            else:
+                # Baseband-only simulation (no explicit up/downconversion)
+                tx_signal = self._generate_tx_signal(
+                    num_chirps=self.num_chirps,
                     total_samples_per_chirp=self.total_samples_per_chirp,
                     active_samples=self.samples_per_chirp,
                     sample_rate=self.sample_rate,
-                    slope=self.fmcw_slope, return_full=True, window_type=None) #(128, 400) complex
-            #(51200,) 128*400
-            if visualize:
-                # Extract a single chirp from the full TX signal for visualization
-                tx_chirp = tx_signal[:self.samples_per_chirp]  # Get first chirp's active samples
-                # Visualize the time and spectrum of the TX chirp
-                plot_signal_time_and_spectrum(
-                    signal=tx_chirp,
-                    sample_rate=self.sample_rate,
-                    total_duration=self.chirp_duration,
-                    title_prefix="TX Chirp",
-                    bandwidth=self.bandwidth,
-                    center_freq=self.center_freq,
-                    textstr=None,
-                    normalize=False,
-                    save_path=os.path.join(savevis_path, f"txchirp_{i}IMG_FORMAT"),
-                    draw_window = False
+                    slope=self.fmcw_slope, return_full=True, window_type=None
                 )
-            # Generate random targets
-            targets = self._generate_random_targets()
-            # Perform ray-tracing simulation
-            rx_signal = self._ray_tracing_simulation(tx_signal, targets, perfect_mode=True, flatten_output=True)
-            #The shape should be (4, 153600) [num_rx, num_chirps*samples_per_chirp]
+                rx_signal = self._ray_tracing_simulation(tx_signal, targets, perfect_mode=False, flatten_output=True)
 
-            # Add noise to the received signal (even in perfect mode, we need some minimal noise)
-            if fixedsnr_db is not None:
-                snr_db = fixedsnr_db
-            else:
-                snr_db = random.uniform(self.snr_min, self.snr_max)
-            rx_signal = self._add_noise(rx_signal, snr_db)
+                # === Add noise in the baseband domain ===
+                if fixedsnr_db is not None:
+                    snr_db = fixedsnr_db
+                else:
+                    snr_db = random.uniform(self.snr_min, self.snr_max)
+                rx_signal = self._add_noise(rx_signal, snr_db)
+                # === End noise addition ===
+            
             if visualize:
                 # Visualize the time and spectrum of the received signal
                 rx_signal_chirp = rx_signal[0, :self.samples_per_chirp] 
@@ -283,15 +333,14 @@ class RadarDataset(Dataset):
                         sample_rate=self.sample_rate,
                         total_duration=self.chirp_duration,
                         title_prefix="RX Chirp",
-                        bandwidth=self.bandwidth,
-                        center_freq=self.center_freq,
+                        #bandwidth=self.bandwidth,
+                        #center_freq=self.center_freq,
                         textstr=None,
                         normalize=False,
-                        save_path=os.path.join(savevis_path, f"rxchirp_{i}IMG_FORMAT"),
+                        save_path=os.path.join(savevis_path, f"rx_chirp_{i}{IMG_FORMAT}"),
                         draw_window = False
                     )
-
-            # Demodulate the signal to baseband
+            # Demodulate the FMCW signal to beat signal
             beat_signal_list = []
             for rx_idx in range(self.num_rx):
                 beat = self.fmcw_demodulate(
@@ -313,7 +362,7 @@ class RadarDataset(Dataset):
                         title_prefix="Beat Chirp",
                         textstr=None,
                         normalize=False,
-                        save_path=os.path.join(savevis_path, f"beatchirp_{i}IMG_FORMAT"),
+                        save_path=os.path.join(savevis_path, f"beatchirp_{i}{IMG_FORMAT}"),
                         draw_window = False
                     )
             
@@ -336,14 +385,24 @@ class RadarDataset(Dataset):
             if visualize:
                 plot_range_doppler_map_with_ground_truth(
                     rd_map=rd_map[0,:],
-                    targets=targets,  # Make sure 'targets' is defined in your context
+                    targets=[], #targets,  # Make sure 'targets' is defined in your context
                     range_resolution=self.range_resolution,
                     velocity_resolution=self.velocity_resolution,
                     num_range_bins=self.num_range_bins,
                     num_doppler_bins=self.num_doppler_bins,
                     title_prefix=f"Range-Doppler Map Sample {i}",
-                    save_path=os.path.join(savevis_path, f"rdmap_{i}IMG_FORMAT")
+                    save_path=os.path.join(savevis_path, f"rdmap_{i}{IMG_FORMAT}")
                 )
+                plot_3d_range_doppler_map_with_ground_truth(
+                    rd_map=rd_map[0,:],
+                    targets=[],
+                    range_resolution=self.range_resolution,
+                    velocity_resolution=self.velocity_resolution,
+                    num_range_bins=self.num_range_bins,
+                    num_doppler_bins=self.num_doppler_bins,
+                    save_path=os.path.join(savevis_path, f"rd3dmap_{i}{IMG_FORMAT}")
+                )
+
 
             # Perform target detection using CFAR for Range-Doppler map with shape [2, num_doppler_bins, num_range_bins]
             #[2, num_doppler_bins, num_range_bins]
@@ -362,6 +421,7 @@ class RadarDataset(Dataset):
             
         print("Dataset generation complete!")
         return dataset
+
     
     def _generate_tx_signal(self, num_chirps, total_samples_per_chirp, active_samples, sample_rate, slope, tx_power=1.0, edge_ratio=0.1, window_type='edge', return_full=False):
         """
@@ -467,7 +527,12 @@ class RadarDataset(Dataset):
             List of dictionaries containing target parameters
         """
         # Generate random number of targets (1 to max_targets) - ensure at least 1 target
-        num_targets = random.randint(1, self.max_targets)
+        
+        num_targets = 1 #random.randint(1, self.max_targets)
+        min_range = 1 #self.min_range
+        max_range = 30 #self.max_range
+        min_velocity = 0.1 #self.min_velocity
+        max_velocity = 30 #self.max_velocity
         
         # List to store target information
         targets = []
@@ -475,8 +540,8 @@ class RadarDataset(Dataset):
         # Generate target parameters
         for _ in range(num_targets):
             # Generate random target parameters with more reasonable ranges
-            distance = random.uniform(self.min_range, self.max_range * 0.5)
-            velocity = random.uniform(-self.max_velocity * 0.5, self.max_velocity * 0.5)
+            distance = random.uniform(min_range, max_range * 0.5)
+            velocity = random.uniform(max_velocity * 0.5, max_velocity * 0.5)
             
             # Increase RCS range for better visibility
             rcs = random.uniform(5.0, 30.0)  # Increase from (1.0, 20.0)
@@ -505,118 +570,91 @@ class RadarDataset(Dataset):
         
         return targets
     
-    def _ray_tracing_simulation(self, tx_signal, targets, perfect_mode=False, flatten_output=False):
+    def _ray_tracing_simulation(self, tx_signal, targets, perfect_mode=False, flatten_output=False, tx_signal_is_upconverted=False, analog_sample_rate=None):
         """
         Perform ray-tracing simulation to generate received signals.
-        
+
         Args:
             tx_signal: Transmitted signal with shape [num_chirps, samples_per_chirp] or flattened 1D array
             targets: List of target dictionaries
             perfect_mode: If True, uses a single fixed target for ideal simulation
             flatten_output: If True, returns a flattened 1D array similar to simulate_single_target_echo
-            
+            tx_signal_is_upconverted: If True, tx_signal is already upconverted to RF (center frequency)
         Returns:
             Complex RX signal with shape [num_rx, num_chirps, samples_per_chirp] or flattened 1D array
         """
-        # Check if tx_signal is flattened and reshape if needed
         tx_is_flattened = tx_signal.ndim == 1
         if tx_is_flattened:
-            # Reshape flattened tx_signal to [num_chirps, samples_per_chirp]
             tx_signal_reshaped = tx_signal.reshape(self.num_chirps, -1)
             samples_per_chirp = tx_signal_reshaped.shape[1]
         else:
             tx_signal_reshaped = tx_signal
             samples_per_chirp = tx_signal.shape[1]
-        
-        # Initialize RX signal (all zeros)
-        rx_signal = np.zeros((self.num_rx, self.num_chirps, samples_per_chirp), 
-                            dtype=np.complex64)
-        
-        # Define RX antenna positions (simple linear array along x-axis)
+
+        rx_signal = np.zeros((self.num_rx, self.num_chirps, samples_per_chirp), dtype=np.complex64)
+
         rx_positions = []
         rx_spacing = self.wavelength / 2  # Half-wavelength spacing
         for rx_idx in range(self.num_rx):
             rx_positions.append((rx_idx * rx_spacing, 0, 0))
-        
-        # In perfect mode, override targets with a single ideal target if no targets provided
+
         if perfect_mode and (targets is None or len(targets) == 0):
-            # Create a single fixed target at 50m with 10m/s velocity and high RCS
             perfect_target = {
-                'distance': 50.0,  # 50 meters
-                'velocity': 10.0,  # 10 m/s
-                'rcs': 20.0,       # 20 dBsm (high RCS for clear visibility)
-                'position': (50.0, 0, 0)  # Position in 3D space (x, y, z)
+                'distance': 50.0,
+                'velocity': 10.0,
+                'rcs': 20.0,
+                'position': (50.0, 0, 0)
             }
             targets = [perfect_target]
-        
-        # For each target, calculate the reflected signal
+
         for target in targets:
-            # Extract target parameters
             distance = target['distance']
             velocity = target['velocity']
             rcs = target['rcs']
             position = target['position']
-            
-            # For each RX antenna, calculate the received signal
+
             for rx_idx, rx_pos in enumerate(rx_positions):
-                # Calculate exact distance from target to this RX antenna
                 dx = position[0] - rx_pos[0]
                 dy = position[1] - rx_pos[1]
                 dz = position[2] - rx_pos[2]
                 exact_distance = np.sqrt(dx**2 + dy**2 + dz**2)
-                
-                # Time delay for the target (round trip)
+
                 delay_seconds = 2 * exact_distance / self.speed_of_light
-                delay_samples = int(delay_seconds * self.sample_rate)
-                
-                # Doppler shift due to target velocity
+                # Choose sample rate based on RF or baseband simulation
+                if tx_signal_is_upconverted:
+                    sample_rate = analog_sample_rate
+                else:
+                    sample_rate = self.sample_rate
+                delay_samples = int(delay_seconds * sample_rate)
+
                 doppler_freq = 2 * velocity * self.center_freq / self.speed_of_light
-                
-                # Calculate attenuation using radar equation
+
                 attenuation = np.sqrt(rcs) / (exact_distance ** 2)
-                
-                # Scale attenuation to reasonable values
                 attenuation *= 5e6
-                
-                # For each chirp, add the delayed and phase-shifted version of the TX signal
+
                 for chirp_idx in range(self.num_chirps):
-                    # Calculate exact time vector for this chirp's samples
-                    t = np.arange(samples_per_chirp) / self.sample_rate
-                    
-                    # Calculate precise phase shift accounting for continuous time
+                    t = np.arange(samples_per_chirp) / sample_rate
                     phase_shift = 2 * np.pi * doppler_freq * (chirp_idx * self.chirp_duration + t)
-                    
-                    # Create the delayed signal with phase shift
                     delayed_signal = np.zeros(samples_per_chirp, dtype=np.complex64)
-                    
-                    # Only copy valid samples (avoid index out of bounds)
                     samples_to_copy = min(samples_per_chirp - delay_samples, samples_per_chirp)
                     if samples_to_copy > 0 and delay_samples < samples_per_chirp:
-                        # Copy the delayed portion of the TX signal
                         delayed_signal[delay_samples:delay_samples+samples_to_copy] = tx_signal_reshaped[chirp_idx, :samples_to_copy]
-                        
-                        # Apply Doppler phase shift and attenuation
+                        if not tx_signal_is_upconverted:
+                            # Baseband simulation: apply upconversion here
+                            delayed_signal *= np.exp(1j * 2 * np.pi * self.center_freq * (t + chirp_idx * self.chirp_duration))
+                        # Both baseband and RF: apply Doppler and attenuation
                         delayed_signal *= attenuation * np.exp(1j * phase_shift)
-                        
-                        # Add to RX signal
                         rx_signal[rx_idx, chirp_idx, :] += delayed_signal
-        
-        # Add realistic effects if requested and not in perfect mode
+
         if self.apply_realistic_effects and not perfect_mode:
             rx_signal = self._add_realistic_effects(rx_signal, tx_signal_reshaped)
-        
-        # If flatten_output is True, flatten the rx_signal to match simulate_single_target_echo format
+
         if flatten_output:
-            # Create a flattened array that includes all RX antennas
-            # The shape should be [num_rx, num_chirps*samples_per_chirp]
             rx_flattened = np.zeros((self.num_rx, self.num_chirps * samples_per_chirp), dtype=np.complex64)
-            
-            # Reshape each RX antenna's data
             for rx_idx in range(self.num_rx):
                 rx_flattened[rx_idx] = rx_signal[rx_idx].flatten()
-                
             return rx_flattened
-        
+
         return rx_signal
 
     def _generate_fmcw_chirp(self, chirp_idx):
@@ -1029,6 +1067,6 @@ if __name__ == '__main__':
             snr_max=30,
             save_path=args.save_path,
             savedataformat=args.format,
-            apply_realistic_effects = False,
+            apply_realistic_effects = True,
             drawfig=True  # Enable figure drawing for visualization
         )
