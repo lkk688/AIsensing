@@ -26,6 +26,13 @@ Architecture:
 
 Favicon generated from https://favicon.io/favicon-converter/
 
+Python FastAPI server:
+```bash
+AIsensing/WebApp$ npm install react-plotly.js plotly.js
+AIsensing/FastAPIbackend$ pip install -r requirements.txt
+uvicorn main:app --reload
+```
+
 ## Key Files:
 Entry Point (index.js)
 - This is the standard entry point for a React application. It imports the main App component
