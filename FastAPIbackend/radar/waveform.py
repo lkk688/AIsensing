@@ -66,7 +66,12 @@ def generate_waveform(
         signal = np.cos(phase)
         
         # Instantaneous frequency
-        inst_freq = start_freq + slope * t
+        #inst_freq = start_freq + slope * t
+        # Calculate instantaneous frequency from phase derivative
+        # Unwrap phase to handle 2π jumps
+        unwrapped_phase = np.unwrap(phase)
+        # Calculate derivative of phase with respect to time
+        inst_freq = np.gradient(unwrapped_phase, t) / (2 * np.pi)
         
     elif waveform_type == 'sawtooth':
         # Sawtooth chirp
@@ -74,6 +79,7 @@ def generate_waveform(
         saw_duration = chirp_duration_sec / num_saws
         signal = np.zeros_like(t)
         inst_freq = np.zeros_like(t)
+        phase_array = np.zeros_like(t)
         
         for i in range(num_samples):
             saw_idx = int(t[i] / saw_duration)
@@ -87,14 +93,25 @@ def generate_waveform(
             inst_freq[i] = start_freq + bandwidth_hz * norm_t
             
             # Phase calculation for this sawtooth segment
+            # phase = 2 * np.pi * (start_freq * rel_t + (slope * norm_t * norm_t * saw_duration) / 2)
+            # signal[i] = np.cos(phase)
+            # Phase calculation for this sawtooth segment
             phase = 2 * np.pi * (start_freq * rel_t + (slope * norm_t * norm_t * saw_duration) / 2)
+            phase_array[i] = phase
             signal[i] = np.cos(phase)
+        
+        # Calculate instantaneous frequency from phase derivative
+        # Unwrap phase to handle 2π jumps and sawtooth discontinuities
+        unwrapped_phase = np.unwrap(phase_array)
+        # Calculate derivative of phase with respect to time
+        inst_freq = np.gradient(unwrapped_phase, t) / (2 * np.pi)
             
     elif waveform_type == 'triangular':
         # Triangular chirp
         half_duration = chirp_duration_sec / 2
         signal = np.zeros_like(t)
         inst_freq = np.zeros_like(t)
+        phase_array = np.zeros_like(t)
         
         for i in range(num_samples):
             if t[i] <= half_duration:
@@ -112,7 +129,15 @@ def generate_waveform(
                 down_chirp_slope = -slope
                 phase = 2 * np.pi * (down_chirp_start_freq * rel_t + (down_chirp_slope * rel_t * rel_t) / 2)
                 
+            phase_array[i] = phase
             signal[i] = np.cos(phase)
+            #signal[i] = np.cos(phase)
+        
+        # Calculate instantaneous frequency from phase derivative
+        # Unwrap phase to handle 2π jumps and triangular discontinuities
+        unwrapped_phase = np.unwrap(phase_array)
+        # Calculate derivative of phase with respect to time
+        inst_freq = np.gradient(unwrapped_phase, t) / (2 * np.pi)
     else:
         raise ValueError("Invalid waveform type")
     
