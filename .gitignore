@@ -166,3 +166,4 @@ cython_debug/
 .DS_Store
 *.tex
 /ISAC/*
+/WebApp/node_modules/*

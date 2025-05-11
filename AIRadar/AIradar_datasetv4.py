@@ -273,22 +273,6 @@ class RadarDataset(Dataset):
                 # Upconvert
                 tx_signal_rf = upconvert_signal(tx_signal_analog, self.center_freq, analog_sample_rate)
                 
-                if visualize:
-                    # Extract a single chirp from the full TX signal for visualization
-                    tx_chirp = tx_signal_rf[:total_analogsamples_per_chirp]  # Get first chirp's active samples
-                    # Visualize the time and spectrum of the TX chirp
-                    plot_signal_time_and_spectrum(
-                        signal=tx_chirp,
-                        sample_rate=analog_sample_rate,
-                        total_duration=self.chirp_duration,
-                        title_prefix="TX Chirp",
-                        #bandwidth=self.bandwidth,
-                        center_freq=self.center_freq,
-                        textstr=None,
-                        normalize=False,
-                        save_path=os.path.join(savevis_path, f"tx_rf_chirp_{i}{IMG_FORMAT}"),
-                        draw_window = False
-                    )
                 # Channel simulation at analog rate
                 rx_signal_rf = self._ray_tracing_simulation(tx_signal_rf, targets, perfect_mode=False, flatten_output=True)
                 
@@ -326,6 +310,34 @@ class RadarDataset(Dataset):
                 # === End noise addition ===
             
             if visualize:
+                # Extract a single chirp from the full TX signal for visualization
+                tx_chirp = tx_signal[:self.total_samples_per_chirp]  # Get first chirp's active samples
+                # Visualize the time and spectrum of the TX chirp
+                plot_signal_time_and_spectrum(
+                    signal=tx_chirp,
+                    sample_rate=self.sample_rate,
+                    total_duration=self.chirp_duration,
+                    title_prefix="TX Chirp",
+                    #bandwidth=self.bandwidth,
+                    center_freq=self.center_freq,
+                    textstr=None,
+                    normalize=False,
+                    save_path=os.path.join(savevis_path, f"tx_rf_chirp_{i}{IMG_FORMAT}"),
+                    draw_window = False
+                )
+                # Add instantaneous frequency plot for the chirp signal
+                plot_instantaneous_frequency(
+                        signal=tx_chirp,
+                        sample_rate=self.sample_rate,
+                        total_duration=self.chirp_duration,
+                        slope=self.fmcw_slope,
+                        bandwidth=self.bandwidth,
+                        center_freq=self.center_freq,
+                        title_prefix="TX Chirp",
+                        textstr=f"Bandwidth: {self.bandwidth/1e6:.1f} MHz\nSlope: {self.fmcw_slope/1e12:.2f} THz/s",
+                        save_path=os.path.join(savevis_path, f"tx_rf_chirp_freq_{i}{IMG_FORMAT}")
+                    )
+
                 # Visualize the time and spectrum of the received signal
                 rx_signal_chirp = rx_signal[0, :self.samples_per_chirp] 
                 plot_signal_time_and_spectrum(

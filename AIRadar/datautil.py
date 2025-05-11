@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-
+from scipy import signal as sp_signal
 
 def upconvert_signal(signal, center_freq, sample_rate):
     """
@@ -511,6 +511,75 @@ def plot_signal_time_and_spectrum(
     else:
         plt.show()
 
+
+def plot_instantaneous_frequency(signal, sample_rate, total_duration, slope, bandwidth=None, center_freq=None, 
+                                title_prefix="Chirp", textstr=None, save_path=None, draw_window=False):
+    """
+    Plot the instantaneous frequency of a chirp signal to visualize the frequency sweeping band.
+    
+    Args:
+        signal: Complex chirp signal
+        sample_rate: Sample rate in Hz
+        total_duration: Total duration of the signal in seconds
+        slope: FMCW slope in Hz/s
+        bandwidth: Signal bandwidth in Hz (optional)
+        center_freq: Center frequency in Hz (optional)
+        title_prefix: Prefix for the plot title
+        textstr: Additional text to display on the plot
+        save_path: Path to save the figure
+        draw_window: Whether to draw window function
+    """
+
+    
+    # Create time axis
+    num_samples = len(signal)
+    t = np.linspace(0, total_duration, num_samples)
+    
+    # Calculate instantaneous frequency
+    # For FMCW chirp: f(t) = f0 + slope * t
+    # where f0 is the starting frequency
+    if bandwidth is not None:
+        f0 = center_freq - bandwidth/2 if center_freq is not None else 0
+        inst_freq = f0 + slope * t
+    else:
+        # If bandwidth not provided, just show relative frequency change
+        inst_freq = slope * t
+    
+    # Create figure
+    plt.figure(figsize=(10, 6))
+    
+    # Plot instantaneous frequency
+    plt.plot(t * 1e6, inst_freq / 1e6, 'b-', linewidth=2)
+    
+    # Add labels and title
+    plt.xlabel('Time (μs)')
+    plt.ylabel('Frequency (MHz)')
+    plt.title(f'{title_prefix} Instantaneous Frequency')
+    plt.grid(True)
+    
+    # Add bandwidth markers if provided
+    if bandwidth is not None:
+        if center_freq is not None:
+            plt.axhline(y=(center_freq - bandwidth/2)/1e6, color='r', linestyle='--', label='Start Frequency')
+            plt.axhline(y=(center_freq + bandwidth/2)/1e6, color='g', linestyle='--', label='End Frequency')
+        else:
+            plt.axhline(y=0, color='r', linestyle='--', label='Start Frequency')
+            plt.axhline(y=bandwidth/1e6, color='g', linestyle='--', label='End Frequency')
+        plt.legend()
+    
+    # Add text information if provided
+    if textstr is not None:
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+        plt.text(0.05, 0.95, textstr, transform=plt.gca().transAxes, fontsize=10,
+                verticalalignment='top', bbox=props)
+    
+    # Save figure if path provided
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.close()
+    else:
+        plt.tight_layout()
+        plt.show()
 
 def extract_chirp(signal, chirp_idx, total_samples_per_chirp, rx_idx=None):
     """
