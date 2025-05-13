@@ -364,3 +364,24 @@ def generate_waveform(
     freq_domain_plot = freq_domain_fig.to_dict()
     
     return time_domain_plot, freq_domain_plot, derived_params
+
+#returning Plotly figure objects converted to dictionaries
+# Plotly figure structure (simplified)
+# {
+#   'data': [
+#     {
+#       'x': [...],  # Time values
+#       'y': [...],  # Signal values
+#       'mode': 'lines',
+#       'name': 'Signal'
+#     },
+#     {
+#       'x': [...],  # Time values again
+#       'y': [...],  # Frequency values
+#       'mode': 'lines',
+#       'name': 'Instantaneous Frequency',
+#       'yaxis': 'y2'
+#     }
+#   ],
+#   'layout': {...}
+# }

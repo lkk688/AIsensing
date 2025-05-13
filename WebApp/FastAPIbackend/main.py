@@ -37,6 +37,17 @@ def read_root():
 
 @app.post("/api/radar/waveform", response_model=RadarResponse)
 def radar_waveform(params: RadarParams):
+    import datetime
+    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Debug: Print input parameters with timestamp
+    print(f"[{current_time}] RADAR API CALL - Input Parameters:")
+    print(f"  Bandwidth: {params.bandwidth} MHz")
+    print(f"  Chirp Duration: {params.chirpDuration} μs")
+    print(f"  Center Frequency: {params.centerFreq} GHz")
+    print(f"  Sample Rate: {params.sampleRate} MHz")
+    print(f"  Waveform Type: {params.waveformType}")
+    
     try:
         # Call the waveform generation function from our module
         time_domain_plot, freq_domain_plot, derived_params = generate_waveform(
@@ -47,6 +58,12 @@ def radar_waveform(params: RadarParams):
             waveform_type=params.waveformType
         )
         
+        # Debug: Print output summary with timestamp
+        print(f"[{current_time}] RADAR API CALL - Output Summary:")
+        print(f"  Time Domain Plot: {'Generated successfully' if time_domain_plot else 'Failed'}")
+        print(f"  Frequency Domain Plot: {'Generated successfully' if freq_domain_plot else 'Failed'}")
+        print(f"  Derived Parameters: {list(derived_params.keys()) if derived_params else 'None'}")
+        
         # Return the response
         return {
             "timeDomainPlot": time_domain_plot,
@@ -54,6 +71,10 @@ def radar_waveform(params: RadarParams):
             "derivedParams": derived_params
         }
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        error_msg = str(e)
+        print(f"[{current_time}] RADAR API CALL - ValueError: {error_msg}")
+        raise HTTPException(status_code=400, detail=error_msg)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+        error_msg = str(e)
+        print(f"[{current_time}] RADAR API CALL - Exception: {error_msg}")
+        raise HTTPException(status_code=500, detail=f"An error occurred: {error_msg}")

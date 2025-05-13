@@ -10,9 +10,14 @@ cd AIsensing/WebApp
 
 ```bash
 ~/Developer/AIsensing/WebApp$ npm install
-~/Developer/AIsensing/WebApp$ HOST=0.0.0.0 npm start
+~/Developer/AIsensing/WebApp$ 
 npm install @matejmazur/react-katex katex #significantly faster and lighter than MathJax 
 npm install react-router-dom @mui/material @emotion/react @emotion/styled
+npm install chart.js react-chartjs-2
+npm install better-react-mathjax
+npm install js-yaml @mui/icons-material
+AIsensing/WebApp/WebAppFrontend$ npm install @mui/icons-material
+HOST=0.0.0.0 npm start
 ```
 Access the application:
 - Local: http://localhost:3000
@@ -30,7 +35,7 @@ Python FastAPI server:
 ```bash
 AIsensing/WebApp$ npm install react-plotly.js plotly.js
 AIsensing/FastAPIbackend$ pip install -r requirements.txt
-uvicorn main:app --reload
+AIsensing/WebApp/FastAPIbackend$ uvicorn main:app --reload
 ```
 
 ## Key Files:

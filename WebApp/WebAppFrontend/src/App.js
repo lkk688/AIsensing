@@ -5,7 +5,7 @@ import CssBaseline from '@mui/material/CssBaseline';
 import Navbar from './components/Navbar';
 import Home from './pages/Home';
 import RadarParameterTuner from './components/RadarParameterTuner';
-import RadarWaveformGenerator from './components/RadarWaveformGeneratorPy2';
+import RadarWaveformGenerator from './components/RadarWaveformGeneratorPy3';
 
 // Create a theme
 const theme = createTheme({
