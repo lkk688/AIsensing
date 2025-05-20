@@ -1,5 +1,54 @@
 # Deep Learning-Based AI Processing Framework for Wireless Communication and Radar Sensing
 
+# Python Package Setup
+There is a standalone Python package `AIRadar` located inside a larger monorepo. This package lives inside this larger repository and only this subfolder of `AIRadar` is treated as a standalone package. It is built using [Flit](https://flit.pypa.io/) and supports local editable installation as well as optional publishing to PyPI.
+
+## 🔧 Setup Instructions
+
+Make sure you have `flit` installed:
+```bash
+pip install flit
+```
+To install this package in editable/symlink mode:
+```bash
+cd AIRadar/
+flit install --symlink
+```
+This allows you to edit the code in-place and have changes reflected immediately without reinstalling.
+
+Project Metadata (pyproject.toml)
+
+Located at AIRadar/pyproject.toml, this file defines the package info
+
+## 🚀 Build & Publish to PyPI
+Build the package:
+```bash
+cd AIRadar/
+flit build
+```
+This creates a dist/ directory with .whl and .tar.gz files.
+
+Upload to PyPI: Make sure your credentials are set up (~/.pypirc) or use a token.
+```bash
+flit publish
+```
+To test first:
+```bash
+flit publish --repository testpypi
+```
+## 📦 Package Structure
+- `AIRadar/`: The root directory of the package.
+  - `pyproject.toml`: The project metadata file.
+  - `src/`: The source code directory.
+    - `AIRadar/`: The main package.
+      - `__init__.py`: Initialization file.
+      - `AI_Channel.py`: Channel estimation model.
+      - `AI_Comm.py`: Communication model.
+      - `AI_Radar.py`: Radar model.
+      - `AI_Utils.py`: Utility functions.
+      - `AI_Comm_radar_models.py`: Transformer-based communication and radar models.
+      - `AI_Comm_radar_models.py`: Transformer-based communication and radar models.
+
 ## Introduction
 
 Deep learning has revolutionized various application scenarios by significantly improving performance across domains. In the context of wireless communication, researchers have explored the potential of deep learning techniques to enhance system efficiency and reliability. In this work, we present our novel AI backend processing framework, designed to address critical challenges in wireless communication and radar sensing.

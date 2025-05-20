@@ -1,26 +1,43 @@
 import numpy as np
-import plotly.graph_objects as go
+try:
+    import plotly.graph_objects as go
+except ImportError:
+    # If plotly is not installed, install it using pip
+    import subprocess
+    import sys
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "plotly"])
+    import plotly.graph_objects as go
 from typing import Dict, Any, Tuple
+from AIRadar.AIRadarLib.datautil import calculate_radar_parameters
+from AIRadar.AIRadarLib.waveform_utils import (
+    generate_linear_chirp,
+    generate_sawtooth_chirp,
+    generate_triangular_chirp,
+    generate_spectrum
+)
 
 def generate_waveform(
-    bandwidth: float,  # MHz
-    chirp_duration: float,  # μs
-    center_freq: float,  # GHz
-    sample_rate: float,  # MHz
-    waveform_type: str  # 'linear', 'sawtooth', or 'triangular'
-) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    bandwidth=500,  # MHz
+    chirp_duration=500,  # μs
+    center_freq=10,  # GHz
+    sample_rate=1,  # MHz
+    waveform_type='linear'
+) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Dict[str, Any]]]:
     """
-    Generate FMCW radar waveform and calculate derived parameters
+    Generate radar waveform and calculate radar parameters.
     
     Args:
         bandwidth: Bandwidth in MHz
         chirp_duration: Chirp duration in μs
         center_freq: Center frequency in GHz
         sample_rate: Sample rate in MHz
-        waveform_type: Type of waveform ('linear', 'sawtooth', or 'triangular')
+        waveform_type: Type of waveform ('linear', 'sawtooth', 'triangular')
         
     Returns:
-        Tuple containing time domain plot data, frequency domain plot data, and derived parameters
+        Tuple containing:
+        - time_domain_plot: Dictionary with time domain plot data
+        - freq_domain_plot: Dictionary with frequency domain plot data
+        - derived_params: Dictionary with derived radar parameters
     """
     # Convert to base units
     bandwidth_hz = bandwidth * 1e6
@@ -28,28 +45,22 @@ def generate_waveform(
     center_freq_hz = center_freq * 1e9
     sample_rate_hz = sample_rate * 1e6
     
-    # Calculate derived parameters
-    c = 3e8  # Speed of light (m/s)
-    slope = bandwidth_hz / chirp_duration_sec  # Hz/s
+    # Calculate radar parameters using the utility function
+    radar_params = calculate_radar_parameters(
+        sample_rate=sample_rate_hz,
+        chirp_duration=chirp_duration_sec,
+        center_freq=center_freq_hz,
+        bandwidth=bandwidth_hz,
+        num_chirps=100  # Assuming 100 chirps for velocity calculations
+    )
     
-    # Range resolution
-    range_resolution = c / (2 * bandwidth_hz)
-    
-    # Maximum unambiguous range
-    max_range = (c * sample_rate_hz) / (2 * bandwidth_hz * bandwidth_hz)
-    
-    # Velocity resolution (for a frame with 100 chirps)
-    velocity_resolution = (c * 1000) / (4 * center_freq_hz * chirp_duration_sec)
-    
-    # Maximum unambiguous velocity (assuming 100 chirps per frame)
-    max_velocity = (c * 1000) / (4 * center_freq_hz * (chirp_duration_sec / 100))
-    
-    # Wavelength
-    wavelength = (c / center_freq_hz) * 1000  # mm
-    
-    # Max beat frequency (assuming 100m max range)
-    max_range_m = 100
-    max_beat_freq = (2 * slope * max_range_m) / c
+    # Extract parameters from the result
+    range_resolution = radar_params["range_resolution"]
+    max_range = radar_params["max_range"]
+    velocity_resolution = radar_params["velocity_resolution"]
+    max_velocity = radar_params["max_unambiguous_velocity"]
+    wavelength = radar_params["wavelength"]
+    slope = radar_params["fmcw_slope"]
     
     # Generate time domain data
     num_samples = 1000
@@ -61,83 +72,11 @@ def generate_waveform(
     
     # Generate signal based on waveform type
     if waveform_type == 'linear':
-        # Linear chirp
-        phase = 2 * np.pi * (start_freq * t + (slope * t * t) / 2)
-        signal = np.cos(phase)
-        
-        # Instantaneous frequency
-        #inst_freq = start_freq + slope * t
-        # Calculate instantaneous frequency from phase derivative
-        # Unwrap phase to handle 2π jumps
-        unwrapped_phase = np.unwrap(phase)
-        # Calculate derivative of phase with respect to time
-        inst_freq = np.gradient(unwrapped_phase, t) / (2 * np.pi)
-        
+        signal, inst_freq, phase = generate_linear_chirp(t, start_freq, slope)
     elif waveform_type == 'sawtooth':
-        # Sawtooth chirp
-        num_saws = 3
-        saw_duration = chirp_duration_sec / num_saws
-        signal = np.zeros_like(t)
-        inst_freq = np.zeros_like(t)
-        phase_array = np.zeros_like(t)
-        
-        for i in range(num_samples):
-            saw_idx = int(t[i] / saw_duration)
-            if saw_idx >= num_saws:
-                saw_idx = num_saws - 1
-                
-            rel_t = t[i] - saw_idx * saw_duration
-            norm_t = rel_t / saw_duration
-            
-            # Instantaneous frequency for this sawtooth
-            inst_freq[i] = start_freq + bandwidth_hz * norm_t
-            
-            # Phase calculation for this sawtooth segment
-            # phase = 2 * np.pi * (start_freq * rel_t + (slope * norm_t * norm_t * saw_duration) / 2)
-            # signal[i] = np.cos(phase)
-            # Phase calculation for this sawtooth segment
-            phase = 2 * np.pi * (start_freq * rel_t + (slope * norm_t * norm_t * saw_duration) / 2)
-            phase_array[i] = phase
-            signal[i] = np.cos(phase)
-        
-        # Calculate instantaneous frequency from phase derivative
-        # Unwrap phase to handle 2π jumps and sawtooth discontinuities
-        unwrapped_phase = np.unwrap(phase_array)
-        # Calculate derivative of phase with respect to time
-        inst_freq = np.gradient(unwrapped_phase, t) / (2 * np.pi)
-            
+        signal, inst_freq, phase = generate_sawtooth_chirp(t, start_freq, bandwidth_hz, chirp_duration_sec)
     elif waveform_type == 'triangular':
-        # Triangular chirp
-        half_duration = chirp_duration_sec / 2
-        signal = np.zeros_like(t)
-        inst_freq = np.zeros_like(t)
-        phase_array = np.zeros_like(t)
-        
-        for i in range(num_samples):
-            if t[i] <= half_duration:
-                # Up chirp
-                norm_t = t[i] / half_duration
-                inst_freq[i] = start_freq + bandwidth_hz * norm_t
-                phase = 2 * np.pi * (start_freq * t[i] + (slope * t[i] * t[i]) / 2)
-            else:
-                # Down chirp
-                rel_t = t[i] - half_duration
-                norm_t = 1 - (rel_t / half_duration)
-                inst_freq[i] = start_freq + bandwidth_hz * norm_t
-                
-                down_chirp_start_freq = end_freq
-                down_chirp_slope = -slope
-                phase = 2 * np.pi * (down_chirp_start_freq * rel_t + (down_chirp_slope * rel_t * rel_t) / 2)
-                
-            phase_array[i] = phase
-            signal[i] = np.cos(phase)
-            #signal[i] = np.cos(phase)
-        
-        # Calculate instantaneous frequency from phase derivative
-        # Unwrap phase to handle 2π jumps and triangular discontinuities
-        unwrapped_phase = np.unwrap(phase_array)
-        # Calculate derivative of phase with respect to time
-        inst_freq = np.gradient(unwrapped_phase, t) / (2 * np.pi)
+        signal, inst_freq, phase = generate_triangular_chirp(t, start_freq, end_freq, chirp_duration_sec)
     else:
         raise ValueError("Invalid waveform type")
     
@@ -148,75 +87,7 @@ def generate_waveform(
     display_end_freq = center_freq_hz + display_bandwidth / 2
     
     freq_range = np.linspace(display_start_freq, display_end_freq, 500)
-    spectrum = np.zeros_like(freq_range, dtype=float)
-    
-    # Simulate spectrum based on waveform type
-    for i, freq in enumerate(freq_range):
-        # Check if frequency is within the chirp bandwidth
-        normalized_freq = (freq - start_freq) / bandwidth_hz
-        
-        if waveform_type == 'linear':
-            # Linear chirp has relatively flat spectrum within bandwidth
-            if start_freq <= freq <= end_freq:
-                # Main lobe
-                magnitude = 0.9
-                
-                # Add some rolloff at the edges
-                if normalized_freq < 0.05 or normalized_freq > 0.95:
-                    magnitude *= 0.8
-            else:
-                # Side lobes
-                distance_from_band = min(
-                    abs(freq - start_freq),
-                    abs(freq - end_freq)
-                ) / bandwidth_hz
-                
-                magnitude = max(0.1, 0.3 * np.exp(-5 * distance_from_band))
-                
-        elif waveform_type == 'sawtooth':
-            # Sawtooth has harmonics and more side lobes
-            if start_freq <= freq <= end_freq:
-                # Main lobe
-                magnitude = 0.85
-                
-                # Add harmonics
-                harmonic_spacing = bandwidth_hz / 3
-                if abs((freq - start_freq) % harmonic_spacing) < bandwidth_hz / 200:
-                    magnitude = 0.95
-            else:
-                # Side lobes with harmonics
-                distance_from_band = min(
-                    abs(freq - start_freq),
-                    abs(freq - end_freq)
-                ) / bandwidth_hz
-                
-                magnitude = max(0.15, 0.4 * np.exp(-3 * distance_from_band))
-                
-                # Add harmonics outside the band
-                harmonic_spacing = bandwidth_hz / 3
-                dist_from_harmonic = min(
-                    abs(((freq - start_freq) % harmonic_spacing) / harmonic_spacing),
-                    abs(1 - ((freq - start_freq) % harmonic_spacing) / harmonic_spacing)
-                )
-                
-                if dist_from_harmonic < 0.05:
-                    magnitude += 0.2
-                    
-        elif waveform_type == 'triangular':
-            # Triangular has smoother spectrum with less side lobes
-            if start_freq <= freq <= end_freq:
-                # Main lobe with smooth shape
-                magnitude = 0.9 * (1 - 0.3 * np.power(2 * normalized_freq - 1, 2))
-            else:
-                # Smoother side lobes
-                distance_from_band = min(
-                    abs(freq - start_freq),
-                    abs(freq - end_freq)
-                ) / bandwidth_hz
-                
-                magnitude = max(0.05, 0.25 * np.exp(-4 * distance_from_band))
-        
-        spectrum[i] = magnitude
+    spectrum = generate_spectrum(freq_range, start_freq, end_freq, bandwidth_hz, waveform_type)
     
     # Create time domain plot
     time_domain_fig = go.Figure()
@@ -315,6 +186,9 @@ def generate_waveform(
         )
     )
     
+    # Calculate max beat frequency for 100m range
+    max_beat_freq = 2 * 100 * slope / 3e8  # 2*R*slope/c
+    
     # Prepare derived parameters for display
     derived_params = {
         "rangeResolution": {
@@ -338,7 +212,7 @@ def generate_waveform(
             "description": "Maximum detectable velocity"
         },
         "wavelength": {
-            "value": wavelength,
+            "value": wavelength * 1000,  # Convert to mm
             "unit": "mm",
             "description": "Wavelength of the radar signal"
         },
