@@ -75,7 +75,8 @@ def plot_detection_results(
     # Plot target mask as overlay with transparency
     if target_mask is not None:
         # Reshape if needed and transpose for correct orientation
-        mask_plot = target_mask.reshape(num_doppler_bins, num_range_bins).T
+        #Binary mask with shape [num_doppler_bins, num_range_bins, 1]
+        mask_plot = target_mask.reshape(num_doppler_bins, num_range_bins)
         ax.imshow(
             mask_plot,
             aspect='auto',
