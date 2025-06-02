@@ -415,7 +415,7 @@ python
 0.0.17
 ```
 
-# Processing Code
+## Processing Code
 Install Pytorch and Tensorflow
 ```bash
 nvcc -V #11.8
@@ -429,9 +429,8 @@ python3 -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'
 pip install tensorflow[and-cuda]==2.14.0 #https://www.tensorflow.org/install/source#tested_build_configurations latest 16.1 only support cuda12
 #install nvidia_cudnn_cu11-8.7.0.84, nvidia_cuda_nvcc_cu11-11.8.89, tensorrt-8.5.3.1-cp310
 ```
-## SDR Device
 
-### Communication Test code
+## Communication Test code
 Run the test code `.\sdradi\pysdr.py` for SDR (revise the IP for the device):
 ```bash
 python sdradi/pysdr.py #transmitting a QPSK signal in the 915 MHz band, receiving it, and plotting the PSD
@@ -445,7 +444,7 @@ python sdradi/myad9361.py
 The result figure is 
 ![Peak Spectrum](../imgs/peakspectrum.png)
 
-### Communication class
+## Communication class
 Newly added `myad9361class.py` that put all sdr related code into one class. Run the following code to test the SDR class and perform signal detection
 ```bash
 python sdradi/myad9361class.py
@@ -528,3 +527,429 @@ pip install pyopengl
 $ sudo apt install libxcb-cursor0 #solve the problem: "qt.qpa.plugin: Could not load the Qt platform plugin "xcb"
 $ conda install -c conda-forge libstdcxx-ng #solve the problem of libGL error: MESA-LOADER: failed to open iris
 ```
+
+
+
+
+
+
+          
+# Software-Defined Radio (SDR) System
+
+This document provides a comprehensive overview of the Software-Defined Radar (SDR) system implemented in the `SDR` class (myadiclass.py). The system leverages software-defined radio technology to create a flexible and programmable radar platform for research, development, and practical applications. 
+
+The SDR class provides a comprehensive framework for software-defined radar applications. Its flexible architecture, extensive feature set, and innovative capabilities make it suitable for a wide range of applications from research to practical deployment. The system's modular design allows for easy extension and customization, making it an ideal platform for radar system development.
+
+## System Architecture
+
+The SDR class serves as a high-level abstraction for controlling software-defined radio hardware, specifically designed to work with Analog Devices' radio platforms including:
+
+- AD9361
+- AD9364
+- ADRV9009
+
+The architecture follows a modular design pattern that separates:
+
+1. **Hardware Configuration** - Setup and management of SDR parameters
+2. **Signal Generation** - Creation of various waveforms for transmission
+3. **Signal Reception** - Capture and processing of received signals
+4. **Signal Processing** - Analysis and manipulation of radar data
+
+## Key Features
+
+### Hardware Configuration
+
+- **Multi-device Support**: Compatible with multiple Analog Devices SDR platforms
+- **Flexible Channel Configuration**: Support for single or dual channel operation
+- **Dynamic Parameter Adjustment**: Runtime configuration of frequency, bandwidth, sample rate, and gain
+
+### Signal Transmission
+
+- **Waveform Generation**: Built-in support for sinusoidal and DDS (Direct Digital Synthesis) waveforms
+- **Cyclic Transmission**: Option for continuous signal transmission
+- **Signal Conditioning**: Automatic normalization and scaling of transmitted signals
+- **Multi-channel Transmission**: Support for dual-channel transmission with independent signals
+
+### Signal Reception
+
+- **Configurable Reception**: Adjustable buffer size and gain control modes
+- **Continuous Reception**: Support for extended data collection periods
+- **Multi-channel Reception**: Ability to receive from multiple antennas with combining options
+- **Signal Normalization**: Automatic scaling of received signals
+
+### Signal Processing
+
+- **Spectrum Analysis**: Built-in spectral analysis capabilities
+- **Signal Correlation**: Detection of signal offset and correlation between transmitted and received signals
+- **SINR Measurement**: Signal-to-Interference-plus-Noise Ratio calculation
+- **Visualization**: Support for real-time plotting of signals and spectra
+
+## Technical Specifications
+
+| Parameter | Range | Description |
+|-----------|-------|-------------|
+| Center Frequency | Up to 6 GHz | Configurable transmit and receive frequency |
+| Sample Rate | Up to 61.44 MSPS | Adjustable sampling rate |
+| Bandwidth | Up to 56 MHz | Configurable RF bandwidth |
+| Gain Control | Manual or Automatic | Configurable gain control modes |
+| Buffer Size | Configurable | Adjustable receive buffer size |
+| Channels | 1-2 | Support for single or dual channel operation |
+
+## System Setup
+
+### Hardware Requirements
+
+- Analog Devices SDR platform (AD9361, AD9364, or ADRV9009)
+- Host computer with network connectivity
+- Appropriate antennas and RF connections
+
+### Software Dependencies
+
+```python
+import adi
+import numpy as np
+from scipy import signal
+import matplotlib.pyplot as plt
+from timeit import default_timer as timer
+import time
+import sys
+```
+
+### Initialization
+
+The system is initialized with the following parameters:
+
+```python
+sdr = SDR(
+    SDR_IP="ip:192.168.2.1",        # IP address of SDR device
+    SDR_FC=2000000000,              # 2 GHz center frequency
+    SDR_SAMPLERATE=1e6,             # 1 MHz sample rate
+    SDR_BANDWIDTH=1e6,              # 1 MHz bandwidth
+    Rx_CHANNEL=2,                   # Dual-channel reception
+    Tx_CHANNEL=1,                   # Single-channel transmission
+    device_name='ad9361'            # Device type
+)
+```
+
+## Usage Examples
+
+### Basic Transmission and Reception
+
+```python
+# Configure transmitter
+sdr.SDR_TX_setup(tx1_gain=-10)
+
+# Generate and transmit a sinusoidal signal
+sdr.SDR_TX_signalgen(signal_type='sinusoid', f_signal=100000, N=1024)
+
+# Configure receiver
+sdr.SDR_RX_setup(n_SAMPLES=8192, rx1_gain=30)
+
+# Receive signal
+rx_data = sdr.SDR_RX_receive()
+
+# Stop transmission
+sdr.SDR_TX_stop()
+```
+
+### Continuous Reception with Spectrum Analysis
+
+```python
+# Configure receiver
+sdr.SDR_RX_setup(n_SAMPLES=8192, rx1_gain=30)
+
+# Receive data continuously for 5 seconds with spectrum analysis
+rx_data, process_times = sdr.SDR_RX_receive_continuous(
+    T_len=5,
+    spectrum=True,
+    plot_flag=True
+)
+```
+
+### Signal Offset Detection
+
+```python
+# Create test signal
+test_signal = np.exp(1j * 2 * np.pi * 0.1 * np.arange(1024))
+
+# Transmit and receive with offset detection
+rx_signal, sinr, tx_gain, rx_gain, attempts, correlation, process_time = sdr.SDR_RXTX_offset(
+    SAMPLES=test_signal,
+    leadingzeros=500,
+    add_td_samples=16
+)
+```
+
+## Features
+
+### 1. Dynamic Hardware Abstraction
+
+The system implements a flexible hardware abstraction layer that automatically adapts to different SDR platforms. The `setupSDR` method dynamically configures the appropriate driver based on the specified device type:
+
+```python
+def setupSDR(self, fs=6000000, device_name='ad9361', Rx_CHANNEL=2, Tx_CHANNEL=1):
+    if device_name.lower()=='ad9361':
+        sdr = ad9361(uri=self.SDR_IP)
+    elif device_name.lower()=='ad9364':
+        sdr = ad9364(self.SDR_IP)
+    elif device_name.lower()=='adrv9009':
+        sdr = adrv9009(uri=self.SDR_IP, jesd_monitor=False, jesd=None)
+    # ... configuration continues
+```
+
+This abstraction allows the same high-level code to work across multiple hardware platforms without modification.
+
+### 2. Adaptive Parameter Configuration
+
+The system implements a sophisticated property detection mechanism that checks whether specific parameters can be set on the current hardware:
+
+```python
+def has_setter(self, cls, property_name):
+    prop = getattr(cls, property_name, None)
+    return isinstance(prop, property) and prop.fset is not None
+```
+
+This allows the system to gracefully handle differences between hardware platforms and avoid errors when attempting to set unsupported parameters.
+
+### 3. Intelligent Signal Processing
+
+The `SDR_RXTX_offset` method implements an advanced signal correlation algorithm that:
+
+1. Transmits a known signal
+2. Receives the signal with potential distortions and delays
+3. Automatically detects the signal offset using correlation
+4. Calculates the SINR to assess signal quality
+5. Provides detailed metrics on the transmission quality
+
+This enables precise characterization of the channel and system performance.
+
+### 4. Continuous Monitoring with Performance Metrics
+
+The `SDR_RX_receive_continuous` method implements a sophisticated monitoring system that:
+
+1. Continuously receives data for a specified duration
+2. Optionally performs real-time spectrum analysis
+3. Tracks processing time and data rates
+4. Provides visualization of the received signals and spectra
+
+This enables real-time monitoring and analysis of radar signals.
+
+### 5. Automatic Gain Optimization
+
+The `find_good_max_TX_gain_value` method implements an intelligent algorithm to automatically determine the optimal transmit gain:
+
+1. Starts with a low transmit gain
+2. Iteratively increases the gain while measuring SINR
+3. Stops when the desired SINR is achieved
+4. Provides visualization of the SINR vs. gain relationship
+
+This enables automatic optimization of system parameters for optimal performance.
+
+## Applications
+
+- **Research and Development**: Flexible platform for radar signal processing research
+- **Educational Tool**: Hands-on learning platform for radar principles
+- **Prototyping**: Rapid development of custom radar applications
+- **Channel Characterization**: Analysis of RF propagation environments
+- **Signal Processing Development**: Platform for developing and testing signal processing algorithms
+
+
+
+          
+# RadarDevice class
+
+Our developed RadarDevice class (sdradi/myradar4.py) is a sophisticated radar sensing system designed for high-precision detection and tracking applications. The system integrates Software-Defined Radio (SDR) with phased array technology to enable advanced radar capabilities.
+
+The RadarDevice class provides a comprehensive framework for radar sensing applications, combining the flexibility of software-defined radio with the capabilities of phased array technology. Its modular design and extensive configuration options make it suitable for a wide range of applications from research to practical deployment.
+
+
+## System Architecture
+
+The RadarDevice class serves as the core controller for a complete radar sensing system with the following components:
+
+1. **Software-Defined Radio (SDR)** - Handles signal processing and digital-to-analog/analog-to-digital conversion
+2. **Phaser Device** - Controls the phased array antenna system for beam steering
+3. **Signal Processing Pipeline** - Processes raw radar data into meaningful information
+
+## Key Features
+
+- **Radar System** - Enables precise range and velocity measurements
+- **Phased Array Beam Steering** - Allows for electronic beam steering without mechanical movement
+- **Time Division Duplexing (TDD)** - Synchronizes transmit and receive operations
+- **Configurable Parameters** - Adjustable bandwidth, sample rate, and chirp characteristics
+- **Data Recording** - Capability to save raw radar data for offline processing
+- **CFAR Detection** - Constant False Alarm Rate detection for target identification
+- **Range-Doppler Processing** - 2D processing for simultaneous range and velocity estimation
+
+## Technical Specifications
+
+| Parameter | Typical Value | Description |
+|-----------|---------------|-------------|
+| Center Frequency | 2.1 GHz | SDR carrier frequency |
+| Output Frequency | 10 GHz | Final radar output frequency |
+| Chirp Bandwidth | 500 MHz | Determines range resolution |
+| Sample Rate | 0.6 MHz | ADC/DAC sampling rate |
+| Ramp Time | 0.5 ms | Duration of frequency chirp |
+| Range Resolution | ~0.3 m | Minimum distinguishable range difference |
+
+## System Setup
+
+### Hardware Requirements
+
+- SDR device (compatible with AD9361)
+- Phaser device (CN0566 or compatible)
+- Computing platform with Python support
+- Appropriate antennas and RF connections
+
+### Software Dependencies
+
+```python
+import adi
+import numpy as np
+from scipy import signal
+import matplotlib.pyplot as plt
+import time
+from datetime import datetime
+```
+
+### Initialization
+
+The system is initialized with the following parameters:
+
+```python
+radar = RadarDevice(
+    sdrurl="ip:192.168.2.1",         # IP address of SDR device
+    phaserurl="ip:192.168.2.2",      # IP address of Phaser device
+    sample_rate=0.6e6,               # 600 kHz sample rate
+    center_freq=2.1e9,               # 2.1 GHz center frequency
+    chirp_bandwidth=500e6,           # 500 MHz chirp bandwidth
+    output_freq=10e9,                # 10 GHz output frequency
+    ramp_time=0.5e3                  # 0.5 ms ramp time
+)
+```
+
+## Operational Modes
+
+### Standard FMCW Mode
+
+In this mode, the system operates as a standard FMCW radar:
+
+```python
+# Configure the system
+radar.transceiversetup(signaltype='sinusoid')
+radar.transmit()
+
+# Receive and process data
+data, datalen = radar.receive()
+spectrum = radar.get_spectrum()
+
+# Apply CFAR detection
+cfar_results, threshold = radar.cfar(
+    spectrum, 
+    num_guard_cells=4, 
+    num_ref_cells=8, 
+    bias=3.0
+)
+```
+
+### TDD Burst Mode
+
+For more advanced applications requiring synchronized transmit/receive operations:
+
+```python
+# Initialize with TDD mode enabled
+radar = RadarDevice(
+    # ... other parameters ...
+    tddmode=True,
+    num_chirps=8,
+    ramp_mode="single_sawtooth_burst"
+)
+
+# Trigger a burst
+radar.tdd_burst()
+
+# Receive data
+data, datalen = radar.receive()
+
+# Process range-Doppler data
+rx_bursts, range_doppler_data = radar.get_rangedoppler(data)
+```
+
+### Beam Steering
+
+The phased array can be electronically steered to focus on specific directions:
+
+```python
+# Steer the beam to 30 degrees azimuth
+radar.steer_angle(30)
+
+# Receive data from that direction
+data, datalen = radar.receive()
+```
+
+## Data Processing Pipeline
+
+1. **Raw Data Acquisition** - Capture complex I/Q samples from the SDR
+2. **Spectrum Analysis** - Convert time-domain data to frequency domain
+3. **CFAR Detection** - Apply adaptive thresholding to identify targets
+4. **Range-Doppler Processing** - Create 2D maps of range vs. velocity
+5. **Target Extraction** - Extract target parameters from processed data
+
+## Features
+
+### Adaptive Chirp Configuration
+
+The system dynamically adjusts chirp parameters based on detection requirements:
+
+```python
+# Adjust range resolution by changing bandwidth
+new_slope, freq, dist = radar.set_range_res(new_bw=800e6)
+```
+
+### Synchronized Multi-Chirp Processing
+
+The TDD mode enables precise timing control for multi-chirp processing:
+
+```python
+# Configure TDD parameters
+radar.tdd.frame_length_ms = 1.7    # Frame length in ms
+radar.tdd.burst_count = 16         # Number of chirps per burst
+```
+
+### Data Recording and Playback
+
+The system can record raw radar data for offline analysis:
+
+```python
+# Enable data recording
+radar = RadarDevice(
+    # ... other parameters ...
+    savedata=True,
+    savefolder="radar_data",
+    savefilename="experiment_1.npy"
+)
+
+# Later, stop recording and save data
+radar.stop_device()
+```
+
+### Integrated SDR and Phased Array Control
+
+The RadarDevice class provides a unified interface for controlling both the SDR and phased array components, simplifying system operation and enabling advanced radar techniques.
+
+### Flexible Signal Generation
+
+The system supports multiple signal types, including sinusoidal and OFDM waveforms, allowing for experimentation with different radar modulation schemes.
+
+### Adaptive Parameter Configuration
+
+Runtime adjustment of key parameters such as bandwidth, beam direction, and processing algorithms enables the system to adapt to different sensing scenarios.
+
+### Comprehensive Data Management
+
+Built-in data recording capabilities with metadata preservation ensures that all relevant system parameters are saved alongside the raw data for reproducible analysis.
+
+### Advanced Processing Pipeline
+
+The integrated processing pipeline from raw data to target detection streamlines the development of radar applications.
+
