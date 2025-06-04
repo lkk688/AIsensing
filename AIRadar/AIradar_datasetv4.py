@@ -15,7 +15,10 @@ from torch.utils.data import Dataset
 from AIradar_processing import RadarProcessing
 IMG_FORMAT=".pdf" #".png"
 import time
-from datautil import *
+from AIRadarLib.datautil import *
+from AIRadarLib.radar_det import cfar_2d_pytorch, cfar_2d_numpy
+from AIRadarLib.target_utils import generate_radar_targets, create_target_mask
+from AIRadarLib.visualization import plot_detection_results
 
 class RadarDataset(Dataset):
     # In the RadarDataset class initialization, update the default parameters
@@ -85,6 +88,10 @@ class RadarDataset(Dataset):
         self.snr_min = snr_min
         self.snr_max = snr_max
         self.max_targets = max_targets
+        self.target_max_range = 100  # meters
+        self.target_min_range = 1  # meters
+        self.target_min_velocity = 0  # m/s
+        self.target_max_velocity = 10  # m/s
         self.save_path = save_path
         self.signal_freq = signal_freq
 
@@ -256,7 +263,19 @@ class RadarDataset(Dataset):
         }
 
         for i in tqdm(range(self.num_samples), desc="Generating samples"):
-            targets = self._generate_random_targets()
+            targets = generate_radar_targets(
+                num_targets=self.max_targets,  # or self.max_targets for random number
+                min_range=self.target_min_range,    # or self.min_range
+                max_range=self.target_max_range,   # or self.max_range
+                min_velocity=self.target_min_velocity,
+                max_velocity=self.target_max_velocity,
+                min_rcs=5.0,
+                max_rcs=30.0,
+                azimuth_range=(-45, 45),
+                elevation_range=(-10, 10),
+                range_factor=0.5,
+                velocity_factor=0.5
+            )
             if simulate_rf_chain:
                 # Use a higher analog sample rate for upconversion/downconversion
                 if analog_sample_rate is None:
@@ -418,10 +437,29 @@ class RadarDataset(Dataset):
 
             # Perform target detection using CFAR for Range-Doppler map with shape [2, num_doppler_bins, num_range_bins]
             #[2, num_doppler_bins, num_range_bins]
-            detection_results = self._cfar_detection(rd_map[0,:])#(2, 128, 256)
+            detection_results = cfar_2d_numpy(
+                rd_map,
+                num_train=8,
+                num_guard=4,
+                range_res=self.range_resolution,          # meters per range bin
+                doppler_res=self.velocity_resolution, #0.25,       # m/s per Doppler bin
+                max_range=100,
+                max_speed=50,
+                method='GO',
+                estimate_aoa=False,
+            )#list of dicts
             
+            #detection_results = self._cfar_detection(rd_map[0,:])#(2, 128, 256)
+            #List of Multiple targets in dict
             if targets is not None:
-                target_mask = self._create_target_mask(targets) #(128, 256, 1)
+                target_mask = create_target_mask(
+                    targets=targets,
+                    num_doppler_bins=self.num_doppler_bins,
+                    num_range_bins=self.num_range_bins,
+                    range_resolution=self.range_resolution,
+                    velocity_resolution=self.velocity_resolution,
+                    precision=self.precision
+                ) #(128, 256, 1)
                 # Store the partially flattened rx_signal
                 dataset['time_domain_data'][i, :, :, 0] = np.real(rx_signal)
                 dataset['time_domain_data'][i, :, :, 1] = np.imag(rx_signal)
@@ -429,8 +467,23 @@ class RadarDataset(Dataset):
                 dataset['target_masks'][i] = target_mask
                 dataset['target_info'].append(targets)
                 dataset['detection_results'].append(detection_results)
+
+                # Plot detection results if visualize is True
+                if visualize:
+                    plot_detection_results(
+                        rd_map=rd_map,
+                        target_mask=target_mask,
+                        targets=targets,
+                        detection_results=detection_results,
+                        range_resolution=self.range_resolution,
+                        velocity_resolution=self.velocity_resolution,
+                        num_doppler_bins=self.num_doppler_bins,
+                        num_range_bins=self.num_range_bins,
+                        save_path=os.path.join(savevis_path, f"detection_results_{i}{IMG_FORMAT}"),
+                        title=f"Radar Detection Results - Sample {i+1}",
+                        show_plot=False
+                    )
                 
-            
         print("Dataset generation complete!")
         return dataset
 
@@ -531,56 +584,6 @@ class RadarDataset(Dataset):
             else:
                 return continuous_signal.reshape(num_chirps, total_samples_per_chirp)
 
-    def _generate_random_targets(self):
-        """
-        Generate random radar targets.
-        
-        Returns:
-            List of dictionaries containing target parameters
-        """
-        # Generate random number of targets (1 to max_targets) - ensure at least 1 target
-        
-        num_targets = 1 #random.randint(1, self.max_targets)
-        min_range = 1 #self.min_range
-        max_range = 30 #self.max_range
-        min_velocity = 0.1 #self.min_velocity
-        max_velocity = 30 #self.max_velocity
-        
-        # List to store target information
-        targets = []
-        
-        # Generate target parameters
-        for _ in range(num_targets):
-            # Generate random target parameters with more reasonable ranges
-            distance = random.uniform(min_range, max_range * 0.5)
-            velocity = random.uniform(max_velocity * 0.5, max_velocity * 0.5)
-            
-            # Increase RCS range for better visibility
-            rcs = random.uniform(5.0, 30.0)  # Increase from (1.0, 20.0)
-            
-            # Generate random 3D position (for ray-tracing)
-            azimuth = random.uniform(-45, 45)  # Narrower azimuth range
-            elevation = random.uniform(-10, 10)  # Narrower elevation range
-            
-            # Convert spherical to Cartesian coordinates
-            azimuth_rad = np.deg2rad(azimuth)
-            elevation_rad = np.deg2rad(elevation)
-            x = distance * np.cos(elevation_rad) * np.sin(azimuth_rad)
-            y = distance * np.cos(elevation_rad) * np.cos(azimuth_rad)
-            z = distance * np.sin(elevation_rad)
-            
-            # Store target information
-            target = {
-                'distance': distance,
-                'velocity': velocity,
-                'rcs': rcs,
-                'azimuth': azimuth,
-                'elevation': elevation,
-                'position': (x, y, z)
-            }
-            targets.append(target)
-        
-        return targets
     
     def _ray_tracing_simulation(self, tx_signal, targets, perfect_mode=False, flatten_output=False, tx_signal_is_upconverted=False, analog_sample_rate=None):
         """
@@ -918,128 +921,7 @@ class RadarDataset(Dataset):
         
         return rd_map
     
-    def _cfar_detection(self, rd_map):
-        """
-        Perform CFAR detection on range-Doppler map with improved false alarm control.
-        
-        Args:
-            rd_map: Range-Doppler map with shape [2, num_doppler_bins, num_range_bins]
-            
-        Returns:
-            List of detected targets with range and Doppler information
-        """
-        # Convert complex RD map to magnitude
-        rd_magnitude = np.sqrt(rd_map[0]**2 + rd_map[1]**2)
-        
-        # Define CFAR parameters - increased guard and training cells
-        guard_cells = (3, 3)  # Increased from (2, 2)
-        training_cells = (6, 6)  # Increased from (4, 4)
-        pfa = 1e-5  # Reduced probability of false alarm
-        
-        # Initialize CFAR detection map
-        cfar_map = np.zeros((self.num_doppler_bins, self.num_range_bins), dtype=bool)
-        
-        # Apply CFAR detection with boundary checks
-        for d_idx in range(self.num_doppler_bins):
-            for r_idx in range(self.num_range_bins):
-                cut_value = rd_magnitude[d_idx, r_idx]
-                
-                # Calculate window boundaries with safe limits
-                d_min = max(0, d_idx - guard_cells[0] - training_cells[0])
-                d_max = min(self.num_doppler_bins - 1, d_idx + guard_cells[0] + training_cells[0])
-                r_min = max(0, r_idx - guard_cells[1] - training_cells[1])
-                r_max = min(self.num_range_bins - 1, r_idx + guard_cells[1] + training_cells[1])
-                
-                # Extract training cells excluding guard area
-                training_region = []
-                for di in range(d_min, d_max + 1):
-                    for ri in range(r_min, r_max + 1):
-                        if abs(di - d_idx) > guard_cells[0] or abs(ri - r_idx) > guard_cells[1]:
-                            training_region.append(rd_magnitude[di, ri])
-                
-                # Ordered statistic CFAR with adaptive threshold
-                if len(training_region) > 0:
-                    training_region.sort()
-                    k = int(len(training_region) * (1 - pfa))
-                    threshold = training_region[min(k, len(training_region) - 1)] * 1.5
-                    cfar_map[d_idx, r_idx] = cut_value > threshold
-
-        # Post-processing to remove isolated detections
-        filtered_cfar_map = np.zeros_like(cfar_map)
-        for d_idx in range(1, self.num_doppler_bins-1):
-            for r_idx in range(1, self.num_range_bins-1):
-                if cfar_map[d_idx, r_idx]:
-                    neighbor_count = np.sum(cfar_map[d_idx-1:d_idx+2, r_idx-1:r_idx+2])
-                    filtered_cfar_map[d_idx, r_idx] = neighbor_count > 1
-
-        # Extract and validate targets
-        detected_targets = []
-        for d_idx in range(self.num_doppler_bins):
-            for r_idx in range(self.num_range_bins):
-                if filtered_cfar_map[d_idx, r_idx]:
-                    distance = r_idx * self.range_resolution
-                    velocity = (d_idx - self.num_doppler_bins // 2) * self.velocity_resolution
-                    noise_floor = np.median(rd_magnitude)
-                    snr_db = 20 * np.log10(rd_magnitude[d_idx, r_idx] / (noise_floor + 1e-10))
-                    
-                    if snr_db > 10.0:  # SNR threshold
-                        detected_targets.append({
-                            'range_bin': r_idx,
-                            'doppler_bin': d_idx,
-                            'distance': distance,
-                            'velocity': velocity,
-                            'snr': snr_db
-                        })
-
-        return detected_targets
     
-    def _create_target_mask(self, targets):
-        """
-        Create ground truth mask for targets.
-        
-        Args:
-            targets: List of target dictionaries
-            
-        Returns:
-            Binary mask with shape [num_doppler_bins, num_range_bins, 1]
-        """
-        # Initialize target mask
-        target_mask = np.zeros((self.num_doppler_bins, self.num_range_bins, 1), dtype=self.precision)
-        
-        # Create Gaussian-shaped targets in the mask
-        for target in targets:
-            # Calculate range and Doppler bin
-            range_bin = int(target['distance'] / self.range_resolution)
-            doppler_bin = int(self.num_doppler_bins // 2 + target['velocity'] / self.velocity_resolution)
-            
-            # Ensure bins are within valid range
-            if (0 <= range_bin < self.num_range_bins and 
-                0 <= doppler_bin < self.num_doppler_bins):
-                
-                # Create Gaussian-shaped target (to account for target spread)
-                sigma_range = 1.0  # Standard deviation in range dimension
-                sigma_doppler = 1.0  # Standard deviation in Doppler dimension
-                
-                # Define region around target
-                r_min = max(0, int(range_bin - 3*sigma_range))
-                r_max = min(self.num_range_bins - 1, int(range_bin + 3*sigma_range))
-                d_min = max(0, int(doppler_bin - 3*sigma_doppler))
-                d_max = min(self.num_doppler_bins - 1, int(doppler_bin + 3*sigma_doppler))
-                
-                # Fill target mask with Gaussian shape
-                for r in range(r_min, r_max + 1):
-                    for d in range(d_min, d_max + 1):
-                        # Calculate Gaussian value
-                        exponent = -0.5 * ((r - range_bin) / sigma_range)**2 - 0.5 * ((d - doppler_bin) / sigma_doppler)**2
-                        value = np.exp(exponent)
-                        
-                        # Update mask (use maximum value in case of overlapping targets)
-                        target_mask[d, r, 0] = max(target_mask[d, r, 0], value)
-        
-        # Threshold mask to create binary target mask
-        target_mask = (target_mask > 0.1).astype(self.precision)
-        
-        return target_mask
 
 if __name__ == '__main__':
     # Test and visualization of the RadarDataset

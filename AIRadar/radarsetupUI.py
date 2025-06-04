@@ -1,9 +1,12 @@
 import sys
-from PyQt5.QtWidgets import (
+try:
+    from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QTableWidget, QTableWidgetItem, QGroupBox,
-    QPushButton, QTextEdit
-)
-from PyQt5.QtCore import Qt
+    QPushButton, QTextEdit)
+    from PyQt5.QtCore import Qt
+except ImportError:
+    print("Error: PyQt5 is not installed. Please install it using 'pip install PyQt5'")
+    sys.exit(1)
 
 PARAMETER_EXPLANATIONS = {
     "Bandwidth": {

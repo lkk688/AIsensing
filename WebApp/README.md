@@ -1,5 +1,11 @@
+# AIsensing WebApp
 
-This React-based web application provides an interactive interface for tuning FMCW (Frequency-Modulated Continuous Wave) radar parameters. It allows users to visualize and understand the relationships between different radar parameters and their effects on radar performance.
+## Introduction
+We developed a Radar UI application using PyQt (sdradi/radarappwdevice4.py), supporting both real-time data from physical radar devices and playback from recorded datasets. Building on this foundation, we redesigned the application as a modern web-based system, featuring a React frontend and a Python FastAPI backend. The backend handles all core functionalities, including radar parameter configuration, signal processing, and data delivery. The React frontend provides an intuitive and interactive interface for users to adjust radar parameters, view real-time waveforms, and examine detection results. The frontend communicates with the backend via RESTful APIs and WebSocket for real-time data updates, ensuring seamless data flow and responsive user interactions.
+
+Specifically, we implemented two user interfaces:
+    - Radar Parameter Tuning Interface – This interactive UI enables users to configure radar parameters, view derived performance metrics, and visualize waveform outputs. It helps users explore the relationships between parameter settings and radar system performance.
+	- Real-Time Detection Interface – This UI displays real-time radar waveforms and detection results. It allows users to dynamically adjust radar settings and immediately observe their impact on detection performance, offering a clear and engaging visualization of the radar processing pipeline.
 
 ## Setup the Repo
 ```bash

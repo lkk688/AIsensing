@@ -165,6 +165,13 @@ cython_debug/
 /data/*
 .DS_Store
 *.tex
+*.bib
 /ISAC/*
 /WebApp/WebAppFrontend/node_modules/*
 node_modules/
+*.pyc
+__pycache__/
+*.egg-info/
+build/
+dist/
+.env
