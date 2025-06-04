@@ -657,3 +657,88 @@ def data2db(fft_data):
         np.ndarray: dB magnitude spectrum
     """
     return 20 * np.log10(np.abs(fft_data) + 1e-10)
+
+def define_autonomous_driving_radar_parameters(radar_type='long_range'):
+    """
+    Define realistic radar parameters for autonomous driving applications.
+    
+    Args:
+        radar_type: Type of automotive radar ('long_range', 'mid_range', or 'short_range')
+        
+    Returns:
+        Dictionary containing radar parameters and performance metrics
+    """
+    # Common parameters for automotive radars
+    center_freq = 77e9  # 77 GHz is standard for automotive radar
+    
+    if radar_type == 'long_range':
+        # Long-range radar (LRR) for adaptive cruise control, collision warning
+        # Typical range: 150-250m, narrow field of view
+        sample_rate = 25e6       # 25 MHz
+        bandwidth = 500e6        # 500 MHz for ~30cm range resolution
+        chirp_duration = 40e-6   # 40 μs
+        num_chirps = 128         # More chirps for better velocity resolution
+        description = "Long-range radar for highway driving, adaptive cruise control"
+        
+    elif radar_type == 'mid_range':
+        # Mid-range radar (MRR) for cross-traffic alert, lane change assist
+        # Typical range: 60-100m, wider field of view
+        sample_rate = 25e6       # 25 MHz
+        bandwidth = 800e6        # 800 MHz for ~19cm range resolution
+        chirp_duration = 30e-6   # 30 μs
+        num_chirps = 64          # Balanced velocity resolution
+        description = "Mid-range radar for lane change assist, cross-traffic alert"
+        
+    elif radar_type == 'short_range':
+        # Short-range radar (SRR) for parking assist, blind spot detection
+        # Typical range: 0.15-30m, very wide field of view
+        sample_rate = 40e6       # 40 MHz
+        bandwidth = 1.5e9        # 1.5 GHz for ~10cm range resolution
+        chirp_duration = 20e-6   # 20 μs
+        num_chirps = 32          # Fewer chirps, faster update rate
+        description = "Short-range radar for parking assist, blind spot detection"
+        
+    else:
+        raise ValueError(f"Unknown radar type: {radar_type}")
+    
+    # Calculate radar performance metrics
+    print(f"\n=== {radar_type.upper()} RADAR PARAMETERS ===\n")
+    print(f"Description: {description}")
+    print(f"Center Frequency: {center_freq/1e9:.1f} GHz")
+    print(f"Bandwidth: {bandwidth/1e6:.1f} MHz")
+    print(f"Sample Rate: {sample_rate/1e6:.1f} MHz")
+    print(f"Chirp Duration: {chirp_duration*1e6:.1f} μs")
+    print(f"Number of Chirps: {num_chirps}")
+    
+    # Call the existing calculate_radar_parameters function
+    radar_metrics = calculate_radar_parameters(
+        sample_rate=sample_rate,
+        chirp_duration=chirp_duration,
+        center_freq=center_freq,
+        bandwidth=bandwidth,
+        num_chirps=num_chirps
+    )
+    
+    # Add the input parameters to the results
+    radar_metrics.update({
+        "radar_type": radar_type,
+        "description": description,
+        "center_freq": center_freq,
+        "bandwidth": bandwidth,
+        "sample_rate": sample_rate,
+        "chirp_duration": chirp_duration,
+        "num_chirps": num_chirps
+    })
+    
+    return radar_metrics
+
+# Example usage
+if __name__ == "__main__":
+    # Calculate parameters for all radar types
+    lrr_params = define_autonomous_driving_radar_parameters('long_range')
+    print("\n" + "-"*50 + "\n")
+    
+    mrr_params = define_autonomous_driving_radar_parameters('mid_range')
+    print("\n" + "-"*50 + "\n")
+    
+    srr_params = define_autonomous_driving_radar_parameters('short_range')

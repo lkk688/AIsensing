@@ -42,6 +42,7 @@ Python FastAPI server:
 AIsensing/WebApp$ npm install react-plotly.js plotly.js
 AIsensing/FastAPIbackend$ pip install -r requirements.txt
 AIsensing/WebApp/FastAPIbackend$ uvicorn main:app --reload
+pip install fastapi websockets
 ```
 
 ## Key Files:

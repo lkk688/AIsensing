@@ -8,6 +8,19 @@ from plotly.utils import PlotlyJSONEncoder
 # Import the waveform generation function from our radar module
 from radar.waveform import generate_waveform
 
+# Import necessary modules for WebSocket
+from fastapi import WebSocket
+from fastapi.websockets import WebSocketDisconnect
+import asyncio
+import json
+import numpy as np
+import sys
+import os
+
+# Add the path to sdradi to import myradar4
+sys.path.append('/home/lkk/Developer/AIsensing/sdradi')
+from myradar4 import Radar
+
 app = FastAPI(title="FMCW Radar API")
 
 # Enable CORS for React frontend
@@ -35,6 +48,77 @@ class RadarResponse(BaseModel):
 def read_root():
     return {"message": "FMCW Radar API is running"}
 
+# Connection manager to handle multiple WebSocket connections
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def send_data(self, data: dict):
+        for connection in self.active_connections:
+            await connection.send_json(data)
+
+manager = ConnectionManager()
+
+
+# Initialize radar instance
+radar = None
+
+@app.websocket("/ws/radar")
+async def websocket_radar(websocket: WebSocket):
+    await manager.connect(websocket)
+    global radar
+    
+    try:
+        # Initialize radar if not already initialized
+        if radar is None:
+            # You may need to adjust these parameters based on your setup
+            radar = Radar(
+                sdrurl="ip:phaser.local:50901",
+                phaserurl="ip:phaser.local",
+                Rx_CHANNEL=2,
+                Tx_CHANNEL=1,
+                fs=5e6,
+                center_freq=2.1e9,
+                signal_freq=100e3,
+                fft_size=1024*8
+            )
+            
+        while True:
+            # Receive data from radar
+            data, datalen = radar.receive()
+            
+            # Convert complex data to serializable format
+            real_data = data.real.tolist()
+            imag_data = data.imag.tolist()
+            
+            # Create response data
+            response_data = {
+                "real": real_data,
+                "imag": imag_data,
+                "datalen": datalen,
+                "timestamp": time.time()
+            }
+            
+            # Send data to client
+            await websocket.send_json(response_data)
+            
+            # Add a small delay to prevent overwhelming the connection
+            await asyncio.sleep(0.1)
+            
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception as e:
+        print(f"Error in WebSocket connection: {str(e)}")
+        if websocket in manager.active_connections:
+            manager.disconnect(websocket)
+            
 @app.post("/api/radar/waveform", response_model=RadarResponse)
 def radar_waveform(params: RadarParams):
     import datetime

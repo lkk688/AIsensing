@@ -19,6 +19,9 @@ const Navbar = () => {
           <Button color="inherit" component={RouterLink} to="/waveform-generator">
             Waveform Generator
           </Button>
+          <Button color="inherit" component={RouterLink} to="/radar-data-viewer">
+            Radar Data Viewer
+          </Button>
         </Box>
       </Toolbar>
     </AppBar>

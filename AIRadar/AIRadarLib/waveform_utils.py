@@ -198,3 +198,78 @@ def generate_spectrum(freq_range, start_freq, end_freq, bandwidth, waveform_type
         spectrum[i] = magnitude
     
     return spectrum
+
+
+def generate_fmcw_chirp_signal(num_chirps, total_samples_per_chirp, active_samples, sample_rate, 
+                              slope, tx_power=1.0, edge_ratio=0.1, window_type='edge'):
+    """
+    Generate phase-continuous FMCW chirp signal with proper Doppler handling,
+    optional edge windowing and idle gaps.
+
+    Args:
+        num_chirps: Number of chirps to generate
+        total_samples_per_chirp: Total samples per chirp including idle time
+        active_samples: Number of active samples in each chirp
+        sample_rate: Sampling rate in Hz
+        slope: Chirp slope in Hz/s
+        tx_power: Transmission power scale (float)
+        edge_ratio: Proportion of chirp to taper at each edge (0–0.5)
+        window_type: Windowing function ('edge', 'hann', 'hamming', or None)
+
+    Returns:
+        continuous_signal: The continuous signal before reshaping
+        chirp_duration: Duration of each chirp in seconds
+    """
+    # Create continuous time vector for entire frame
+    t_frame = np.arange(num_chirps * total_samples_per_chirp) / sample_rate
+    
+    # Calculate chirp duration from active samples
+    chirp_duration = active_samples / sample_rate
+    
+    # Generate phase-continuous signal
+    phase = 2 * np.pi * (
+        0.5 * slope * (t_frame % chirp_duration)**2 +  # Chirp phase
+        slope * chirp_duration * (t_frame // chirp_duration) * (t_frame % chirp_duration)  # Phase accumulation
+    )
+    
+    # Create continuous signal
+    continuous_signal = np.exp(1j * phase)
+    
+    # Apply windowing to active portion of each chirp
+    if window_type:
+        # Create window function
+        if window_type == 'hann':
+            window = np.hanning(active_samples)
+        elif window_type == 'hamming':
+            window = np.hamming(active_samples)
+        elif window_type == 'edge':
+            # Enforce min edge length
+            min_edge_len = 16
+            edge_len = max(int(edge_ratio * active_samples), min_edge_len)
+            
+            # Ensure even length for symmetric hann windowing
+            edge_len = edge_len if edge_len % 2 == 0 else edge_len + 1
+            total_taper_len = 2 * edge_len
+            
+            if total_taper_len >= active_samples:
+                # Fall back to full Hann window if taper too large
+                window = np.hanning(active_samples)
+            else:
+                hann_win = np.hanning(total_taper_len)
+                rise = hann_win[:edge_len]
+                fall = hann_win[edge_len:]
+                flat = np.ones(active_samples - total_taper_len)
+                window = np.concatenate([rise, flat, fall])
+        else:  # No windowing
+            window = np.ones(active_samples)
+        
+        # Apply window to each chirp's active portion
+        for i in range(num_chirps):
+            start_idx = i * total_samples_per_chirp
+            continuous_signal[start_idx:start_idx + active_samples] *= window
+    
+    # Apply power scaling
+    scale = np.sqrt(tx_power)
+    continuous_signal *= scale
+    
+    return continuous_signal, chirp_duration

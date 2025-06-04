@@ -19,6 +19,15 @@ from AIRadarLib.datautil import *
 from AIRadarLib.radar_det import cfar_2d_pytorch, cfar_2d_numpy
 from AIRadarLib.target_utils import generate_radar_targets, create_target_mask
 from AIRadarLib.visualization import plot_detection_results
+from AIRadarLib.waveform_utils import generate_fmcw_chirp_signal
+from AIRadarLib.channel_simulation import (
+    generate_fmcw_chirp,
+    add_realistic_effects,
+    add_noise,
+    calculate_received_power,
+    ray_tracing_simulation
+)
+from AIRadarLib.signal_processing import fmcw_demodulate, time_to_range_doppler
 
 class RadarDataset(Dataset):
     # In the RadarDataset class initialization, update the default parameters
@@ -508,57 +517,17 @@ class RadarDataset(Dataset):
             - If return_full=False: [num_chirps, samples_per_chirp] complex array
             - If return_full=True: 1D waveform with all chirps concatenated
         """
-        # Create continuous time vector for entire frame
-        t_frame = np.arange(num_chirps * total_samples_per_chirp) / sample_rate
-        
-        # Calculate chirp duration from active samples
-        chirp_duration = active_samples / sample_rate
-        
-        # Generate phase-continuous signal
-        phase = 2 * np.pi * (
-            0.5 * slope * (t_frame % chirp_duration)**2 +  # Chirp phase
-            slope * chirp_duration * (t_frame // chirp_duration) * (t_frame % chirp_duration)  # Phase accumulation
+        # Generate the continuous signal using the utility function
+        continuous_signal, chirp_duration = generate_fmcw_chirp_signal(
+            num_chirps=num_chirps,
+            total_samples_per_chirp=total_samples_per_chirp,
+            active_samples=active_samples,
+            sample_rate=sample_rate,
+            slope=slope,
+            tx_power=tx_power,
+            edge_ratio=edge_ratio,
+            window_type=window_type
         )
-        
-        # Create continuous signal
-        continuous_signal = np.exp(1j * phase)
-        
-        # Apply windowing to active portion of each chirp
-        if window_type:
-            # Create window function
-            if window_type == 'hann':
-                window = np.hanning(active_samples)
-            elif window_type == 'hamming':
-                window = np.hamming(active_samples)
-            elif window_type == 'edge':
-                # Enforce min edge length
-                min_edge_len = 16
-                edge_len = max(int(edge_ratio * active_samples), min_edge_len)
-                
-                # Ensure even length for symmetric hann windowing
-                edge_len = edge_len if edge_len % 2 == 0 else edge_len + 1
-                total_taper_len = 2 * edge_len
-                
-                if total_taper_len >= active_samples:
-                    # Fall back to full Hann window if taper too large
-                    window = np.hanning(active_samples)
-                else:
-                    hann_win = np.hanning(total_taper_len)
-                    rise = hann_win[:edge_len]
-                    fall = hann_win[edge_len:]
-                    flat = np.ones(active_samples - total_taper_len)
-                    window = np.concatenate([rise, flat, fall])
-            else:  # No windowing
-                window = np.ones(active_samples)
-            
-            # Apply window to each chirp's active portion
-            for i in range(num_chirps):
-                start_idx = i * total_samples_per_chirp
-                continuous_signal[start_idx:start_idx + active_samples] *= window
-        
-        # Apply power scaling
-        scale = np.sqrt(tx_power)
-        continuous_signal *= scale
         
         # Create zero padding for idle time in each chirp
         if total_samples_per_chirp > active_samples:
@@ -583,7 +552,6 @@ class RadarDataset(Dataset):
                 return continuous_signal
             else:
                 return continuous_signal.reshape(num_chirps, total_samples_per_chirp)
-
     
     def _ray_tracing_simulation(self, tx_signal, targets, perfect_mode=False, flatten_output=False, tx_signal_is_upconverted=False, analog_sample_rate=None):
         """
@@ -598,328 +566,104 @@ class RadarDataset(Dataset):
         Returns:
             Complex RX signal with shape [num_rx, num_chirps, samples_per_chirp] or flattened 1D array
         """
-        tx_is_flattened = tx_signal.ndim == 1
-        if tx_is_flattened:
-            tx_signal_reshaped = tx_signal.reshape(self.num_chirps, -1)
-            samples_per_chirp = tx_signal_reshaped.shape[1]
-        else:
-            tx_signal_reshaped = tx_signal
-            samples_per_chirp = tx_signal.shape[1]
-
-        rx_signal = np.zeros((self.num_rx, self.num_chirps, samples_per_chirp), dtype=np.complex64)
-
-        rx_positions = []
-        rx_spacing = self.wavelength / 2  # Half-wavelength spacing
-        for rx_idx in range(self.num_rx):
-            rx_positions.append((rx_idx * rx_spacing, 0, 0))
-
-        if perfect_mode and (targets is None or len(targets) == 0):
-            perfect_target = {
-                'distance': 50.0,
-                'velocity': 10.0,
-                'rcs': 20.0,
-                'position': (50.0, 0, 0)
-            }
-            targets = [perfect_target]
-
-        for target in targets:
-            distance = target['distance']
-            velocity = target['velocity']
-            rcs = target['rcs']
-            position = target['position']
-
-            for rx_idx, rx_pos in enumerate(rx_positions):
-                dx = position[0] - rx_pos[0]
-                dy = position[1] - rx_pos[1]
-                dz = position[2] - rx_pos[2]
-                exact_distance = np.sqrt(dx**2 + dy**2 + dz**2)
-
-                delay_seconds = 2 * exact_distance / self.speed_of_light
-                # Choose sample rate based on RF or baseband simulation
-                if tx_signal_is_upconverted:
-                    sample_rate = analog_sample_rate
-                else:
-                    sample_rate = self.sample_rate
-                delay_samples = int(delay_seconds * sample_rate)
-
-                doppler_freq = 2 * velocity * self.center_freq / self.speed_of_light
-
-                attenuation = np.sqrt(rcs) / (exact_distance ** 2)
-                attenuation *= 5e6
-
-                for chirp_idx in range(self.num_chirps):
-                    t = np.arange(samples_per_chirp) / sample_rate
-                    phase_shift = 2 * np.pi * doppler_freq * (chirp_idx * self.chirp_duration + t)
-                    delayed_signal = np.zeros(samples_per_chirp, dtype=np.complex64)
-                    samples_to_copy = min(samples_per_chirp - delay_samples, samples_per_chirp)
-                    if samples_to_copy > 0 and delay_samples < samples_per_chirp:
-                        delayed_signal[delay_samples:delay_samples+samples_to_copy] = tx_signal_reshaped[chirp_idx, :samples_to_copy]
-                        if not tx_signal_is_upconverted:
-                            # Baseband simulation: apply upconversion here
-                            delayed_signal *= np.exp(1j * 2 * np.pi * self.center_freq * (t + chirp_idx * self.chirp_duration))
-                        # Both baseband and RF: apply Doppler and attenuation
-                        delayed_signal *= attenuation * np.exp(1j * phase_shift)
-                        rx_signal[rx_idx, chirp_idx, :] += delayed_signal
-
-        if self.apply_realistic_effects and not perfect_mode:
-            rx_signal = self._add_realistic_effects(rx_signal, tx_signal_reshaped)
-
-        if flatten_output:
-            rx_flattened = np.zeros((self.num_rx, self.num_chirps * samples_per_chirp), dtype=np.complex64)
-            for rx_idx in range(self.num_rx):
-                rx_flattened[rx_idx] = rx_signal[rx_idx].flatten()
-            return rx_flattened
-
-        return rx_signal
+        # Create a dictionary of radar parameters to pass to the utility function
+        radar_params = {
+            'num_rx': self.num_rx,
+            'num_chirps': self.num_chirps,
+            'samples_per_chirp': self.samples_per_chirp,
+            'chirp_duration': self.chirp_duration,
+            'bandwidth': self.bandwidth,
+            'center_freq': self.center_freq,
+            'sample_rate': self.sample_rate,
+            'speed_of_light': self.speed_of_light,
+            'wavelength': self.wavelength,
+            'max_range': self.max_range,
+            'apply_realistic_effects': self.apply_realistic_effects
+        }
+        
+        # Call the utility function
+        return ray_tracing_simulation(
+            tx_signal=tx_signal,
+            targets=targets,
+            radar_params=radar_params,
+            perfect_mode=perfect_mode,
+            flatten_output=flatten_output,
+            tx_signal_is_upconverted=tx_signal_is_upconverted,
+            analog_sample_rate=analog_sample_rate
+        )
 
     def _generate_fmcw_chirp(self, chirp_idx):
         """Generate a single FMCW chirp signal with phase continuity"""
-        t = np.linspace(0, self.chirp_duration, self.samples_per_chirp)
-        
-        # Calculate phase with proper phase continuity between chirps
-        freq_sweep = self.bandwidth/self.chirp_duration * t
-        phase_accumulation = 2 * np.pi * chirp_idx * self.bandwidth * self.chirp_duration
-        phase = 2 * np.pi * (self.center_freq * t + 0.5 * freq_sweep * t) + phase_accumulation
-        
-        return np.exp(1j * phase)
+        # Call the utility function
+        return generate_fmcw_chirp(
+            chirp_idx=chirp_idx,
+            chirp_duration=self.chirp_duration,
+            samples_per_chirp=self.samples_per_chirp,
+            bandwidth=self.bandwidth,
+            center_freq=self.center_freq
+        )
 
     def _add_realistic_effects(self, rx_signal, tx_signal):
-        """
-        Add realistic effects to the received signal. including:
-
-        - Direct coupling (TX leakage)
-        - Environmental clutter
-        - Crosstalk
-        - Ground clutter
-        - System noise
+        """Add realistic effects to the received signal"""
+        # Create a dictionary of radar parameters to pass to the utility function
+        radar_params = {
+            'num_rx': self.num_rx,
+            'num_chirps': self.num_chirps,
+            'samples_per_chirp': self.samples_per_chirp,
+            'chirp_duration': self.chirp_duration,
+            'bandwidth': self.bandwidth,
+            'center_freq': self.center_freq,
+            'sample_rate': self.sample_rate,
+            'speed_of_light': self.speed_of_light,
+            'max_range': self.max_range
+        }
         
-        Args:
-            rx_signal: Received signal with shape [num_rx, num_chirps, samples_per_chirp]
-            tx_signal: Transmitted signal with shape [num_chirps, samples_per_chirp]
-            
-        Returns:
-            Modified received signal with realistic effects
-        """
-        # Add direct coupling component (TX leakage)
-        direct_coupling_power = 0.01  # Adjust based on desired coupling strength
-        for rx_idx in range(self.num_rx):
-            # Direct coupling is a delayed and attenuated version of TX signal
-            delay_samples = int(0.1 * self.samples_per_chirp)  # Small delay for direct path
-            for chirp_idx in range(self.num_chirps):
-                # Add attenuated TX signal with small delay
-                tx_chirp = self._generate_fmcw_chirp(chirp_idx)
-                delayed_tx = np.zeros_like(tx_chirp)
-                delayed_tx[delay_samples:] = tx_chirp[:-delay_samples] if delay_samples > 0 else tx_chirp
-                rx_signal[rx_idx, chirp_idx] += np.sqrt(direct_coupling_power) * delayed_tx
-
-        # Add environmental clutter (static reflections)
-        num_clutter_points = random.randint(5, 15)
-        for _ in range(num_clutter_points):
-            clutter_range = random.uniform(5, self.max_range)
-            clutter_rcs = random.uniform(-40, -20)  # dBsm
-            clutter_power = self._calculate_received_power(clutter_range, clutter_rcs)
-            
-            # Add clutter to all chirps with same range (static)
-            for rx_idx in range(self.num_rx):
-                for chirp_idx in range(self.num_chirps):
-                    delay_samples = int((2 * clutter_range / self.speed_of_light) * self.sample_rate)
-                    if delay_samples < self.samples_per_chirp:
-                        # Phase randomization for each clutter point
-                        phase = random.uniform(0, 2 * np.pi)
-                        rx_signal[rx_idx, chirp_idx, delay_samples:] += np.sqrt(clutter_power) * np.exp(1j * phase)
-        
-        # Add crosstalk between TX and RX (reduced effect)
-        crosstalk_isolation_db = 60  # Increase from 30 to 40 dB isolation
-        crosstalk_delay_samples = 5  # Small delay
-        
-        # Convert dB to linear scale
-        crosstalk_factor = 10 ** (-crosstalk_isolation_db / 20)
-        
-        # Add crosstalk to all RX channels
-        for rx_idx in range(self.num_rx):
-            for chirp_idx in range(self.num_chirps):
-                # Create delayed version of TX signal
-                delayed_tx = np.zeros(self.samples_per_chirp, dtype=np.complex64)
-                if crosstalk_delay_samples < self.samples_per_chirp:
-                    samples_to_copy = self.samples_per_chirp - crosstalk_delay_samples
-                    delayed_tx[crosstalk_delay_samples:] = tx_signal[chirp_idx, :samples_to_copy]
-                
-                # Add to RX signal with attenuation
-                rx_signal[rx_idx, chirp_idx, :] += delayed_tx * crosstalk_factor
-        
-        # Add ground clutter - reduce the probability and power
-        clutter_probability = 0.02  # Reduce from 0.05 to 0.02
-        max_clutter_distance = self.max_range * 0.1  # Reduce from 0.2 to 0.1
-        
-        # Convert distance to samples
-        max_clutter_samples = int(2 * max_clutter_distance * self.sample_rate / self.speed_of_light)
-        
-        # Add clutter reflections
-        for sample_idx in range(min(max_clutter_samples, self.samples_per_chirp)):
-            # Random chance of clutter at this range
-            if random.random() < clutter_probability:
-                # Calculate distance for this sample
-                distance = sample_idx * self.speed_of_light / (2 * self.sample_rate)
-                
-                # Random RCS for clutter - reduce power
-                clutter_rcs = random.uniform(0.05, 0.5)  # Reduce from (0.1, 1.0)
-                
-                # Calculate attenuation - reduce power
-                attenuation = np.sqrt(clutter_rcs) / (distance ** 2) * 5e4  # Reduce from 1e5
-                
-                # Random phase
-                phase = random.uniform(0, 2 * np.pi)
-                
-                # Add to all RX channels with random variations
-                for rx_idx in range(self.num_rx):
-                    rx_phase_variation = random.uniform(0, 0.1)
-                    for chirp_idx in range(self.num_chirps):
-                        rx_signal[rx_idx, chirp_idx, sample_idx] += attenuation * np.exp(1j * (phase + rx_phase_variation))
-        
-        # Add system noise (thermal noise, phase noise, etc.)
-        system_noise_power = 1e-6
-        system_noise = np.random.normal(0, np.sqrt(system_noise_power/2), rx_signal.shape) + \
-                    1j * np.random.normal(0, np.sqrt(system_noise_power/2), rx_signal.shape)
-        rx_signal += system_noise
-        
-        return rx_signal
+        # Call the utility function
+        return add_realistic_effects(rx_signal, tx_signal, radar_params)
 
     def _add_noise(self, signal, snr_db):
         """Add realistic noise to the signal"""
-        # Calculate signal power
-        signal_power = np.mean(np.abs(signal)**2)
-        
-        # Ensure minimum signal power for noise calculation
-        min_power = 1e-10
-        signal_power = max(signal_power, min_power)
-        
-        # Calculate noise power based on SNR
-        noise_power = signal_power / (10**(snr_db/10))
-        
-        # Generate complex Gaussian noise
-        noise = np.sqrt(noise_power/2) * (np.random.normal(0, 1, signal.shape) + 
-                                        1j * np.random.normal(0, 1, signal.shape))
-        
-        # Add noise to signal
-        return signal + noise
-    
+        # Call the utility function
+        return add_noise(signal, snr_db)
+
     def _calculate_received_power(self, distance, rcs):
-        """
-        Calculate received power based on radar equation.
-        
-        Args:
-            distance: Target distance in meters
-            rcs: Radar cross-section in dBsm
-            
-        Returns:
-            Received power (linear scale)
-        """
-        # Convert RCS from dBsm to linear scale
-        rcs_linear = 10**(rcs/10)
-        
-        # Simplified radar equation: P_r = P_t * G^2 * λ^2 * σ / ((4π)^3 * R^4)
-        # We're using normalized values, so P_t * G^2 * λ^2 / (4π)^3 = 1
-        received_power = rcs_linear / (distance**4)
-        
-        return received_power
+        """Calculate received power based on radar equation"""
+        # Call the utility function
+        return calculate_received_power(distance, rcs)
     
     def fmcw_demodulate(self, tx_full, rx_full, total_samples_per_chirp, beat_samples_per_chirp, num_chirps):
         """
         Extract beat signals by dechirping Rx with Tx for each chirp.
         """
-        #beat_samples_per_chirp = int(fs * chirp_duration)
-        #samples_per_idle = int(fs * chirp_duration * idle_time_ratio)
-        #total_samples_per_chirp = samples_per_chirp + samples_per_idle
-
-        beat_signals = np.zeros((num_chirps, beat_samples_per_chirp), dtype=complex)
-        for i in range(num_chirps):
-            start = i * total_samples_per_chirp
-            end = start + beat_samples_per_chirp
-            if end > len(tx_full): continue
-            beat_signals[i] = rx_full[start:end] * np.conj(tx_full[start:end])
-
-        return beat_signals
+        return fmcw_demodulate(tx_full, rx_full, total_samples_per_chirp, beat_samples_per_chirp, num_chirps)
     
     def _time_to_range_doppler(self, rx_signal,
                           num_chirps,
                           samples_per_chirp,
                           num_doppler_bins,
                           num_range_bins,
-                          apply_mti=False,  # Default to False for simple case
-                          apply_doppler_centering=True,  # Default to True to match line 338-345
-                          apply_notch_filter=False,  # Default to False for simple case
-                          notch_width=5,  # Parameter for notch filter
-                          use_blackman_window=False,  # Default to False for simple case
-                          dynamic_range_db=50):  # Keep dynamic range parameter
+                          apply_mti=False,
+                          apply_doppler_centering=True,
+                          apply_notch_filter=False,
+                          notch_width=5,
+                          use_blackman_window=False,
+                          dynamic_range_db=50):
         """
         Convert time domain signal to range-Doppler map.
-        
-        Args:
-            rx_signal: Received signal with shape either:
-                      - [num_rx, num_chirps, samples_per_chirp] (standard format)
-                      - [num_rx, num_chirps * samples_per_chirp] (flattened format)
-            apply_mti: Whether to apply Moving Target Indication filtering
-            apply_doppler_centering: Whether to center the Doppler FFT
-            apply_notch_filter: Whether to apply a notch filter to suppress zero-Doppler
-            notch_width: Width of the notch filter in bins
-            use_blackman_window: Whether to use Blackman window instead of Hamming
-            dynamic_range_db: Dynamic range in dB for normalization
-            
-        Returns:
-            Range-Doppler map with shape [num_rx, 2, num_doppler_bins, num_range_bins]
         """
-        # Check if input is flattened format and reshape if needed
-        if rx_signal.ndim == 2 and rx_signal.shape[1] == num_chirps * samples_per_chirp:
-            # Reshape from [num_rx, num_chirps * samples_per_chirp] to [num_rx, num_chirps, samples_per_chirp]
-            rx_signal = rx_signal.reshape(rx_signal.shape[0], num_chirps, samples_per_chirp)
-        
-        num_rx = rx_signal.shape[0]
-        rd_map = np.zeros((num_rx, 2, num_doppler_bins, num_range_bins), dtype=np.float32)
-        
-        for rx in range(num_rx):
-            processed_signal = rx_signal[rx]
-            
-            # Apply MTI filtering if requested (subtract consecutive chirps)
-            if apply_mti:
-                mti_signal = np.zeros_like(processed_signal)
-                mti_signal[1:] = processed_signal[1:] - processed_signal[:-1]
-                processed_signal = mti_signal
-            
-            # Apply windowing to each chirp if requested
-            if use_blackman_window:
-                range_window = np.blackman(samples_per_chirp)
-                range_window /= np.sum(range_window)  # Normalize window
-                doppler_window = np.blackman(num_chirps)
-                doppler_window /= np.sum(doppler_window)  # Normalize window
-                
-                # Apply windowing to each chirp (along fast-time/samples dimension)
-                processed_signal = processed_signal * range_window[np.newaxis, :]
-                
-                # Apply range FFT
-                range_fft = np.fft.fft(processed_signal, n=num_range_bins, axis=1)
-                
-                # Apply windowing to each range bin (along slow-time/chirps dimension)
-                range_fft = range_fft * doppler_window[:, np.newaxis]
-            else:
-                # Simple range FFT without windowing
-                range_fft = np.fft.fft(processed_signal, n=num_range_bins, axis=1)
-            
-            # Apply range FFT shifting if requested
-            if apply_doppler_centering:
-                range_fft = np.fft.fftshift(range_fft, axes=1)
-            
-            # Apply Doppler FFT
-            doppler_fft = np.fft.fft(range_fft, n=num_doppler_bins, axis=0)
-            
-            # Apply Doppler FFT shifting if requested
-            if apply_doppler_centering:
-                doppler_fft = np.fft.fftshift(doppler_fft, axes=0)
-            
-            # Store real and imaginary parts
-            rd_map[rx, 0, :, :] = np.real(doppler_fft)
-            rd_map[rx, 1, :, :] = np.imag(doppler_fft)
-        
-        return rd_map
+        return time_to_range_doppler(
+            rx_signal,
+            num_chirps,
+            samples_per_chirp,
+            num_doppler_bins,
+            num_range_bins,
+            apply_mti=apply_mti,
+            apply_doppler_centering=apply_doppler_centering,
+            apply_notch_filter=apply_notch_filter,
+            notch_width=notch_width,
+            use_blackman_window=use_blackman_window,
+            dynamic_range_db=dynamic_range_db
+        )
     
     
 
