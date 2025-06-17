@@ -5,7 +5,10 @@ import CssBaseline from '@mui/material/CssBaseline';
 import Navbar from './components/Navbar';
 import Home from './pages/Home';
 import RadarParameterTuner from './components/RadarParameterTuner';
-import RadarWaveformGenerator from './components/RadarWaveformGeneratorPy2';
+import RadarWaveformGenerator from './components/RadarWaveformGeneratorPy3';
+import './App.css';
+import RadarDataViewer from './components/RadarDataViewer';
+import './components/RadarDataViewer.css';
 
 // Create a theme
 const theme = createTheme({
@@ -30,6 +33,7 @@ function App() {
           <Route path="/" element={<Home />} />
           <Route path="/radar-tuner" element={<RadarParameterTuner />} />
           <Route path="/waveform-generator" element={<RadarWaveformGenerator />} />
+          <Route path="/radar-data-viewer" element={<RadarDataViewer />} />
         </Routes>
       </Router>
     </ThemeProvider>
