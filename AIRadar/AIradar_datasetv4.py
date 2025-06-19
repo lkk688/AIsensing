@@ -665,7 +665,257 @@ class RadarDataset(Dataset):
             dynamic_range_db=dynamic_range_db
         )
     
+    def __len__(self):
+        """Return the number of samples in the dataset"""
+        return self.num_samples
     
+    def __getitem__(self, idx):
+        """
+        Fetch a sample from the dataset for PyTorch model training
+        
+        Args:
+            idx: Index of the sample to fetch
+            
+        Returns:
+            Dictionary containing:
+                - time_domain: Time-domain signal with targets [num_rx, num_chirps, samples_per_chirp, 2]
+                - feature_2d: Range-Doppler map [2, num_doppler_bins, num_range_bins]
+                - labels: Target mask [num_doppler_bins, num_range_bins, 1]
+                - target_info: List of dictionaries containing target information
+        """
+        # Generate a single sample on-the-fly
+        # Set random seed based on idx for reproducibility
+        np.random.seed(idx)
+        random.seed(idx)
+        
+        # Generate random targets
+        targets = generate_radar_targets(
+            num_targets=random.randint(1, self.max_targets),  # or self.max_targets for random number
+            min_range=self.target_min_range,    # or self.min_range
+            max_range=self.target_max_range,   # or self.max_range
+            min_velocity=self.target_min_velocity,
+            max_velocity=self.target_max_velocity,
+            min_rcs=5.0,
+            max_rcs=30.0,
+            azimuth_range=(-45, 45),
+            elevation_range=(-10, 10),
+            range_factor=0.5,
+            velocity_factor=0.5
+        )
+        
+        # Generate TX signal based on signal type
+        if self.signal_type == 'FMCW':
+            # Generate FMCW chirp signal
+            tx_signal = self._generate_tx_signal(
+                num_chirps=self.num_chirps,
+                total_samples_per_chirp=self.total_samples_per_chirp,
+                active_samples=self.samples_per_chirp,
+                sample_rate=self.sample_rate,
+                slope=self.fmcw_slope,
+                tx_power=1.0,
+                edge_ratio=0.1,
+                window_type='edge',
+                return_full=True #True
+            )
+    #         return_full: If True, return full TX signal; else per-chirp array
+    # Returns:
+    #     - If return_full=False: [num_chirps, samples_per_chirp] complex array
+    #     - If return_full=True: 1D waveform with all chirps concatenated
+        else:
+            # For other signal types, implement as needed
+            raise NotImplementedError(f"Signal type {self.signal_type} not implemented for on-the-fly generation")
+        
+        # Perform ray-tracing simulation
+        #rx_signal = self._ray_tracing_simulation(tx_signal, targets)
+        rx_signal = self._ray_tracing_simulation(tx_signal, targets, perfect_mode=False, flatten_output=True)
+
+        
+        # Add noise to the received signal
+        snr_db = random.uniform(self.snr_min, self.snr_max)
+        rx_signal = self._add_noise(rx_signal, snr_db)
+        
+        # Add realistic effects if enabled
+        if self.apply_realistic_effects:
+            rx_signal = self._add_realistic_effects(rx_signal, tx_signal)
+        
+        # Demodulate to get beat signal
+        beat_signal = self.fmcw_demodulate(
+            tx_full=tx_signal.reshape(-1),
+            rx_full=rx_signal.reshape(-1),
+            total_samples_per_chirp=self.total_samples_per_chirp,
+            beat_samples_per_chirp=self.samples_per_chirp,
+            num_chirps=self.num_chirps
+        )
+        
+        # Process the received signal to generate range-Doppler map
+        rd_map = self._time_to_range_doppler(
+            rx_signal=beat_signal,  # [num_rx, num_chirps, samples_per_chirp]
+            num_chirps=self.num_chirps,
+            samples_per_chirp=self.total_samples_per_chirp,
+            num_doppler_bins=self.num_doppler_bins,
+            num_range_bins=self.num_range_bins,
+            apply_mti=False,
+            apply_doppler_centering=self.apply_doppler_centering,
+            apply_notch_filter=False,
+            notch_width=5,
+            use_blackman_window=False,
+            dynamic_range_db=0
+        )
+        
+        # Create target mask (ground truth)
+        target_mask = create_target_mask(
+            targets=targets,
+            num_doppler_bins=self.num_doppler_bins,
+            num_range_bins=self.num_range_bins,
+            range_resolution=self.range_resolution,
+            velocity_resolution=self.velocity_resolution,
+            precision=self.precision
+        )
+        
+        # Convert complex rx_signal to real/imag components
+        time_domain_data = np.zeros((self.num_rx, self.num_chirps, self.samples_per_chirp, 2), dtype=np.float32)
+        time_domain_data[:, :, :, 0] = np.real(rx_signal)
+        time_domain_data[:, :, :, 1] = np.imag(rx_signal)
+        
+        # Reset random seed
+        np.random.seed(None)
+        random.seed(None)
+        
+        # Create sample dictionary
+        sample = {
+            'time_domain': time_domain_data,  # [num_rx, num_chirps, samples_per_chirp, 2]
+            'feature_2d': rd_map,            # [2, num_doppler_bins, num_range_bins]
+            'labels': target_mask,           # [num_doppler_bins, num_range_bins, 1]
+            'target_info': targets           # List of dictionaries with target information
+        }
+        
+        return sample
+    
+    
+
+def test_dataset_visualization(num_samples=5, signal_type='FMCW', save_path='data/radarv4_test'):
+    """
+    Test function to visualize and test the generated data from the RadarDataset
+    
+    Args:
+        num_samples: Number of samples to generate and visualize
+        signal_type: Type of radar signal ('FMCW', 'OFDM', etc.)
+        save_path: Path to save visualization results
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import LogNorm
+    import os
+    from torch.utils.data import DataLoader
+    
+    # Create save directory
+    save_path = os.path.join(save_path, signal_type)
+    os.makedirs(save_path, exist_ok=True)
+    
+    # Create dataset with specified parameters
+    print(f"Creating dataset with {num_samples} samples of {signal_type} signal type")
+    dataset = RadarDataset(
+        num_samples=num_samples,
+        signal_type=signal_type,
+        snr_min=15,
+        snr_max=30,
+        save_path=save_path,
+        savedataformat='hdf5',
+        apply_realistic_effects=True,
+        drawfig=False  # We'll handle visualization in this function
+    )
+    
+    # Create DataLoader for batch processing
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
+    
+    # Visualize a few samples
+    for i, sample in enumerate(dataloader):
+        if i >= num_samples:
+            break
+            
+        # Extract data from sample
+        time_domain = sample['time_domain'][0]  # [num_rx, num_chirps, samples_per_chirp, 2]
+        feature_2d = sample['feature_2d'][0]    # [2, num_doppler_bins, num_range_bins]
+        target_mask = sample['labels'][0]       # [num_doppler_bins, num_range_bins, 1]
+        target_info = sample['target_info']     # List of dictionaries with target information
+        
+        # Convert to numpy for visualization
+        time_domain_np = time_domain.numpy()
+        feature_2d_np = feature_2d.numpy()
+        target_mask_np = target_mask.numpy()
+        
+        # 1. Visualize time domain signal (first RX, first chirp)
+        plt.figure(figsize=(12, 8))
+        plt.subplot(2, 1, 1)
+        plt.plot(time_domain_np[0, 0, :, 0])  # Real part
+        plt.title(f'Sample {i+1}: Time Domain Signal (Real Part) - RX 0, Chirp 0')
+        plt.xlabel('Sample Index')
+        plt.ylabel('Amplitude')
+        plt.grid(True)
+        
+        plt.subplot(2, 1, 2)
+        plt.plot(time_domain_np[0, 0, :, 1])  # Imaginary part
+        plt.title(f'Sample {i+1}: Time Domain Signal (Imaginary Part) - RX 0, Chirp 0')
+        plt.xlabel('Sample Index')
+        plt.ylabel('Amplitude')
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_path, f'sample_{i+1}_time_domain.png'))
+        plt.close()
+        
+        # 2. Visualize range-Doppler map (magnitude)
+        plt.figure(figsize=(12, 8))
+        # Compute magnitude from real and imaginary parts
+        rd_magnitude = np.sqrt(feature_2d_np[0]**2 + feature_2d_np[1]**2)
+        
+        # Get range and Doppler axes
+        range_axis = np.arange(dataset.num_range_bins) * dataset.range_resolution
+        doppler_axis = (np.arange(dataset.num_doppler_bins) - dataset.num_doppler_bins // 2) * dataset.velocity_resolution
+        
+        plt.subplot(2, 1, 1)
+        plt.imshow(rd_magnitude, aspect='auto', origin='lower', 
+                  extent=[0, range_axis[-1], doppler_axis[0], doppler_axis[-1]],
+                  norm=LogNorm(vmin=0.01, vmax=rd_magnitude.max()))
+        plt.colorbar(label='Magnitude')
+        plt.title(f'Sample {i+1}: Range-Doppler Map (Magnitude)')
+        plt.xlabel('Range (m)')
+        plt.ylabel('Velocity (m/s)')
+        
+        # 3. Visualize target mask
+        plt.subplot(2, 1, 2)
+        plt.imshow(target_mask_np[:, :, 0], aspect='auto', origin='lower',
+                  extent=[0, range_axis[-1], doppler_axis[0], doppler_axis[-1]])
+        plt.colorbar(label='Target Presence')
+        plt.title(f'Sample {i+1}: Target Mask')
+        plt.xlabel('Range (m)')
+        plt.ylabel('Velocity (m/s)')
+        
+        # Add target information as text
+        target_text = "Target Info:\n"
+        for j, target in enumerate(target_info):
+            target_text += f"Target {j+1}: Range={target['range']:.2f}m, Velocity={target['velocity']:.2f}m/s\n"
+        plt.figtext(0.02, 0.02, target_text, fontsize=10, bbox=dict(facecolor='white', alpha=0.8))
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_path, f'sample_{i+1}_range_doppler.png'))
+        plt.close()
+        
+        # 4. Visualize 3D range-Doppler map
+        fig = plt.figure(figsize=(12, 8))
+        ax = fig.add_subplot(111, projection='3d')
+        X, Y = np.meshgrid(range_axis, doppler_axis)
+        surf = ax.plot_surface(X, Y, rd_magnitude, cmap=cm.jet, linewidth=0, antialiased=False)
+        fig.colorbar(surf, shrink=0.5, aspect=5, label='Magnitude')
+        ax.set_title(f'Sample {i+1}: 3D Range-Doppler Map')
+        ax.set_xlabel('Range (m)')
+        ax.set_ylabel('Velocity (m/s)')
+        ax.set_zlabel('Magnitude')
+        plt.savefig(os.path.join(save_path, f'sample_{i+1}_range_doppler_3d.png'))
+        plt.close()
+        
+        print(f"Visualized sample {i+1}/{num_samples}")
+    
+    print(f"Visualization complete. Results saved to {save_path}")
+    return dataset
 
 if __name__ == '__main__':
     # Test and visualization of the RadarDataset
@@ -673,9 +923,9 @@ if __name__ == '__main__':
     
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Radar Dataset Generation and Visualization')
-    parser.add_argument('--mode', type=str, default='generate', 
-                        choices=['generate', 'load', 'visualize', 'compare'],
-                        help='Mode: generate new data, load existing data, visualize existing data, or compare signal types')
+    parser.add_argument('--mode', type=str, default='test', 
+                        choices=['generate', 'load', 'visualize', 'compare', 'test'],
+                        help='Mode: generate new data, load existing data, visualize existing data, compare signal types, or test dataset')
     parser.add_argument('--datapath', type=str, default="data/radarv3/FMCW/radar_data.h5", 
                         help='Path to existing dataset (for load or visualize modes)')
     parser.add_argument('--num_samples', type=int, default=100, 
@@ -693,8 +943,16 @@ if __name__ == '__main__':
     
     args.save_path = os.path.join(args.save_path, args.signal_type)
     os.makedirs(args.save_path, exist_ok=True)
+    
     # Main execution based on mode
-    if args.mode == 'generate':
+    if args.mode == 'test':
+        # Run the test function
+        test_dataset = test_dataset_visualization(
+            num_samples=args.visualize_samples,
+            signal_type=args.signal_type,
+            save_path=args.save_path
+        )
+    elif args.mode == 'generate':
         print(f"Generating {args.num_samples} radar samples with signal type: {args.signal_type}")
         
         # Create dataset with specified parameters

@@ -2,6 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 import os
+from scipy import signal
+import sys
 
 def plot_detection_results(
     rd_map,
@@ -171,3 +173,71 @@ def plot_detection_results(
         plt.close(fig)
     
     return fig, ax
+
+def plot_signal_comparison(original_signal, processed_signal, fs, title, time_domain_ylim=None):
+    """
+    Plot time and frequency domain comparison of original and processed signals
+    
+    Args:
+        original_signal: The original input signal
+        processed_signal: The signal after processing
+        fs: Sampling frequency in Hz
+        title: Plot title
+        time_domain_ylim: Y-axis limits for time domain plot (optional)
+    """
+    # Create figure with 2 rows and 2 columns
+    fig, axs = plt.subplots(2, 2, figsize=(15, 10))
+    fig.suptitle(title, fontsize=16)
+    
+    # Time vector for plotting (only show a portion for clarity)
+    plot_samples = min(1000, len(original_signal))
+    t = np.arange(plot_samples) / fs
+    
+    # Time domain plots
+    axs[0, 0].plot(t, np.real(original_signal[:plot_samples]), 'b-', label='Real')
+    axs[0, 0].plot(t, np.imag(original_signal[:plot_samples]), 'r-', label='Imag')
+    axs[0, 0].set_title('Original Signal (Time Domain)')
+    axs[0, 0].set_xlabel('Time (s)')
+    axs[0, 0].set_ylabel('Amplitude')
+    axs[0, 0].legend()
+    if time_domain_ylim:
+        axs[0, 0].set_ylim(time_domain_ylim)
+    axs[0, 0].grid(True)
+    
+    axs[0, 1].plot(t, np.real(processed_signal[:plot_samples]), 'b-', label='Real')
+    axs[0, 1].plot(t, np.imag(processed_signal[:plot_samples]), 'r-', label='Imag')
+    axs[0, 1].set_title('Processed Signal (Time Domain)')
+    axs[0, 1].set_xlabel('Time (s)')
+    axs[0, 1].set_ylabel('Amplitude')
+    axs[0, 1].legend()
+    if time_domain_ylim:
+        axs[0, 1].set_ylim(time_domain_ylim)
+    axs[0, 1].grid(True)
+    
+    # Frequency domain plots
+    f_orig, Pxx_orig = signal.welch(original_signal, fs, nperseg=1024, return_onesided=False)
+    f_orig = np.fft.fftshift(f_orig)
+    Pxx_orig = np.fft.fftshift(Pxx_orig)
+    
+    f_proc, Pxx_proc = signal.welch(processed_signal, fs, nperseg=1024, return_onesided=False)
+    f_proc = np.fft.fftshift(f_proc)
+    Pxx_proc = np.fft.fftshift(Pxx_proc)
+    
+    # Convert to dB
+    Pxx_orig_db = 10 * np.log10(Pxx_orig + 1e-10)
+    Pxx_proc_db = 10 * np.log10(Pxx_proc + 1e-10)
+    
+    axs[1, 0].plot(f_orig, Pxx_orig_db)
+    axs[1, 0].set_title('Original Signal (Frequency Domain)')
+    axs[1, 0].set_xlabel('Frequency (Hz)')
+    axs[1, 0].set_ylabel('Power Spectral Density (dB/Hz)')
+    axs[1, 0].grid(True)
+    
+    axs[1, 1].plot(f_proc, Pxx_proc_db)
+    axs[1, 1].set_title('Processed Signal (Frequency Domain)')
+    axs[1, 1].set_xlabel('Frequency (Hz)')
+    axs[1, 1].set_ylabel('Power Spectral Density (dB/Hz)')
+    axs[1, 1].grid(True)
+    
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    return fig
