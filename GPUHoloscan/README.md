@@ -23,17 +23,16 @@ This README outlines:
 | ADI Transceiver | <==========> | Lattice FPGA     | <===========> | NVIDIA GPU Host  |
 | (ADC/DAC)       |              | (Sensor Bridge)  |                | (Holoscan SDK)   |
 +-----------------+              +------------------+                +------------------+
-```
+
 
 Data Flow:
 	1.	Sensor Input: ADC data (e.g., from Analog Devices AD-FMCDAQ2) is input through FMC interface.
 	2.	FPGA Processing: FPGA captures data via FMC interface, optionally applies pre-processing (decimation, reordering), and buffers it in internal BRAM/DDR.
 	3.	10GbE Transmission: Data is packetized and streamed out using the onboard 10GbE MAC/PHY via UDP.
 	4.	GPU Reception: NVIDIA Holoscan SDK receives the data in a GXF pipeline and forwards it to GPU memory for real-time processing.
+```
 
-⸻
-
-🔧 Hardware Setup
+### 🔧 Hardware Setup
 
 Refer to NVIDIA Holoscan Sensor Bridge hardware guide:
 
@@ -45,14 +44,10 @@ Key Components:
 	•	10GbE PHY: Interfaces to host machine or Jetson AGX Orin
 	•	Power Supply & Clock: External supplies and clocking via FMC or onboard PLL
 
-⸻
-
 🧠 FPGA IP Overview
 
 Refer to the official IP list:
 📄 Sensor Bridge IP Catalog
-
-Notable IP blocks:
 
 IP Core	Description
 FMC Interface	Captures LVDS parallel or serial (JESD204B) data from ADCs
@@ -63,9 +58,7 @@ Clock Generator	Provides PLL-based clocks for JESD or LVDS capture
 Control Register	Memory-mapped registers for configuration and runtime control
 
 
-⸻
-
-🔄 ADC/FMC Integration Guide
+ADC/FMC Integration
 
 Step-by-Step: Getting ADC Data to GPU
 	1.	Hardware Connection
@@ -82,9 +75,6 @@ Step-by-Step: Getting ADC Data to GPU
 	•	Use Holoscan SDK’s VideoStreamReplayer or UDPReceiverOp to capture packets.
 	•	Connect to downstream operators or models via the GXF graph.
 
-⸻
-
-🧪 Sample Projects
 
 ✅ FPGA Sample Design
 	•	Includes:
@@ -101,8 +91,6 @@ Step-by-Step: Getting ADC Data to GPU
 	•	holoscan::ops::TensorReformatterOp
 	•	Optional: Extend with AI inference models or visualization
 
-⸻
-
 📚 Resources
 
 Official Documentation
@@ -115,9 +103,7 @@ Development Tools
 	•	Wireshark (UDP packet analysis)
 	•	Holoscan CLI & SDK
 
-⸻
-
-## Problems
+### Problems
 
 Unlike larger FPGA vendors like Xilinx and Intel (Altera), Lattice:
 	•	Does not provide JESD204B/C IP cores as part of its default IP catalog for the ECP5 or CrossLink-NX families.
@@ -146,12 +132,12 @@ Here’s a structured guide to building such a pipeline:
 ⸻
 
 🔧 System Overview
-
+```text
 +----------------------+     JESD204B     +--------------------+     10GbE      +------------------+
 | ADI FMC ADC Board    | <=============> | Xilinx ZCU102       | <===========> | NVIDIA GPU Host  |
 | (e.g., AD9680, etc.) |                 | (JESD + UDP Stream) |                | (UDP Receiver)   |
 +----------------------+                 +--------------------+                +------------------+
-
+```
 
 ⸻
 
@@ -270,7 +256,7 @@ From Xilinx:
 ## 📂 Intel FPGA
 
 Summary Workflow Using Intel Agilex 5
-
+```text
 [ADI ADC FMC Board]
    ↓ JESD204B/C
 [Intel Agilex 5 FPGA]
@@ -282,7 +268,7 @@ Summary Workflow Using Intel Agilex 5
 [10GbE SFP+]
    ↓
 [NVIDIA GPU Host]
-
+```
 
 ⸻
 
@@ -359,7 +345,7 @@ On the GPU host (Jetson or x86):
 ⸻
 
  Intel Platform Designer Block Diagram (Simplified)
-
+```text
 [FMC ADC]
    ↓
 [JESD204B RX IP]
@@ -371,7 +357,7 @@ On the GPU host (Jetson or x86):
 [10G Ethernet MAC (Avalon-ST)]
    ↓
 [SFP+ PHY (H-tile or F-tile)]
-
+```
 
 ⸻
 
