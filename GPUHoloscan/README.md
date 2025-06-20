@@ -23,6 +23,7 @@ This README outlines:
 | ADI Transceiver | <==========> | Lattice FPGA     | <===========> | NVIDIA GPU Host  |
 | (ADC/DAC)       |              | (Sensor Bridge)  |                | (Holoscan SDK)   |
 +-----------------+              +------------------+                +------------------+
+```
 
 Data Flow:
 	1.	Sensor Input: ADC data (e.g., from Analog Devices AD-FMCDAQ2) is input through FMC interface.
