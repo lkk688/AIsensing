@@ -9,6 +9,7 @@ from torch.utils.data import random_split, ConcatDataset
 from AIRadarLib.pretrain_dataset import SyntheticRadarDataset
 #pip install scikit-learn
 from sklearn.metrics import precision_score, recall_score, f1_score
+import math
 
 # === ConvBlock for radar model ===
 class ConvBlock(nn.Module):
@@ -23,160 +24,253 @@ class ConvBlock(nn.Module):
     def forward(self, x):
         return self.block(x)
 
-# === RadarNet: target detection from RD maps ===
-#multi-target detection (e.g., location + velocity) from range-Doppler maps, 
-# with a deeper encoder-decoder and a customizable number of output classes.
+# === RadarNet ===
+# Enhanced encoder-decoder for multi-target detection from range-Doppler maps
+# with improved target extraction and velocity estimation
 class RadarNet(nn.Module):
-    def __init__(self, in_channels=2, num_classes=1):
+    def __init__(self, in_channels=2, num_classes=1, detect_threshold=0.5, max_targets=10):
+        """
+        Initialize the RadarNet module for multi-target detection.
+        
+        Args:
+            in_channels: Number of input channels (typically 2 for complex data)
+            num_classes: Number of output classes (1 for detection map)
+            detect_threshold: Threshold for target detection (0.0-1.0)
+            max_targets: Maximum number of targets to detect
+        """
         super().__init__()
-        self.enc1 = ConvBlock(in_channels, 32)
-        self.enc2 = ConvBlock(32, 64)
-        self.enc3 = ConvBlock(64, 128)
-        self.enc4 = ConvBlock(128, 256)
+        # Store configuration parameters
+        self.detect_threshold = detect_threshold
+        self.max_targets = max_targets
+        
+        # Encoder blocks with increasing channel depth
+        self.enc1 = ConvBlock(in_channels, 32)     # Input: [B, 2, D, R] -> Output: [B, 32, D, R]
+        self.enc2 = ConvBlock(32, 64)              # Input: [B, 32, D/2, R/2] -> Output: [B, 64, D/2, R/2]
+        self.enc3 = ConvBlock(64, 128)             # Input: [B, 64, D/4, R/4] -> Output: [B, 128, D/4, R/4]
+        self.enc4 = ConvBlock(128, 256)            # Input: [B, 128, D/8, R/8] -> Output: [B, 256, D/8, R/8]
 
-        self.dec3 = ConvBlock(256 + 128, 128)
-        self.dec2 = ConvBlock(128 + 64, 64)
-        self.dec1 = ConvBlock(64 + 32, 32)
+        # Decoder blocks with skip connections
+        self.dec3 = ConvBlock(256 + 128, 128)      # Input: [B, 256+128, D/4, R/4] -> Output: [B, 128, D/4, R/4]
+        self.dec2 = ConvBlock(128 + 64, 64)        # Input: [B, 128+64, D/2, R/2] -> Output: [B, 64, D/2, R/2]
+        self.dec1 = ConvBlock(64 + 32, 32)         # Input: [B, 64+32, D, R] -> Output: [B, 32, D, R]
 
-        self.output = nn.Conv2d(32, num_classes, kernel_size=1)
-        self.sigmoid = nn.Sigmoid()
+        # Output layers for detection and velocity estimation
+        self.detection_head = nn.Conv2d(32, num_classes, kernel_size=1)  # [B, 32, D, R] -> [B, 1, D, R]
+        self.velocity_head = nn.Conv2d(32, 2, kernel_size=1)            # [B, 32, D, R] -> [B, 2, D, R]
+        self.snr_head = nn.Conv2d(32, 1, kernel_size=1)                 # [B, 32, D, R] -> [B, 1, D, R]
+        
+        # Activation functions
+        self.sigmoid = nn.Sigmoid()  # For detection probability
+        self.tanh = nn.Tanh()        # For normalized velocity components
 
-        self.pool = nn.MaxPool2d(2)
+        # Pooling and upsampling operations
+        self.pool = nn.MaxPool2d(2)  # Downsampling by factor of 2
         self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
 
-    def forward(self, x): #[8, 2, 64, 64]
-        h, w = x.shape[2:]
-        if h % 16 != 0 or w % 16 != 0:
-            raise ValueError(f"RadarNet input height and width must be divisible by 16, got {h}x{w}")
+    def forward(self, x):
+        """
+        Forward pass of the RadarNet module.
+        
+        Args:
+            x: Input range-Doppler map with shape [B, 2, D, R]
+               B: batch size, 2: complex (real/imag), D: Doppler bins, R: range bins
+               
+        Returns:
+            Dictionary containing:
+            - detection_map: Target detection probability map [B, 1, D, R]
+            - velocity_map: Normalized velocity map (vx, vy) [B, 2, D, R]
+            - snr_map: Signal-to-noise ratio map [B, 1, D, R]
+            - target_list: List of detected targets with their properties
+        """
+        # Input shape validation
+        h, w = x.shape[2:]  # [B, 2, D, R] -> D, R
+        if h % 8 != 0 or w % 8 != 0:
+            raise ValueError(f"RadarNet input height and width must be divisible by 8, got {h}x{w}")
 
-        e1 = self.enc1(x) #[8, 32, 64, 64]
-        p1 = self.pool(e1) #[8, 32, 32, 32]
-        e2 = self.enc2(p1) #[8, 64, 32, 32]
-        p2 = self.pool(e2) #[8, 64, 16, 16]
-        e3 = self.enc3(p2) #[8, 128, 16, 16]
-        p3 = self.pool(e3) #[8, 128, 8, 8]
-        e4 = self.enc4(p3) #[8, 256, 8, 8]
+        # === Encoder Path (Contracting) ===
+        e1 = self.enc1(x)         # [B, 2, D, R] -> [B, 32, D, R]
+        p1 = self.pool(e1)        # [B, 32, D, R] -> [B, 32, D/2, R/2]
+        e2 = self.enc2(p1)        # [B, 32, D/2, R/2] -> [B, 64, D/2, R/2]
+        p2 = self.pool(e2)        # [B, 64, D/2, R/2] -> [B, 64, D/4, R/4]
+        e3 = self.enc3(p2)        # [B, 64, D/4, R/4] -> [B, 128, D/4, R/4]
+        p3 = self.pool(e3)        # [B, 128, D/4, R/4] -> [B, 128, D/8, R/8]
+        e4 = self.enc4(p3)        # [B, 128, D/8, R/8] -> [B, 256, D/8, R/8]
 
-        u3 = self.upsample(e4) #[8, 256, 16, 16]
+        # === Decoder Path (Expanding) with Skip Connections ===
+        u3 = self.upsample(e4)    # [B, 256, D/8, R/8] -> [B, 256, D/4, R/4]
+        # Ensure dimensions match before concatenation
         if u3.shape[2:] != e3.shape[2:]:
             u3 = F.interpolate(u3, size=e3.shape[2:], mode='bilinear', align_corners=True)
-        d3 = self.dec3(torch.cat([u3, e3], dim=1)) #[8, 128, 16, 16]
+        d3 = self.dec3(torch.cat([u3, e3], dim=1))  # [B, 256+128, D/4, R/4] -> [B, 128, D/4, R/4]
 
-        u2 = self.upsample(d3) #[8, 128, 32, 32]
+        u2 = self.upsample(d3)    # [B, 128, D/4, R/4] -> [B, 128, D/2, R/2]
+        # Ensure dimensions match before concatenation
         if u2.shape[2:] != e2.shape[2:]:
             u2 = F.interpolate(u2, size=e2.shape[2:], mode='bilinear', align_corners=True)
-        d2 = self.dec2(torch.cat([u2, e2], dim=1)) #[8, 64, 32, 32]
+        d2 = self.dec2(torch.cat([u2, e2], dim=1))  # [B, 128+64, D/2, R/2] -> [B, 64, D/2, R/2]
 
-        u1 = self.upsample(d2) #[8, 64, 64, 64]
+        u1 = self.upsample(d2)    # [B, 64, D/2, R/2] -> [B, 64, D, R]
+        # Ensure dimensions match before concatenation
         if u1.shape[2:] != e1.shape[2:]:
             u1 = F.interpolate(u1, size=e1.shape[2:], mode='bilinear', align_corners=True)
-        d1 = self.dec1(torch.cat([u1, e1], dim=1)) #[8, 32, 64, 64]
+        d1 = self.dec1(torch.cat([u1, e1], dim=1))  # [B, 64+32, D, R] -> [B, 32, D, R]
 
-        out = self.sigmoid(self.output(d1)) #[8, 1, 64, 64]
-        return out.permute(0, 2, 3, 1)
+        # === Multi-task Output Heads ===
+        # Detection probability map
+        detection_logits = self.detection_head(d1)  # [B, 32, D, R] -> [B, 1, D, R]
+        detection_map = self.sigmoid(detection_logits)  # [B, 1, D, R] - probability in range [0,1]
+        
+        # Velocity components map (normalized to [-1, 1] range)
+        velocity_logits = self.velocity_head(d1)    # [B, 32, D, R] -> [B, 2, D, R]
+        velocity_map = self.tanh(velocity_logits)    # [B, 2, D, R] - normalized velocity in range [-1,1]
+        
+        # SNR estimation map (positive values)
 
-# === Learnable FFT Block (Used for RadarTimeNet) ===
-class LearnableFFT(nn.Module):
-    def __init__(self, input_len, output_len):
-        super().__init__()
-        self.real = nn.Parameter(torch.randn(input_len, output_len))
-        self.imag = nn.Parameter(torch.randn(input_len, output_len))
+        snr_map = F.relu(self.snr_head(d1))                   # [B, 32, D, R] -> [B, 1, D, R] - positive values only
+        
+        # === Extract Target List ===
+        # Process each item in the batch to extract detected targets
+        batch_targets = []
+        batch_size = x.shape[0]  # B
+        doppler_bins = x.shape[2]  # D
+        range_bins = x.shape[3]  # R
+        
+        for b in range(batch_size):
+            # Find peaks in the detection map above threshold
+            det_map_b = detection_map[b, 0]  # [D, R] - extract detection map for this batch item
+            peaks = (det_map_b > self.detect_threshold)  # Boolean mask of detections above threshold
+            
+            # Get coordinates of detected targets
+            doppler_indices, range_indices = torch.where(peaks)  # Get indices where detection > threshold
+            
+            # Limit to max_targets if needed
+            if len(doppler_indices) > self.max_targets:
+                # Sort by detection probability (descending) and keep top max_targets
+                probs = det_map_b[doppler_indices, range_indices]  # [num_detections]
+                _, top_indices = torch.topk(probs, self.max_targets)  # Get indices of top probabilities
+                doppler_indices = doppler_indices[top_indices]  # Filter doppler indices
+                range_indices = range_indices[top_indices]  # Filter range indices
+            
+            # Extract properties for each target
+            targets = []
+            for d_idx, r_idx in zip(doppler_indices, range_indices):
+                # Create a dictionary with target properties
+                target = {
+                    'batch_idx': b,  # Batch index
+                    'doppler_bin': d_idx.item(),  # Doppler bin index
+                    'range_bin': r_idx.item(),  # Range bin index
+                    'probability': detection_map[b, 0, d_idx, r_idx].item(),  # Detection probability
+                    'velocity': (  # Normalized velocity components (vx, vy)
+                        velocity_map[b, 0, d_idx, r_idx].item(),  # vx component
+                        velocity_map[b, 1, d_idx, r_idx].item()   # vy component
+                    ),
+                    'snr_db': 10 * torch.log10(snr_map[b, 0, d_idx, r_idx] + 1e-10).item()  # SNR in dB
+                }
+                targets.append(target)
+            
+            batch_targets.append(targets)  # Add targets for this batch item to the list
+        
+        # Return all outputs in the expected format
+        # Note: We keep the tensor dimensions as [B, C, D, R] for consistency with RadarTimeNet output
+        return {
+            'detection_map': detection_map,  # [B, 1, D, R] - Target detection probability
+            'velocity_map': velocity_map,    # [B, 2, D, R] - Normalized velocity components (vx, vy)
+            'snr_map': snr_map,              # [B, 1, D, R] - Signal-to-noise ratio
+            'target_list': batch_targets     # List of B lists, each containing detected targets with properties
+        }
 
-    def forward(self, real_input, imag_input):
-        r_part = torch.matmul(real_input, self.real) - torch.matmul(imag_input, self.imag)
-        i_part = torch.matmul(real_input, self.imag) + torch.matmul(imag_input, self.real)
-        magnitude = torch.sqrt(r_part ** 2 + i_part ** 2)
-        return magnitude
+# # === Learnable FFT Block (Used for RadarTimeNet) ===
+# class LearnableFFT(nn.Module):
+#     def __init__(self, input_len, output_len):
+#         super().__init__()
+#         self.real = nn.Parameter(torch.randn(input_len, output_len))
+#         self.imag = nn.Parameter(torch.randn(input_len, output_len))
 
-# === RadarTimeNet: processes time-domain IQ signals ===
-#Processes raw time-domain IQ data, applies learned filters for clutter suppression, 
-# and outputs a 2-channel (real/imag) range-Doppler map.
-# === RadarTimeNet with grouped convolution over chirps ===
-class RadarTimeNet(nn.Module):
-    def __init__(self, num_rx=2, num_chirps=12, samples_per_chirp=64, out_doppler_bins=64, out_range_bins=64):
-        super().__init__()
-        self.num_chirps = num_chirps
-        self.samples_per_chirp = samples_per_chirp
-        self.out_doppler_bins = out_doppler_bins
-        self.out_range_bins = out_range_bins
+#     def forward(self, real_input, imag_input):
+#         r_part = torch.matmul(real_input, self.real) - torch.matmul(imag_input, self.imag)
+#         i_part = torch.matmul(real_input, self.imag) + torch.matmul(imag_input, self.real)
+#         magnitude = torch.sqrt(r_part ** 2 + i_part ** 2)
+#         return magnitude
 
-        self.time_conv = nn.Sequential(
-            nn.Conv3d(2, 16, kernel_size=(1, 1, 3), padding=(0, 0, 1)),
-            nn.BatchNorm3d(16),
-            nn.ReLU(inplace=True),
-            nn.Conv3d(16, 32, kernel_size=(1, 1, 3), padding=(0, 0, 1)),
-            nn.BatchNorm3d(32),
-            nn.ReLU(inplace=True)
-        )
 
-        self.rx_conv = nn.Sequential(
-            nn.AdaptiveAvgPool3d((1, None, None)),
-            nn.Conv3d(32, 32, kernel_size=(1, 1, 1)),
-            nn.BatchNorm3d(32),
-            nn.ReLU(inplace=True)
-        )
-
-        # process chirps individually then reduce
-        self.chirp_conv = nn.Sequential(
-            nn.Conv2d(32, 64, kernel_size=3, padding=1, groups=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True)
-        )
-
-        self.rd_conv = nn.Sequential(
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True)
-        )
-
-        self.upsample = nn.Sequential(
-            nn.Upsample(size=(out_doppler_bins, out_range_bins), mode='bilinear', align_corners=True),
-            nn.Conv2d(128, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 32, kernel_size=3, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, 2, kernel_size=1)
-        )
-
-    def forward(self, x): #[8, 1, 64, 64, 2]
-        B = x.shape[0]
-        x = x.permute(0, 4, 1, 2, 3)  # [B, 2, Rx, Chirp, Samples] [8, 2, 1, 64, 64]
-        x = self.time_conv(x) #[8, 32, 1, 64, 64]
-        x = self.rx_conv(x).squeeze(2)  # [B, 32, Chirp, Samples] [8, 32, 64, 64]
-
-        if x.shape[2] != self.num_chirps:
-            raise ValueError(f"RadarTimeNet expected {self.num_chirps} chirps, got {x.shape[2]}")
-
-        # Apply chirp-wise grouped conv
-        x = x.permute(0, 2, 1, 3)  # [B, Chirp, Channels, Samples] #[8, 64, 32, 64]
-        x = x.reshape(-1, 32, 1, self.samples_per_chirp)  # [B*C, 32, 1, S] [512, 32, 1, 64]
-        x = self.chirp_conv(x)  # [B*C, 64, 1, S] [512, 64, 1, 64]
-        x = x.reshape(B, self.num_chirps, 64, self.samples_per_chirp) #[8, 64, 64, 64]
-        x = x.permute(0, 2, 1, 3)  # [B, 64, Chirp, Samples] [8, 64, 64, 64]
-
-        x = self.rd_conv(x) #[8, 128, 64, 64]
-        x = self.upsample(x) #[8, 2, 64, 64]
-        return x.permute(0, 2, 3, 1)  # [B, Doppler, Range, 2]
 
 # === Combined end-to-end model ===
-#A combined model chaining RadarTimeNet → RadarNet for full end-to-end detection from raw IQ inputs.
+# Enhanced end-to-end model chaining RadarTimeNet → RadarNet for full processing pipeline
+# from raw IQ inputs to multi-target detection with location, velocity, and SNR estimation
 class RadarEndToEnd(nn.Module):
-    def __init__(self, time_net: RadarTimeNet, detect_net: RadarNet):
+    def __init__(self, time_net, detect_net, detect_threshold=0.5, max_targets=10):
+        """
+        Initialize the RadarEndToEnd module.
+        
+        Args:
+            time_net: RadarTimeNet instance for processing raw IQ signals
+            detect_net: RadarNet instance for target detection
+            detect_threshold: Threshold for target detection
+            max_targets: Maximum number of targets to detect
+        """
         super().__init__()
         self.time_net = time_net
         self.detect_net = detect_net
+        self.detect_threshold = detect_threshold
+        self.max_targets = max_targets
+        
+        # Ensure detect_net has the same threshold and max_targets
+        if hasattr(detect_net, 'detect_threshold'):
+            detect_net.detect_threshold = detect_threshold
+        if hasattr(detect_net, 'max_targets'):
+            detect_net.max_targets = max_targets
 
-    def forward(self, x):
-        rd_map = self.time_net(x)  # [B, D, R, 2] input: [8, 1, 64, 64, 2]=>[8, 64, 64, 2])
-        return self.detect_net(rd_map.permute(0, 3, 1, 2))  # RD map -> detection
+    def forward(self, x, ref_signal=None, is_ofdm=False, modulation=None):
+        """
+        Forward pass of the RadarEndToEnd module.
+        
+        Args:
+            x: Input signal with shape [B, num_rx, num_chirps, samples_per_chirp, 2]
+            ref_signal: Optional reference signal for demodulation
+            is_ofdm: Whether the input signal is OFDM modulated
+            modulation: Modulation scheme for OFDM decoding
+            
+        Returns:
+            Dictionary containing:
+            - detection_results: Output from RadarNet including detection_map, velocity_map, etc.
+            - rd_map: Range-Doppler map from RadarTimeNet
+            - ofdm_map: OFDM map (if is_ofdm=True)
+            - decoded_bits: Decoded OFDM bits (if is_ofdm=True)
+        """
+        # Forward pass through time_net with optional parameters
+        # Input: [B, num_rx, num_chirps, samples_per_chirp, 2]
+        time_net_output = self.time_net(x, ref_signal=ref_signal, is_ofdm=is_ofdm, modulation=modulation)
+        
+        # Handle the case where time_net returns both RD map and OFDM outputs
+        if is_ofdm and self.time_net.support_ofdm:
+            # Unpack the tuple (rd_map, ofdm_map, decoded_bits)
+            rd_map, ofdm_map, decoded_bits = time_net_output
+            
+            # Process the RD map with detect_net
+            # Input: [B, 2, D, R], Output: Dict with detection_map, velocity_map, etc.
+            detection_results = self.detect_net(rd_map)
+            
+            # Return comprehensive results
+            return {
+                'detection_results': detection_results,  # Dict with detection_map, velocity_map, target_list
+                'rd_map': rd_map,                        # [B, 2, D, R]
+                'ofdm_map': ofdm_map,                    # [B, 2, D, R]
+                'decoded_bits': decoded_bits             # [B, num_symbols * num_active_subcarriers * bits_per_symbol]
+            }
+        else:
+            # Standard case: just process the RD map
+            # Input: [B, 2, D, R]
+            rd_map = time_net_output
+            
+            # Process with detect_net
+            # Output: Dict with detection_map, velocity_map, target_list
+            detection_results = self.detect_net(rd_map)
+            
+            # Return results
+            return {
+                'detection_results': detection_results,  # Dict with detection_map, velocity_map, target_list
+                'rd_map': rd_map                         # [B, 2, D, R]
+            }
 
 # === Dice Loss ===
 def dice_loss(pred, target, smooth=1.0):

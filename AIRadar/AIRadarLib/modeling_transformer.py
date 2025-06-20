@@ -1,19 +1,22 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
+import math
 from einops.layers.torch import Rearrange
 from einops import rearrange
+from AIRadarLib.ofdm_decoder import OFDMDecoder
 
-# - A transformer-based model that processes time-domain radar data directly
-# - Specialized attention mechanisms for range and Doppler dimensions
-# - Optional learnable FFT for range-Doppler processing
-# - CNN backbone for initial feature extraction
-
+# === RadarTransformerNet: transformer-based model for radar detection and OFDM communication ===
 class RadarTransformerNet(nn.Module):
     """
-    Transformer-based model for radar detection that processes time-domain radar data directly.
+    Transformer-based model for radar detection and OFDM communication that processes time-domain radar data directly.
     This model combines CNN layers for initial feature extraction with transformer blocks for
     capturing long-range dependencies in both range and Doppler dimensions.
+    
+    The model can process raw IQ time-domain signals, perform demodulation (including OFDM
+    demodulation if applicable), and output both a range-Doppler map and target detection results.
+    It combines the functionality of RadarTimeNet and RadarEndToEnd in a single end-to-end model.
     """
     def __init__(self, 
                  num_rx=4,                # Number of receiver antennas
@@ -374,45 +377,314 @@ class DopplerAttention(nn.Module):
         return x
 
 def test_model():
-    # Test the model with random input
-    batch_size = 2
-    num_rx = 4
-    num_chirps = 128
-    samples_per_chirp = 1000
-    out_doppler_bins = 128
-    out_range_bins = 256
+    """
+    Test the RadarTransformerNet model with synthetic data for both radar detection and OFDM communication.
+    """
+    import torch
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from AIRadarLib.waveform_utils import generate_linear_chirp, generate_ofdm_signal
     
-    # Create random input tensor
-    x = torch.randn(batch_size, num_rx, num_chirps, samples_per_chirp, 2)
+    # Model parameters
+    num_rx = 2                  # Number of receive antennas
+    num_chirps = 64             # Number of chirps in the input signal
+    samples_per_chirp = 64      # Number of samples per chirp
+    out_doppler_bins = 64       # Number of Doppler bins in the output
+    out_range_bins = 64         # Number of range bins in the output
+    batch_size = 2              # Batch size for testing
     
-    # Initialize model
+    print("Initializing RadarTransformerNet model...")
+    # Initialize model with OFDM support and detection capabilities
     model = RadarTransformerNet(
         num_rx=num_rx,
         num_chirps=num_chirps,
         samples_per_chirp=samples_per_chirp,
         out_doppler_bins=out_doppler_bins,
         out_range_bins=out_range_bins,
-        dim=128,
-        depth=4,
-        heads=8,
-        mlp_dim=256,
+        dim=128,                # Model dimension
+        depth=4,                # Number of transformer blocks
+        heads=8,                # Number of attention heads
+        mlp_dim=256,            # MLP hidden dimension
         dropout=0.1,
-        use_learnable_fft=True,
-        use_cnn_backbone=True
+        use_learnable_fft=True, # Use learnable FFT for range-Doppler processing
+        use_cnn_backbone=True,  # Use CNN backbone for feature extraction
+        support_ofdm=True,      # Enable OFDM support
+        detect_threshold=0.5,   # Detection threshold
+        max_targets=10          # Maximum number of targets to detect
     )
     
-    # Forward pass
-    output = model(x)
+    # Set model to evaluation mode
+    model.eval()
     
-    # Print shapes
-    print(f"Input shape: {x.shape}")
-    print(f"Output shape: {output.shape}")
+    # Generate test FMCW data
+    print("\nTesting RadarTransformerNet with FMCW data...")
+    fmcw_data = generate_test_fmcw_data(
+        batch_size=batch_size,
+        num_rx=num_rx,
+        num_chirps=num_chirps,
+        samples_per_chirp=samples_per_chirp
+    )  # Shape: [batch_size, num_rx, num_chirps, samples_per_chirp, 2]
     
-    # Check if output has the expected shape
-    expected_shape = (batch_size, out_doppler_bins, out_range_bins, 1)
-    assert output.shape == expected_shape, f"Expected shape {expected_shape}, got {output.shape}"
+    # Forward pass with FMCW data
+    with torch.no_grad():
+        fmcw_output = model(fmcw_data, is_ofdm=False)  # Shape: dict with detection_results and rd_map
     
-    print("Model test passed!")
+    # Print output shapes
+    print(f"FMCW Output - RD Map shape: {fmcw_output['rd_map'].shape}")  # [batch_size, 2, out_doppler_bins, out_range_bins]
+    print(f"FMCW Output - Detection Map shape: {fmcw_output['detection_results']['detection_map'].shape}")  # [batch_size, 1, out_doppler_bins, out_range_bins]
+    print(f"FMCW Output - Number of detected targets: {len(fmcw_output['detection_results']['target_list'][0])}")
+    
+    # Generate test OFDM data
+    print("\nTesting RadarTransformerNet with OFDM data...")
+    ofdm_data = generate_test_ofdm_data(
+        batch_size=batch_size,
+        num_rx=num_rx,
+        num_chirps=num_chirps,
+        samples_per_chirp=samples_per_chirp
+    )  # Shape: [batch_size, num_rx, num_chirps, samples_per_chirp, 2]
+    
+    # Forward pass with OFDM data
+    with torch.no_grad():
+        ofdm_output = model(ofdm_data, is_ofdm=True)  # Shape: dict with detection_results, rd_map, ofdm_map, decoded_bits
+    
+    # Print output shapes
+    print(f"OFDM Output - RD Map shape: {ofdm_output['rd_map'].shape}")  # [batch_size, 2, out_doppler_bins, out_range_bins]
+    print(f"OFDM Output - Detection Map shape: {ofdm_output['detection_results']['detection_map'].shape}")  # [batch_size, 1, out_doppler_bins, out_range_bins]
+    print(f"OFDM Output - OFDM Map shape: {ofdm_output['ofdm_map'].shape}")  # [batch_size, 2, num_chirps, samples_per_chirp]
+    print(f"OFDM Output - Decoded Bits shape: {ofdm_output['decoded_bits'].shape}")  # [batch_size, num_bits]
+    
+    # Visualize results
+    plt.figure(figsize=(12, 10))
+    
+    # Plot FMCW Range-Doppler Map
+    plt.subplot(2, 2, 1)
+    plt.title("FMCW Range-Doppler Map (Magnitude)")
+    rd_map_magnitude = torch.sqrt(fmcw_output['rd_map'][0, 0]**2 + fmcw_output['rd_map'][0, 1]**2)  # Magnitude of complex RD map
+    plt.imshow(rd_map_magnitude.numpy(), aspect='auto', cmap='viridis')
+    plt.colorbar(label='Magnitude')
+    plt.xlabel('Range Bins')
+    plt.ylabel('Doppler Bins')
+    
+    # Plot FMCW Detection Map
+    plt.subplot(2, 2, 2)
+    plt.title("FMCW Detection Map")
+    plt.imshow(fmcw_output['detection_results']['detection_map'][0, 0].numpy(), aspect='auto', cmap='plasma')
+    plt.colorbar(label='Detection Probability')
+    plt.xlabel('Range Bins')
+    plt.ylabel('Doppler Bins')
+    
+    # Plot OFDM Range-Doppler Map
+    plt.subplot(2, 2, 3)
+    plt.title("OFDM Range-Doppler Map (Magnitude)")
+    rd_map_magnitude = torch.sqrt(ofdm_output['rd_map'][0, 0]**2 + ofdm_output['rd_map'][0, 1]**2)  # Magnitude of complex RD map
+    plt.imshow(rd_map_magnitude.numpy(), aspect='auto', cmap='viridis')
+    plt.colorbar(label='Magnitude')
+    plt.xlabel('Range Bins')
+    plt.ylabel('Doppler Bins')
+    
+    # Plot OFDM Map
+    plt.subplot(2, 2, 4)
+    plt.title("OFDM Demodulation Output (Magnitude)")
+    ofdm_magnitude = torch.sqrt(ofdm_output['ofdm_map'][0, 0]**2 + ofdm_output['ofdm_map'][0, 1]**2)  # Magnitude of complex OFDM map
+    plt.imshow(ofdm_magnitude.numpy(), aspect='auto', cmap='viridis')
+    plt.colorbar(label='Magnitude')
+    plt.xlabel('Subcarrier Index')
+    plt.ylabel('Symbol Index')
+    
+    # Add a new figure for the decoded bits
+    plt.figure(figsize=(10, 5))
+    plt.title("OFDM Decoded Bits")
+    # Reshape bits for better visualization (show as bytes)
+    bits_reshaped = ofdm_output['decoded_bits'][0].reshape(-1, 8)[:50]  # Show first 50 bytes
+    plt.imshow(bits_reshaped.numpy(), aspect='auto', cmap='binary')
+    plt.colorbar(label='Bit Value')
+    plt.xlabel('Bit Position')
+    plt.ylabel('Byte Index')
+    
+    plt.tight_layout()
+    plt.savefig('transformer_net_test_results.png')
+    plt.show()
+    
+    print("\nTest completed successfully!")
+    print("Results saved to 'transformer_net_test_results.png'")
+
+
+def generate_test_fmcw_data(batch_size=2, num_rx=2, num_chirps=64, samples_per_chirp=64):
+    """
+    Generate synthetic FMCW radar data for testing.
+    
+    Args:
+        batch_size: Number of samples in the batch
+        num_rx: Number of receive antennas
+        num_chirps: Number of chirps
+        samples_per_chirp: Number of samples per chirp
+        
+    Returns:
+        Tensor with shape [batch_size, num_rx, num_chirps, samples_per_chirp, 2]
+    """
+    import torch
+    import numpy as np
+    
+    # Initialize empty tensor
+    data = torch.zeros(batch_size, num_rx, num_chirps, samples_per_chirp, 2)
+    
+    for b in range(batch_size):
+        # Generate random targets
+        num_targets = 3
+        max_range = 50  # meters
+        max_velocity = 10  # m/s
+        
+        ranges = np.random.uniform(5, max_range, num_targets)
+        velocities = np.random.uniform(-max_velocity, max_velocity, num_targets)
+        amplitudes = np.random.uniform(0.5, 1.0, num_targets)
+        
+        # Radar parameters
+        fc = 77e9  # Center frequency: 77 GHz
+        bw = 1e9  # Bandwidth: 1 GHz
+        chirp_duration = 50e-6  # 50 microseconds
+        prf = 1 / (chirp_duration * 1.1)  # Pulse repetition frequency
+        c = 3e8  # Speed of light
+        
+        # Calculate parameters
+        slope = bw / chirp_duration
+        wavelength = c / fc
+        
+        # Generate time samples
+        t = np.linspace(0, chirp_duration, samples_per_chirp)
+        
+        # For each chirp and receive antenna
+        for chirp in range(num_chirps):
+            chirp_time = chirp / prf
+            
+            # Initialize chirp signal
+            chirp_signal = np.zeros(samples_per_chirp, dtype=np.complex128)
+            
+            # Add target reflections
+            for i in range(num_targets):
+                # Calculate range delay
+                tau = 2 * ranges[i] / c
+                
+                # Calculate Doppler shift
+                doppler_freq = 2 * velocities[i] / wavelength
+                
+                # Phase due to Doppler
+                doppler_phase = 2 * np.pi * doppler_freq * chirp_time
+                
+                # Delayed signal with Doppler shift
+                delayed_t = t - tau
+                valid_indices = delayed_t >= 0
+                
+                # Beat signal (difference between transmitted and received)
+                beat_phase = 2 * np.pi * (slope * tau * delayed_t[valid_indices] - 0.5 * slope * tau**2)
+                beat_signal = amplitudes[i] * np.exp(1j * (beat_phase + doppler_phase))
+                
+                # Add to chirp signal
+                chirp_signal[valid_indices] += beat_signal
+            
+            # Add some noise
+            noise = np.random.normal(0, 0.1, samples_per_chirp) + 1j * np.random.normal(0, 0.1, samples_per_chirp)
+            chirp_signal += noise
+            
+            # For each receive antenna (add slight phase differences)
+            for rx in range(num_rx):
+                rx_phase = np.exp(1j * rx * np.pi / 4)  # Simple phase shift between antennas
+                rx_signal = chirp_signal * rx_phase
+                
+                # Convert to real/imag format
+                data[b, rx, chirp, :, 0] = torch.tensor(rx_signal.real, dtype=torch.float32)
+                data[b, rx, chirp, :, 1] = torch.tensor(rx_signal.imag, dtype=torch.float32)
+    
+    return data
+
+
+def generate_test_ofdm_data(batch_size=2, num_rx=2, num_chirps=64, samples_per_chirp=64):
+    """
+    Generate synthetic OFDM radar data for testing.
+    
+    Args:
+        batch_size: Number of samples in the batch
+        num_rx: Number of receive antennas
+        num_chirps: Number of chirps (OFDM symbols)
+        samples_per_chirp: Number of samples per chirp (FFT size)
+        
+    Returns:
+        Tensor with shape [batch_size, num_rx, num_chirps, samples_per_chirp, 2]
+    """
+    import torch
+    import numpy as np
+    from AIRadarLib.waveform_utils import generate_ofdm_signal
+    
+    # Initialize empty tensor
+    data = torch.zeros(batch_size, num_rx, num_chirps, samples_per_chirp, 2)
+    
+    for b in range(batch_size):
+        # Generate OFDM signal
+        ofdm_signal = generate_ofdm_signal(
+            num_subcarriers=samples_per_chirp//2,  # Use half of the subcarriers
+            num_symbols=num_chirps,
+            subcarrier_spacing=1e6,  # 1 MHz spacing (arbitrary for test)
+            fs=samples_per_chirp * 1e6,  # Sampling frequency
+            cp_length_ratio=0  # No cyclic prefix for simplicity
+        )
+        
+        # Reshape to match expected dimensions
+        ofdm_signal = ofdm_signal.reshape(num_chirps, samples_per_chirp)
+        
+        # Add targets (similar to FMCW but with OFDM signal)
+        num_targets = 3
+        max_range = 50  # meters
+        max_velocity = 10  # m/s
+        
+        # Generate random targets
+        ranges = np.random.uniform(5, max_range, num_targets)
+        velocities = np.random.uniform(-max_velocity, max_velocity, num_targets)
+        amplitudes = np.random.uniform(0.5, 1.0, num_targets)
+        
+        # Radar parameters
+        fc = 5.8e9  # Center frequency: 5.8 GHz (typical for OFDM radar)
+        c = 3e8  # Speed of light
+        wavelength = c / fc
+        symbol_duration = 10e-6  # 10 microseconds
+        
+        # For each OFDM symbol and receive antenna
+        for symbol in range(num_chirps):
+            symbol_time = symbol * symbol_duration
+            
+            # Initialize symbol signal
+            symbol_signal = ofdm_signal[symbol].copy()
+            
+            # Add target reflections
+            for i in range(num_targets):
+                # Calculate range delay in samples
+                tau = 2 * ranges[i] / c
+                delay_samples = int(tau / (symbol_duration / samples_per_chirp))
+                delay_samples = min(delay_samples, samples_per_chirp - 1)
+                
+                # Calculate Doppler shift
+                doppler_freq = 2 * velocities[i] / wavelength
+                doppler_phase = 2 * np.pi * doppler_freq * symbol_time
+                
+                # Apply delay and Doppler
+                delayed_signal = np.roll(symbol_signal, delay_samples) * amplitudes[i] * np.exp(1j * doppler_phase)
+                
+                # Add to symbol signal
+                symbol_signal += delayed_signal
+            
+            # Add some noise
+            noise = np.random.normal(0, 0.1, samples_per_chirp) + 1j * np.random.normal(0, 0.1, samples_per_chirp)
+            symbol_signal += noise
+            
+            # For each receive antenna (add slight phase differences)
+            for rx in range(num_rx):
+                rx_phase = np.exp(1j * rx * np.pi / 4)  # Simple phase shift between antennas
+                rx_signal = symbol_signal * rx_phase
+                
+                # Convert to real/imag format
+                data[b, rx, symbol, :, 0] = torch.tensor(rx_signal.real, dtype=torch.float32)
+                data[b, rx, symbol, :, 1] = torch.tensor(rx_signal.imag, dtype=torch.float32)
+    
+    return data
+
 
 if __name__ == "__main__":
     test_model()

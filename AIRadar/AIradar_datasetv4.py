@@ -18,7 +18,7 @@ import time
 from AIRadarLib.datautil import *
 from AIRadarLib.radar_det import cfar_2d_pytorch, cfar_2d_numpy
 from AIRadarLib.target_utils import generate_radar_targets, create_target_mask
-from AIRadarLib.visualization import plot_detection_results
+from AIRadarLib.visualization import plot_detection_results, plot_range_doppler_map_with_ground_truth, plot_3d_range_doppler_map_with_ground_truth, plot_cfar_vs_ground_truth, plot_signal_time_and_spectrum, plot_instantaneous_frequency
 from AIRadarLib.waveform_utils import generate_fmcw_chirp_signal
 from AIRadarLib.channel_simulation import (
     generate_fmcw_chirp,
@@ -135,13 +135,13 @@ class RadarDataset(Dataset):
         carrier_to_bw_ratio = self.center_freq / self.bandwidth
         
         # Check if sample rate is too high for practical simulation
-        max_practical_sample_rate = 2e9  # 2 GHz is a reasonable upper limit for simulation
+        max_practical_sample_rate = 1e9  # 1 GHz is a reasonable upper limit for simulation
         if self.sample_rate > max_practical_sample_rate:
             print(f"Warning: Calculated sample rate ({self.sample_rate/1e6:.2f} MHz) is very high.")
             print(f"Limiting to {max_practical_sample_rate/1e6:.2f} MHz for practical simulation.")
             self.sample_rate = max_practical_sample_rate
         
-        desired_max_unambiguous_range = 100  # meters
+        desired_max_unambiguous_range = 200  # meters
         speed_of_light = 3e8  # m/s
         chirp_duration = 2 * desired_max_unambiguous_range / speed_of_light  # seconds
         print(f"Set chirp_duration to {chirp_duration*1e6:.2f} us for max unambiguous range of {desired_max_unambiguous_range} m")
@@ -166,7 +166,7 @@ class RadarDataset(Dataset):
         #velocity resolution is given by: \Delta v = \frac{\lambda}{2 \cdot T_{\text{frame}}}
         #where ( \lambda ) is the wavelength and ( T_{\text{frame}} ) is the total time of all chirps in a frame.
         #To improve velocity resolution: Increase num_chirps, Increase the chirp duration ( chirp_duration), or Decrease the center frequency
-        self.num_chirps = 512
+        self.num_chirps = 1024 #512
         frame_duration = num_chirps * chirp_duration
         refresh_rate = 1.0 / frame_duration if frame_duration > 0 else 0
         print(f"Frame duration: {frame_duration*1e6:.2f} us")
@@ -284,7 +284,7 @@ class RadarDataset(Dataset):
                 elevation_range=(-10, 10),
                 range_factor=0.5,
                 velocity_factor=0.5
-            )
+            )#list of target dicts
             if simulate_rf_chain:
                 # Use a higher analog sample rate for upconversion/downconversion
                 if analog_sample_rate is None:
@@ -323,12 +323,12 @@ class RadarDataset(Dataset):
                 tx_signal = self._generate_tx_signal(
                     num_chirps=self.num_chirps,
                     total_samples_per_chirp=self.total_samples_per_chirp,
-                    active_samples=self.samples_per_chirp,
-                    sample_rate=self.sample_rate,
+                    active_samples=self.samples_per_chirp, #666
+                    sample_rate=self.sample_rate,#500M
                     slope=self.fmcw_slope, return_full=True, window_type=None
-                )
+                ) #(681984,)
                 rx_signal = self._ray_tracing_simulation(tx_signal, targets, perfect_mode=False, flatten_output=True)
-
+                #(4, 681984)
                 # === Add noise in the baseband domain ===
                 if fixedsnr_db is not None:
                     snr_db = fixedsnr_db
@@ -339,7 +339,7 @@ class RadarDataset(Dataset):
             
             if visualize:
                 # Extract a single chirp from the full TX signal for visualization
-                tx_chirp = tx_signal[:self.total_samples_per_chirp]  # Get first chirp's active samples
+                tx_chirp = tx_signal[:self.total_samples_per_chirp]  # 666 Get first chirp's active samples
                 # Visualize the time and spectrum of the TX chirp
                 plot_signal_time_and_spectrum(
                     signal=tx_chirp,
@@ -389,7 +389,7 @@ class RadarDataset(Dataset):
                     total_samples_per_chirp=self.total_samples_per_chirp,
                     beat_samples_per_chirp=self.samples_per_chirp,
                     num_chirps=self.num_chirps
-                )
+                ) #(1024, 666) (num_chirps, samples_per_chirp)
                 beat_signal_list.append(beat)
             beat_signal = np.stack(beat_signal_list, axis=0)  # Shape: (num_rx, num_chirps, samples_per_chirp)
             #Beat signal with shape (4, 128, 1000) [num_rx, num_chirps, samples_per_chirp]
@@ -415,23 +415,24 @@ class RadarDataset(Dataset):
                 num_doppler_bins=self.num_doppler_bins,
                 num_range_bins=self.num_range_bins,
                 apply_mti=False,               # Enable MTI for stationary target suppression
-                apply_doppler_centering=self.apply_doppler_centering,
+                apply_doppler_centering=self.apply_doppler_centering,#True
                 apply_notch_filter=False,
                 notch_width=5,               # Increase notch width from default 3
                 use_blackman_window=False,
                 dynamic_range_db=0          # Increase from 40dB
-            )
+            ) #(4, 2, 1024, 1024)
             #rd_map is [num_rx, 2(real+imaginary), num_doppler_bins, num_range_bins]
             if visualize:
                 plot_range_doppler_map_with_ground_truth(
                     rd_map=rd_map[0,:],
-                    targets=[], #targets,  # Make sure 'targets' is defined in your context
+                    targets=targets,  # Make sure 'targets' is defined in your context
                     range_resolution=self.range_resolution,
                     velocity_resolution=self.velocity_resolution,
                     num_range_bins=self.num_range_bins,
                     num_doppler_bins=self.num_doppler_bins,
                     title_prefix=f"Range-Doppler Map Sample {i}",
-                    save_path=os.path.join(savevis_path, f"rdmap_{i}{IMG_FORMAT}")
+                    save_path=os.path.join(savevis_path, f"rdmap_{i}{IMG_FORMAT}"),
+                    apply_doppler_centering=self.apply_doppler_centering
                 )
                 plot_3d_range_doppler_map_with_ground_truth(
                     rd_map=rd_map[0,:],
@@ -440,7 +441,8 @@ class RadarDataset(Dataset):
                     velocity_resolution=self.velocity_resolution,
                     num_range_bins=self.num_range_bins,
                     num_doppler_bins=self.num_doppler_bins,
-                    save_path=os.path.join(savevis_path, f"rd3dmap_{i}{IMG_FORMAT}")
+                    save_path=os.path.join(savevis_path, f"rd3dmap_{i}{IMG_FORMAT}"),
+                    apply_doppler_centering=self.apply_doppler_centering
                 )
 
 
@@ -490,7 +492,8 @@ class RadarDataset(Dataset):
                         num_range_bins=self.num_range_bins,
                         save_path=os.path.join(savevis_path, f"detection_results_{i}{IMG_FORMAT}"),
                         title=f"Radar Detection Results - Sample {i+1}",
-                        show_plot=False
+                        show_plot=False,
+                        apply_doppler_centering=self.apply_doppler_centering
                     )
                 
         print("Dataset generation complete!")
@@ -903,7 +906,7 @@ def test_dataset_visualization(num_samples=5, signal_type='FMCW', save_path='dat
         fig = plt.figure(figsize=(12, 8))
         ax = fig.add_subplot(111, projection='3d')
         X, Y = np.meshgrid(range_axis, doppler_axis)
-        surf = ax.plot_surface(X, Y, rd_magnitude, cmap=cm.jet, linewidth=0, antialiased=False)
+        surf = ax.plot_surface(X, Y, rd_magnitude, linewidth=0, antialiased=False)
         fig.colorbar(surf, shrink=0.5, aspect=5, label='Magnitude')
         ax.set_title(f'Sample {i+1}: 3D Range-Doppler Map')
         ax.set_xlabel('Range (m)')
@@ -923,7 +926,7 @@ if __name__ == '__main__':
     
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Radar Dataset Generation and Visualization')
-    parser.add_argument('--mode', type=str, default='test', 
+    parser.add_argument('--mode', type=str, default='generate', 
                         choices=['generate', 'load', 'visualize', 'compare', 'test'],
                         help='Mode: generate new data, load existing data, visualize existing data, compare signal types, or test dataset')
     parser.add_argument('--datapath', type=str, default="data/radarv3/FMCW/radar_data.h5", 

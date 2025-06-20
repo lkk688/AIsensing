@@ -8,19 +8,42 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import argparse
 import time
+import logging
+from torch.cuda.amp import autocast, GradScaler
 
 # Import custom modules
 from AIradar_datasetv4 import RadarDataset
-from AIradar_transformer import RadarTransformerNet
+from AIRadarLib.modeling_transformer import RadarTransformerNet
 from AIradar_processing import RadarProcessing
 
 def train_transformer_model(args):
     """
     Train the transformer-based radar detection model
     """
+    # Set up logging
+    log_file = os.path.join(args.output_dir, 'training.log')
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()
+        ]
+    )
+    
     # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    logging.info(f"Using device: {device}")
+    
+    # Set random seed for reproducibility
+    if args.seed is not None:
+        torch.manual_seed(args.seed)
+        np.random.seed(args.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(args.seed)
+        logging.info(f"Random seed set to {args.seed}")
     
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
@@ -103,25 +126,46 @@ def train_transformer_model(args):
     print(f"Model parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
     
     # Step 3: Define loss function and optimizer
-    print("\nStep 3: Setting up training...")
+    logging.info("\nStep 3: Setting up training...")
     
     # Binary cross entropy loss for detection
     criterion = nn.BCELoss()
     
     # Optimizer with learning rate scheduler
-    optimizer = optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5, verbose=True
-    )
+    optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+    
+    # Learning rate scheduler
+    if args.scheduler == 'plateau':
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='min', factor=0.5, patience=5, verbose=True
+        )
+    elif args.scheduler == 'cosine':
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=args.epochs, eta_min=args.learning_rate * 0.01
+        )
+    elif args.scheduler == 'onecycle':
+        scheduler = optim.lr_scheduler.OneCycleLR(
+            optimizer, max_lr=args.learning_rate, 
+            steps_per_epoch=len(train_loader), epochs=args.epochs
+        )
+    
+    # Initialize gradient scaler for mixed precision training
+    scaler = GradScaler() if args.mixed_precision and torch.cuda.is_available() else None
     
     # Step 4: Training loop
-    print("\nStep 4: Starting training...")
+    logging.info("\nStep 4: Starting training...")
     
     best_val_loss = float('inf')
+    best_val_accuracy = 0.0
+    best_epoch = 0
     train_losses = []
     val_losses = []
     train_accuracies = []
     val_accuracies = []
+    
+    # Early stopping parameters
+    patience = args.early_stopping_patience
+    patience_counter = 0
     
     for epoch in range(args.epochs):
         # Training phase
@@ -145,16 +189,30 @@ def train_transformer_model(args):
                     align_corners=False
                 ).permute(0, 2, 3, 1)  # [batch, out_doppler_bins, out_range_bins, 1]
             
-            # Forward pass
+            # Forward pass with mixed precision if enabled
             optimizer.zero_grad()
-            outputs = model(time_data)  # [batch, out_doppler_bins, out_range_bins, 1]
             
-            # Calculate loss
-            loss = criterion(outputs, target_mask)
-            
-            # Backward pass and optimize
-            loss.backward()
-            optimizer.step()
+            if args.mixed_precision and torch.cuda.is_available():
+                with autocast():
+                    outputs = model(time_data)  # [batch, out_doppler_bins, out_range_bins, 1]
+                    loss = criterion(outputs, target_mask)
+                
+                # Backward pass with gradient scaling
+                scaler.scale(loss).backward()
+                if args.grad_clip > 0:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                outputs = model(time_data)  # [batch, out_doppler_bins, out_range_bins, 1]
+                loss = criterion(outputs, target_mask)
+                
+                # Backward pass and optimize
+                loss.backward()
+                if args.grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                optimizer.step()
             
             # Update metrics
             train_loss += loss.item() * time_data.size(0)
@@ -225,24 +283,38 @@ def train_transformer_model(args):
         val_accuracies.append(val_accuracy)
         
         # Update learning rate scheduler
-        scheduler.step(val_loss)
+        if args.scheduler == 'plateau':
+            scheduler.step(val_loss)
+        elif args.scheduler in ['cosine', 'onecycle']:
+            scheduler.step()
         
         # Print epoch summary
-        print(f"Epoch {epoch+1}/{args.epochs} - "
-              f"Train Loss: {train_loss:.4f}, Train Acc: {train_accuracy:.4f}, "
-              f"Val Loss: {val_loss:.4f}, Val Acc: {val_accuracy:.4f}")
+        logging.info(f"Epoch {epoch+1}/{args.epochs} - "
+                   f"Train Loss: {train_loss:.4f}, Train Acc: {train_accuracy:.4f}, "
+                   f"Val Loss: {val_loss:.4f}, Val Acc: {val_accuracy:.4f}, "
+                   f"LR: {optimizer.param_groups[0]['lr']:.6f}")
         
-        # Save best model
+        # Save best model based on validation loss
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            best_val_accuracy = val_accuracy
+            best_epoch = epoch
+            patience_counter = 0
+            
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict() if args.scheduler != 'plateau' else None,
                 'val_loss': val_loss,
                 'val_accuracy': val_accuracy,
+                'train_loss': train_loss,
+                'train_accuracy': train_accuracy,
+                'args': args,
             }, os.path.join(args.output_dir, 'best_transformer_model.pth'))
-            print(f"Saved best model with validation loss: {val_loss:.4f}")
+            logging.info(f"Saved best model with validation loss: {val_loss:.4f}")
+        else:
+            patience_counter += 1
         
         # Save checkpoint every few epochs
         if (epoch + 1) % args.save_interval == 0:
@@ -250,14 +322,22 @@ def train_transformer_model(args):
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict() if args.scheduler != 'plateau' else None,
                 'train_loss': train_loss,
                 'val_loss': val_loss,
                 'train_accuracy': train_accuracy,
                 'val_accuracy': val_accuracy,
+                'args': args,
             }, os.path.join(args.output_dir, f'transformer_checkpoint_epoch_{epoch+1}.pth'))
+        
+        # Early stopping
+        if args.early_stopping and patience_counter >= patience:
+            logging.info(f"Early stopping triggered after {epoch+1} epochs")
+            logging.info(f"Best model was at epoch {best_epoch+1} with validation loss: {best_val_loss:.4f} and accuracy: {best_val_accuracy:.4f}")
+            break
     
     # Step 5: Plot training curves
-    print("\nStep 5: Plotting training curves...")
+    logging.info("\nStep 5: Plotting training curves...")
     
     plt.figure(figsize=(12, 5))
     
@@ -285,7 +365,7 @@ def train_transformer_model(args):
     plt.savefig(os.path.join(args.output_dir, 'transformer_training_curves.png'))
     
     # Step 6: Evaluate on test data
-    print("\nStep 6: Evaluating on test data...")
+    logging.info("\nStep 6: Evaluating on test data...")
     
     # Create test dataset with realistic parameters
     test_dataset = RadarDataset(
@@ -463,17 +543,17 @@ def train_transformer_model(args):
     conv_f1_score = 2 * conv_precision * conv_recall / (conv_precision + conv_recall) if (conv_precision + conv_recall) > 0 else 0
     
     # Print test results
-    print(f"\nTest Results:")
-    print(f"Test Loss: {test_loss:.4f}")
-    print(f"Test Accuracy: {test_accuracy:.4f}")
-    print(f"\nML Detection (Transformer):")
-    print(f"Precision: {precision:.4f}")
-    print(f"Recall: {recall:.4f}")
-    print(f"F1 Score: {f1_score:.4f}")
-    print(f"\nConventional CFAR Detection:")
-    print(f"Precision: {conv_precision:.4f}")
-    print(f"Recall: {conv_recall:.4f}")
-    print(f"F1 Score: {conv_f1_score:.4f}")
+    logging.info(f"\nTest Results:")
+    logging.info(f"Test Loss: {test_loss:.4f}")
+    logging.info(f"Test Accuracy: {test_accuracy:.4f}")
+    logging.info(f"\nML Detection (Transformer):")
+    logging.info(f"Precision: {precision:.4f}")
+    logging.info(f"Recall: {recall:.4f}")
+    logging.info(f"F1 Score: {f1_score:.4f}")
+    logging.info(f"\nConventional CFAR Detection:")
+    logging.info(f"Precision: {conv_precision:.4f}")
+    logging.info(f"Recall: {conv_recall:.4f}")
+    logging.info(f"F1 Score: {conv_f1_score:.4f}")
     
     # Save test results
     with open(os.path.join(args.output_dir, 'test_results.txt'), 'w') as f:
@@ -488,7 +568,7 @@ def train_transformer_model(args):
         f.write(f"Recall: {conv_recall:.4f}\n")
         f.write(f"F1 Score: {conv_f1_score:.4f}\n")
     
-    print(f"\nTraining and evaluation complete. Results saved to {args.output_dir}")
+    logging.info(f"\nTraining and evaluation complete. Results saved to {args.output_dir}")
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train transformer-based radar detection model')
@@ -528,6 +608,12 @@ def parse_args():
     parser.add_argument('--num_workers', type=int, default=4, help='Number of data loader workers')
     parser.add_argument('--save_interval', type=int, default=10, help='Save checkpoint every N epochs')
     parser.add_argument('--num_visualizations', type=int, default=5, help='Number of test samples to visualize')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
+    parser.add_argument('--mixed_precision', action='store_true', help='Use mixed precision training')
+    parser.add_argument('--grad_clip', type=float, default=1.0, help='Gradient clipping value (0 to disable)')
+    parser.add_argument('--scheduler', type=str, default='plateau', choices=['plateau', 'cosine', 'onecycle'], help='Learning rate scheduler')
+    parser.add_argument('--early_stopping', action='store_true', help='Enable early stopping')
+    parser.add_argument('--early_stopping_patience', type=int, default=10, help='Patience for early stopping')
     
     # Output parameters
     parser.add_argument('--output_dir', type=str, default='./transformer_results', help='Output directory')

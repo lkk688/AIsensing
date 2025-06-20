@@ -500,3 +500,24 @@ The comparison script will save:
 4. **Specialized Processing**: Dedicated attention modules for range and Doppler dimensions
 5. **Robust to Noise**: Can learn to filter out noise and interference
 
+# New Versions of the Model
+### RadarTransformerNet
+The transformer model processes time-domain data directly and includes:
+
+- 3D convolutional layers for initial feature extraction
+- Optional CNN backbone
+- Learnable FFT for range and Doppler dimensions
+- Transformer blocks with specialized attention mechanisms
+- Output projection for detection
+### RadarNet
+This model processes range-Doppler maps and includes:
+
+- Encoder-decoder architecture with skip connections
+- Multiple output heads for detection, velocity estimation, and SNR estimation
+- Target extraction functionality
+### RadarTimeToFreqNet
+This hybrid model includes:
+
+- Time-domain preprocessing with 3D convolutions
+- Conversion from time to frequency domain
+- RadarNet for detection from the generated range-Doppler maps
