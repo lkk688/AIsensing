@@ -35,7 +35,7 @@ class RadarDataset(Dataset):
                  num_samples=100,
                  num_range_bins=128,  # Increased from 64 for better range resolution
                  num_doppler_bins=16,  # Increased from 12 for better velocity resolution
-                 sample_rate=500e6, #1.5e6,    # reduce from 15MHz to 1.5MHz Adjusted to match hardware constraints
+                 sample_rate=50e6, #1.5e6,    # reduce from 15MHz to 1.5MHz Adjusted to match hardware constraints
                  transceiver_bandwidth=30e6,  # AD9361 bandwidth limitation
                  #chirp_duration=1e-4,  # reduce from 1ms to 0.1ms Increased to 1ms for better SNR (from 500μs)
                  num_chirps=32,       # Increased from 12 for better integration gain
@@ -141,9 +141,10 @@ class RadarDataset(Dataset):
             print(f"Limiting to {max_practical_sample_rate/1e6:.2f} MHz for practical simulation.")
             self.sample_rate = max_practical_sample_rate
         
-        desired_max_unambiguous_range = 200  # meters
+        desired_max_unambiguous_range = 50  # meters
         speed_of_light = 3e8  # m/s
-        chirp_duration = 2 * desired_max_unambiguous_range / speed_of_light  # seconds
+        print(2 * desired_max_unambiguous_range / speed_of_light)
+        chirp_duration = 0.0001 #2 * desired_max_unambiguous_range / speed_of_light  # seconds
         print(f"Set chirp_duration to {chirp_duration*1e6:.2f} us for max unambiguous range of {desired_max_unambiguous_range} m")
         self.chirp_duration = chirp_duration
         # Calculate slope
@@ -152,6 +153,7 @@ class RadarDataset(Dataset):
         # Calculate maximum beat frequency for max_range
         #Max beat frequency: f_beat_max = 2 * slope * max_range / c
         f_beat_max = 2 * slope * desired_max_unambiguous_range / speed_of_light
+        print(2* (bandwidth / chirp_duration) * desired_max_unambiguous_range / speed_of_light)
         # Calculate Nyquist frequency
         nyquist_freq = sample_rate / 2
 
@@ -262,7 +264,7 @@ class RadarDataset(Dataset):
             savevis_path = os.path.join(self.save_path, "visualization")
             os.makedirs(savevis_path, exist_ok=True)
 
-        flattened_length = self.num_chirps * self.total_samples_per_chirp
+        flattened_length = self.num_chirps * self.total_samples_per_chirp #1024*5000
         dataset = {
             'time_domain_data': np.zeros((self.num_samples, self.num_rx, flattened_length, 2), dtype=self.precision),
             'range_doppler_maps': np.zeros((self.num_samples, self.num_rx, 2, self.num_doppler_bins, self.num_range_bins), dtype=self.precision),
@@ -326,9 +328,9 @@ class RadarDataset(Dataset):
                     active_samples=self.samples_per_chirp, #666
                     sample_rate=self.sample_rate,#500M
                     slope=self.fmcw_slope, return_full=True, window_type=None
-                ) #(681984,)
+                ) #(5120000,) 1024*5000
                 rx_signal = self._ray_tracing_simulation(tx_signal, targets, perfect_mode=False, flatten_output=True)
-                #(4, 681984)
+                #(4, 5120000), 1024*5000
                 # === Add noise in the baseband domain ===
                 if fixedsnr_db is not None:
                     snr_db = fixedsnr_db
@@ -339,7 +341,7 @@ class RadarDataset(Dataset):
             
             if visualize:
                 # Extract a single chirp from the full TX signal for visualization
-                tx_chirp = tx_signal[:self.total_samples_per_chirp]  # 666 Get first chirp's active samples
+                tx_chirp = tx_signal[:self.total_samples_per_chirp]  #5000 Get first chirp's active samples
                 # Visualize the time and spectrum of the TX chirp
                 plot_signal_time_and_spectrum(
                     signal=tx_chirp,
@@ -389,7 +391,7 @@ class RadarDataset(Dataset):
                     total_samples_per_chirp=self.total_samples_per_chirp,
                     beat_samples_per_chirp=self.samples_per_chirp,
                     num_chirps=self.num_chirps
-                ) #(1024, 666) (num_chirps, samples_per_chirp)
+                ) #(1024, 5000) (num_chirps, samples_per_chirp)
                 beat_signal_list.append(beat)
             beat_signal = np.stack(beat_signal_list, axis=0)  # Shape: (num_rx, num_chirps, samples_per_chirp)
             #Beat signal with shape (4, 128, 1000) [num_rx, num_chirps, samples_per_chirp]
@@ -929,11 +931,11 @@ if __name__ == '__main__':
     parser.add_argument('--mode', type=str, default='generate', 
                         choices=['generate', 'load', 'visualize', 'compare', 'test'],
                         help='Mode: generate new data, load existing data, visualize existing data, compare signal types, or test dataset')
-    parser.add_argument('--datapath', type=str, default="data/radarv3/FMCW/radar_data.h5", 
-                        help='Path to existing dataset (for load or visualize modes)')
+    parser.add_argument('--datapath', type=str, default="", 
+                        help='Path to existing dataset (for load or visualize modes), data/radarv3/FMCW/radar_data.h5')
     parser.add_argument('--num_samples', type=int, default=100, 
                         help='Number of samples to generate')
-    parser.add_argument('--save_path', type=str, default='data/radarv4/',
+    parser.add_argument('--save_path', type=str, default='data/radarv5/',
                         help='Path to save generated data')
     parser.add_argument('--format', type=str, default='hdf5', choices=['hdf5', 'numpy'],
                         help='Format to save/load data')

@@ -456,8 +456,8 @@ class RadarTimeNet(nn.Module):
         x = self.time_conv(x)
         
         # Permute back to [B, num_rx, num_chirps, samples_per_chirp, 2]
-        # and combine the channel dimension with batch for processing
-        x = torch.cat([x[:, :16], x[:, 16:]], dim=-1).permute(0, 2, 3, 4, 1)
+        # Take only the first 2 channels and permute to correct shape
+        x = x[:, :2].permute(0, 2, 3, 4, 1)
         
         # === Step 2: Demodulation (mixing with reference) ===
         # Output shape: [B, num_rx, num_chirps, samples_per_chirp, 2]

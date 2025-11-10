@@ -95,7 +95,7 @@ def calculate_radar_parameters(
     # $\\Delta R = \\frac{c}{2B}$
     range_resolution = c / (2 * bandwidth)
 
-    # Maximum range (meters)
+    # Maximum range (meters) maximum unambiguous range
     # $R_{max} = \\frac{f_s \cdot c \cdot T_{chirp}}{2B}$
     max_range = (sample_rate * c * chirp_duration) / (2 * bandwidth)
 

@@ -479,7 +479,7 @@ def plot_signal_time_and_spectrum(
     draw_window=True
 ):
     """
-    Plot the time-domain and spectrum of a complex signal with advanced options.
+    Plot the time-domain and spectrum of a complex signal with advanced options and optimized clarity.
 
     Args:
         signal: np.ndarray, 1D complex array (the signal to plot)
@@ -497,86 +497,153 @@ def plot_signal_time_and_spectrum(
         save_path: str or None, if provided, save the figure to this path
         draw_window: bool, whether to draw the window in the time-domain plot
     """
+    # Enhanced time axis with microsecond units for better readability
     t = np.linspace(0, total_duration, len(signal))
+    t_us = t * 1e6  # Convert to microseconds for better readability
+    
     signal_windowed, window = apply_window(signal, window_type=window_type)
+    
+    # Enhanced frequency axis handling
     if center_freq is not None:
         freq_axis = np.fft.fftshift(np.fft.fftfreq(N_fft, d=1 / sample_rate)) + center_freq
     else:
         freq_axis = np.fft.fftshift(np.fft.fftfreq(N_fft, d=1 / sample_rate))
-    freq_axis = freq_axis / 1e6  # MHz
+    freq_axis_mhz = freq_axis / 1e6  # MHz
 
-    # Compute spectra
+    # Compute spectra with enhanced dynamic range
     spectrum_orig = calculate_spectrum(signal, N_fft)
     spectrum_win = calculate_spectrum(signal_windowed, N_fft)
 
-    # Normalize if requested
+    # Enhanced normalization with better dynamic range control
     if normalize:
         ref = max(np.max(spectrum_orig), np.max(spectrum_win))
         spectrum_orig = normalize_spectrum(spectrum_orig, reference=ref)
         spectrum_win = normalize_spectrum(spectrum_win, reference=ref)
+        # Limit dynamic range to improve visibility
+        spectrum_orig = np.maximum(spectrum_orig, -80)  # 80 dB dynamic range
+        spectrum_win = np.maximum(spectrum_win, -80)
 
     # Find peak frequency
-    peak_freq, peak_val = find_peak_frequency(spectrum_win, freq_axis) if highlight_peak else (None, None)
+    peak_freq, peak_val = find_peak_frequency(spectrum_win, freq_axis_mhz) if highlight_peak else (None, None)
 
-    fig, axs = plt.subplots(1, 2, figsize=(14, 4))
-    fig.suptitle(f"{title_prefix} - Time and Spectrum", fontsize=14)
+    # Create figure with optimized size and layout
+    fig, axs = plt.subplots(1, 2, figsize=(16, 6))
+    fig.suptitle(f"{title_prefix} - Time and Spectrum", fontsize=16, fontweight='bold')
 
-    # Time domain
-    axs[0].plot(t, np.real(signal), 'b-', label='Real', alpha=0.7)
-    axs[0].plot(t, np.imag(signal), 'r--', label='Imag', alpha=0.7)
+    # Enhanced time domain plot
+    axs[0].plot(t_us, np.real(signal), 'b-', label='Real', linewidth=1.5, alpha=0.8)
+    axs[0].plot(t_us, np.imag(signal), 'r--', label='Imaginary', linewidth=1.5, alpha=0.8)
+    if draw_window and len(window) == len(signal):
+        # Scale window to signal amplitude for better visualization
+        window_scaled = window * np.max(np.abs(signal)) * 0.8
+        axs[0].plot(t_us, window_scaled, 'g-', label=f'{window_type.capitalize()} Window', 
+                   linewidth=2, alpha=0.6)
+    
+    axs[0].set_title(f"{title_prefix} (Time Domain)", fontsize=14, fontweight='bold')
+    axs[0].set_xlabel("Time (μs)", fontsize=12)
+    axs[0].set_ylabel("Amplitude", fontsize=12)
+    axs[0].legend(loc='upper right', framealpha=0.9)
+    axs[0].grid(True, alpha=0.3, linestyle='-', linewidth=0.5)
+    axs[0].set_facecolor('#f8f9fa')
+    
+    # Add minor ticks for better precision
+    axs[0].minorticks_on()
+    axs[0].grid(True, which='minor', alpha=0.1, linestyle=':')
+
+    # Enhanced spectrum plot with better colors and styling
     if draw_window:
-        axs[0].plot(t, window * np.max(np.abs(signal)), 'g-', label='Window', alpha=0.3)
-    axs[0].set_title(f"{title_prefix} (Time Domain)")
-    axs[0].set_xlabel("Time (s)")
-    axs[0].set_ylabel("Amplitude")
-    axs[0].legend()
-    axs[0].grid(True)
+        axs[1].plot(freq_axis_mhz, spectrum_orig, 'b-', label='Original', 
+                   linewidth=1.2, alpha=0.6)
+        axs[1].plot(freq_axis_mhz, spectrum_win, 'r-', 
+                   label=f'{window_type.capitalize()} Windowed', 
+                   linewidth=2, alpha=0.9)
+    else:
+        axs[1].plot(freq_axis_mhz, spectrum_orig, 'b-', label='Spectrum', 
+                   linewidth=2, alpha=0.9)
+    
+    axs[1].set_title(f"{title_prefix} Spectrum", fontsize=14, fontweight='bold')
+    axs[1].set_xlabel("Frequency (MHz)", fontsize=12)
+    axs[1].set_ylabel("Magnitude (dB)", fontsize=12)
+    axs[1].grid(True, alpha=0.3, linestyle='-', linewidth=0.5)
+    axs[1].set_facecolor('#f8f9fa')
+    
+    # Add minor ticks for better precision
+    axs[1].minorticks_on()
+    axs[1].grid(True, which='minor', alpha=0.1, linestyle=':')
 
-    # Spectrum
-    axs[1].plot(freq_axis, spectrum_orig, 'b-', label='Original', alpha=0.5)
-    if draw_window:
-        axs[1].plot(freq_axis, spectrum_win, 'r-', label=f'{window_type.capitalize()} Window', alpha=0.8)
-    axs[1].set_title(f"{title_prefix} Spectrum")
-    axs[1].set_xlabel("Frequency (MHz)")
-    axs[1].set_ylabel("Magnitude (dB)")
-    axs[1].grid(True)
-    axs[1].legend()
-
-    # Highlight bandwidth region and zoom
+    # Enhanced bandwidth highlighting with better visual cues
     if bandwidth is not None and center_freq is not None:
         bandwidth_mhz = bandwidth / 1e6
         center_freq_mhz = center_freq / 1e6
         f_start = center_freq_mhz - bandwidth_mhz / 2
         f_end = center_freq_mhz + bandwidth_mhz / 2
-        axs[1].axvline(f_start, color='red', linestyle='--', linewidth=1.5, label=f'Start: {f_start:.2f} MHz')
-        axs[1].axvline(f_end, color='green', linestyle='--', linewidth=1.5, label=f'End: {f_end:.2f} MHz')
-        axs[1].axvspan(f_start, f_end, alpha=0.2, color='yellow', label='Highlighted Region')
-        margin = bandwidth_mhz * zoom_margin
-        axs[1].set_xlim([f_start - margin, f_end + margin])
+        
+        # Enhanced bandwidth visualization
+        axs[1].axvspan(f_start, f_end, alpha=0.15, color='orange', 
+                      label=f'Bandwidth: {bandwidth_mhz:.1f} MHz')
+        axs[1].axvline(f_start, color='red', linestyle='--', linewidth=2, 
+                      label=f'Start: {f_start:.1f} MHz')
+        axs[1].axvline(f_end, color='green', linestyle='--', linewidth=2, 
+                      label=f'End: {f_end:.1f} MHz')
+        axs[1].axvline(center_freq_mhz, color='purple', linestyle=':', linewidth=2, 
+                      label=f'Center: {center_freq_mhz:.1f} MHz')
+        
+        # Smart zoom with margin
+        if zoom_margin > 0:
+            margin = bandwidth_mhz * zoom_margin
+            axs[1].set_xlim([f_start - margin, f_end + margin])
     elif bandwidth is not None and zoom_margin > 0:
         bandwidth_mhz = bandwidth / 1e6
         f_start = -bandwidth_mhz / 2
         f_end = bandwidth_mhz / 2
-        axs[1].axvline(f_start, color='red', linestyle='--', linewidth=1.5, label=f'Start: {f_start:.2f} MHz')
-        axs[1].axvline(f_end, color='green', linestyle='--', linewidth=1.5, label=f'End: {f_end:.2f} MHz')
-        axs[1].axvspan(f_start, f_end, alpha=0.2, color='yellow', label='Highlighted Region')
+        
+        axs[1].axvspan(f_start, f_end, alpha=0.15, color='orange', 
+                      label=f'Bandwidth: {bandwidth_mhz:.1f} MHz')
+        axs[1].axvline(f_start, color='red', linestyle='--', linewidth=2)
+        axs[1].axvline(f_end, color='green', linestyle='--', linewidth=2)
+        
         margin = bandwidth_mhz * zoom_margin
         axs[1].set_xlim([f_start - margin, f_end + margin])
 
-    # Highlight peak frequency
+    # Enhanced peak highlighting
     if highlight_peak and peak_freq is not None:
-        axs[1].axvline(peak_freq, color='magenta', linestyle='-', linewidth=2, label=f'Peak: {peak_freq:.2f} MHz')
-        axs[1].annotate(f'Peak: {peak_freq:.2f} MHz', xy=(peak_freq, peak_val), xytext=(peak_freq, peak_val+5),
-                        arrowprops=dict(facecolor='magenta', shrink=0.05), fontsize=10, color='magenta')
+        axs[1].axvline(peak_freq, color='magenta', linestyle='-', linewidth=3, 
+                      label=f'Peak: {peak_freq:.2f} MHz')
+        # Better annotation positioning
+        y_range = axs[1].get_ylim()
+        annotation_y = peak_val + (y_range[1] - y_range[0]) * 0.1
+        axs[1].annotate(f'Peak\n{peak_freq:.2f} MHz\n{peak_val:.1f} dB', 
+                       xy=(peak_freq, peak_val), 
+                       xytext=(peak_freq, annotation_y),
+                       arrowprops=dict(arrowstyle='->', color='magenta', lw=2),
+                       fontsize=10, color='magenta', fontweight='bold',
+                       ha='center', va='bottom',
+                       bbox=dict(boxstyle='round,pad=0.3', facecolor='white', 
+                                edgecolor='magenta', alpha=0.8))
 
-    # Display text string
+    # Enhanced legend positioning
+    axs[1].legend(loc='upper right', framealpha=0.9, fontsize=10)
+
+    # Enhanced text display
     if textstr is not None:
-        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
-        axs[1].text(0.05, 0.95, textstr, transform=axs[1].transAxes, fontsize=10, verticalalignment='top', bbox=props)
+        props = dict(boxstyle='round,pad=0.5', facecolor='lightblue', 
+                    edgecolor='navy', alpha=0.8)
+        axs[1].text(0.02, 0.98, textstr, transform=axs[1].transAxes, 
+                   fontsize=10, verticalalignment='top', bbox=props,
+                   fontweight='bold')
 
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    # Enhanced layout and styling
+    plt.tight_layout(rect=[0, 0, 1, 0.94])
+    
+    # Improve overall appearance
+    for ax in axs:
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_linewidth(1.2)
+        ax.spines['bottom'].set_linewidth(1.2)
+    
     if save_path is not None:
-        plt.savefig(save_path)
+        plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white')
         plt.close()
     else:
         plt.show()

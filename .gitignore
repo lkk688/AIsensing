@@ -175,3 +175,5 @@ __pycache__/
 build/
 dist/
 .env
+AIRadar/unused
+AIRadar/writing
