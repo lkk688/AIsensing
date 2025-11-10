@@ -2,6 +2,7 @@ import numpy as np
 from scipy.signal import convolve2d
 from scipy.signal import convolve2d
 from scipy.ndimage import maximum_filter
+from scipy.ndimage import label
 import torch
 from scipy.signal import convolve2d
 from scipy.ndimage import maximum_filter
@@ -205,6 +206,123 @@ def cfar_2d_numpy(
     return results
 
 
+def cfar_2d_advanced(
+    rd_map, num_train=8, num_guard=4, range_res=0.5, doppler_res=0.25,
+    max_range=100, max_speed=50, method='GO', pfa=1e-5, nms_kernel_size=3,
+    estimate_aoa=False, carrier_wavelength=0.0375, rx_spacing=0.05,
+    suppress_zero_doppler_width=0, min_snr_db=6.0
+):
+    """
+    Advanced CFAR:
+    - Operates on linear power domain (not dB)
+    - Threshold derived from desired false alarm rate (Pfa)
+    - GO/SO/CA supported (GO default)
+    - Non-maximum suppression and connected-component pruning to one peak per blob
+    - Optional suppression of near-zero Doppler band
+
+    Returns List[dict] with keys: range_idx, doppler_idx, range_m, velocity_mps, angle_deg
+    """
+    num_rx, _, num_doppler, num_range = rd_map.shape
+
+    real = rd_map[:, 0]
+    imag = rd_map[:, 1]
+    complex_map = real + 1j * imag
+    mag = np.abs(complex_map).mean(axis=0)  # [doppler, range]
+    power = mag ** 2                         # linear power
+
+    # CFAR window
+    k = num_guard + num_train
+    window_size = 2 * k + 1
+    full_kernel = np.ones((window_size, window_size), dtype=np.float32)
+    guard_area = np.zeros_like(full_kernel)
+    guard_area[num_train:num_train + 2*num_guard + 1,
+               num_train:num_train + 2*num_guard + 1] = 1
+    train_kernel = full_kernel - guard_area
+
+    # Helper to compute alpha from Pfa for CA on N training cells
+    def alpha_from_pfa(N):
+        N = max(1, int(N))
+        return N * (pfa ** (-1.0 / N) - 1.0)
+
+    if method == 'CA':
+        N_tot = np.sum(train_kernel)
+        noise_est = convolve2d(power, train_kernel / N_tot, mode='same', boundary='symm')
+        alpha = alpha_from_pfa(N_tot)
+        threshold = noise_est * alpha
+    elif method in ['GO', 'SO']:
+        horiz_kernel = train_kernel.copy()
+        horiz_kernel[num_train:num_train + 2*num_guard + 1, :] = 0
+        vert_kernel = train_kernel.copy()
+        vert_kernel[:, num_train:num_train + 2*num_guard + 1] = 0
+
+        N_h = np.sum(horiz_kernel)
+        N_v = np.sum(vert_kernel)
+        noise_h = convolve2d(power, horiz_kernel / N_h, mode='same', boundary='symm')
+        noise_v = convolve2d(power, vert_kernel / N_v, mode='same', boundary='symm')
+        alpha_h = alpha_from_pfa(N_h)
+        alpha_v = alpha_from_pfa(N_v)
+        thr_h = noise_h * alpha_h
+        thr_v = noise_v * alpha_v
+        threshold = np.maximum(thr_h, thr_v) if method == 'GO' else np.minimum(thr_h, thr_v)
+    else:
+        raise ValueError("Invalid CFAR method")
+
+    detections = power > threshold
+
+    # Suppress near-zero Doppler band if requested
+    if suppress_zero_doppler_width and suppress_zero_doppler_width > 0:
+        center = num_doppler // 2
+        bw = int(suppress_zero_doppler_width)
+        detections[max(0, center - bw):min(num_doppler, center + bw + 1), :] = False
+
+    # NMS based on dB magnitude
+    if nms_kernel_size > 1:
+        mag_db = 20 * np.log10(mag + 1e-12)
+        local_max = maximum_filter(mag_db, size=nms_kernel_size)
+        detections &= (mag_db == local_max)
+
+    # Connected-component labeling: keep single peak per blob
+    labeled, num_blobs = label(detections)
+    results = []
+
+    if num_blobs > 0:
+        for blob_id in range(1, num_blobs + 1):
+            ys, xs = np.where(labeled == blob_id)
+            if ys.size == 0:
+                continue
+            blob_powers = power[ys, xs]
+            best = np.argmax(blob_powers)
+            d_idx = ys[best]
+            r_idx = xs[best]
+
+            range_m = r_idx * range_res
+            velocity_mps = (d_idx - num_doppler // 2) * doppler_res
+
+            if not (1 < range_m < max_range and abs(velocity_mps) < max_speed):
+                continue
+
+            # SNR check against local threshold
+            snr_db = 10.0 * np.log10((power[d_idx, r_idx] + 1e-12) / (threshold[d_idx, r_idx] + 1e-12))
+            if snr_db < (min_snr_db or 0.0):
+                continue
+
+            angle_deg = None
+            if estimate_aoa and num_rx >= 2:
+                phase_diff = np.angle(complex_map[1, d_idx, r_idx]) - np.angle(complex_map[0, d_idx, r_idx])
+                sin_theta = np.clip(phase_diff * carrier_wavelength / (2 * np.pi * rx_spacing), -1, 1)
+                angle_deg = np.degrees(np.arcsin(sin_theta))
+
+            results.append({
+                "range_idx": r_idx,
+                "doppler_idx": d_idx,
+                "range_m": range_m,
+                "velocity_mps": velocity_mps,
+                "angle_deg": angle_deg
+            })
+
+    return results
+
+
 def cfar_2d_pytorch(
     rd_map, num_train=8, num_guard=4, range_res=0.5, doppler_res=0.25,
     max_range=100, max_speed=50, method='GO', nms_kernel_size=3,
@@ -288,8 +406,16 @@ def cfar_2d_pytorch(
         # Applies 2D convolution with same padding
         data = data.unsqueeze(0).unsqueeze(0)  # shape [1, 1, H, W]
         kernel = kernel.unsqueeze(0).unsqueeze(0)  # shape [1, 1, kH, kW]
-        #return torch.nn.functional.conv2d(data, kernel, padding=(kernel.shape[-2]//2, kernel.shape[-1]//2))[0, 0]
-        return F.conv2d(data, kernel, padding='same')[0, 0]
+        # Use explicit integer padding for functional conv2d. Some
+        # environments do not support padding='same' for F.conv2d.
+        pad_h = int(kernel.shape[-2] // 2)
+        pad_w = int(kernel.shape[-1] // 2)
+        kernel = kernel.to(dtype=data.dtype)
+        return torch.nn.functional.conv2d(
+            data,
+            kernel,
+            padding=(pad_h, pad_w)
+        )[0, 0]
 
 
     def compute_thresholds(mag_db):
