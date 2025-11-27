@@ -63,7 +63,7 @@ def train_transformer_model(args):
         max_targets=args.max_targets,
         snr_min=args.snr_min,
         snr_max=args.snr_max,
-        add_realistic_effects=args.realistic_effects,
+        apply_realistic_effects=args.realistic_effects,
         signal_type=args.signal_type
     )
     
@@ -379,7 +379,7 @@ def train_transformer_model(args):
         max_targets=args.max_targets,
         snr_min=args.snr_min,
         snr_max=args.snr_max,
-        add_realistic_effects=True,  # Always use realistic effects for testing
+        apply_realistic_effects=True,  # Always use realistic effects for testing
         signal_type=args.signal_type
     )
     
@@ -586,7 +586,7 @@ def parse_args():
     parser.add_argument('--max_targets', type=int, default=3, help='Maximum number of targets')
     parser.add_argument('--snr_min', type=float, default=5.0, help='Minimum SNR in dB')
     parser.add_argument('--snr_max', type=float, default=20.0, help='Maximum SNR in dB')
-    parser.add_argument('--realistic_effects', action='store_true', help='Add realistic effects to data')
+    parser.add_argument('--apply_realistic_effects', dest='realistic_effects', action='store_true', help='Apply realistic effects to data')
     parser.add_argument('--signal_type', type=str, default='FMCW', help='Signal type (FMCW)')
     
     # Model parameters
