@@ -32,35 +32,99 @@ except ImportError:
     print("Warning: AIRadarLib.radar_det not available. CFAR detection will be skipped.")
     CFAR_AVAILABLE = False
 
+# --- Radar Configurations ---
+RADAR_CONFIGS = {
+    'config1': {
+        'name': 'Automotive_77GHz_LongRange',
+        'signal_type': 'FMCW',  # Default signal type
+        'fc': 77e9,             # 77 GHz
+        'B': 1.5e9,             # 1.5 GHz Bandwidth
+        'T_chirp': 40e-6,       # 40 μs
+        'fs': 51.2e6,           # 51.2 MHz Sampling Rate
+        'N_chirps': 128,        # Number of chirps
+        'R_max': 100.0,         # Max range 100m
+        'description': 'Standard automotive long-range radar configuration',
+        'cfar_params': {        # Tuned for high resolution
+            'num_train': 10,
+            'num_guard': 4,
+            'threshold_offset': 15,
+            'nms_kernel_size': 5
+        }
+    },
+    'config2': {
+        'name': 'XBand_10GHz_MediumRange',
+        'signal_type': 'FMCW',
+        'fc': 10e9,             # 10 GHz (X-band)
+        'B': 1.0e9,             # 1 GHz Bandwidth
+        'T_chirp': 40e-6,       # 40 μs
+        'fs': 40e6,             # 40 MHz Sampling Rate (Lower ADC requirement)
+        'N_chirps': 128,        # Number of chirps
+        'R_max': 100.0,         # Max range 100m
+        'description': 'X-band radar for medium range surveillance or robotics',
+        'cfar_params': {        # Tuned for lower resolution/SNR
+            'num_train': 20,      # Increased training cells for more stable noise estimate
+            'num_guard': 4,       # Increased guard cells to avoid target self-masking
+            'threshold_offset': 12, # Adjusted to balance Precision/Recall
+            'nms_kernel_size': 9  # Increased NMS kernel to merge clustered detections
+        }
+    },
+    'config_otfs': {
+        'name': 'OTFS_Automotive_77GHz',
+        'signal_type': 'OTFS',
+        'fc': 77e9,             # 77 GHz
+        'B': 1.536e9,           # ~1.5 GHz (Aligned for 512 subcarriers * 3MHz spacing or similar)
+                                # Let's align with otfs_ofdm.py or reasonable values
+                                # otfs_ofdm.py: 512 subcarriers, 60kHz SCS -> 30.72 MHz BW. That's small.
+                                # Automotive radar usually has >1GHz BW.
+                                # Let's use similar to config1 but adjusted for OTFS structure.
+                                # If N_chirps(Doppler bins)=128, N_samples(Delay bins)=512.
+                                # fs = 51.2MHz. B = fs? No, B <= fs/2 usually for complex? Or B=fs for complex sampling.
+                                # Let's keep config1-like physical params.
+        'T_chirp': 40e-6,       # Symbol duration
+        'fs': 51.2e6,           # Sampling rate
+        'N_chirps': 128,        # Number of OTFS symbols (Doppler bins)
+        'N_samples': 512,       # Number of subcarriers (Delay bins) - Explicitly set for OTFS
+        'R_max': 100.0,
+        'description': 'OTFS Radar configuration',
+        'cfar_params': {
+            'num_train': 10,
+            'num_guard': 4,
+            'threshold_offset': 15,
+            'nms_kernel_size': 5
+        }
+    }
+}
 
 class AIRadarDataset(Dataset):
     def __init__(self, 
                  num_samples=100,
-                 fc=77e9,                    # Center frequency (77 GHz)
-                 B=150e6,                    # Bandwidth (150 MHz)
-                 T_chirp=20e-6,              # Chirp duration (20 μs)
-                 N_samples=1024,             # Samples per chirp
-                 N_chirps=128,               # Number of chirps
-                 R_max=100,                  # Maximum range (100 m)
+                 radar_config=None,          # New argument for config selection
+                 config_name='config1',      # Default config name
+                 fc=None,                    # Overrides config if provided
+                 B=None,
+                 T_chirp=None,
+                 fs=None,                    # Sampling Rate Override
+                 N_samples=None,             # Deprecated: Calculated from fs * T_chirp
+                 N_chirps=None,
+                 R_max=None,
                  SNR_dB_min=20,              # Minimum SNR
                  SNR_dB_max=40,              # Maximum SNR
-                 zero_pad_factor=8,          # Zero padding factor
+                 zero_pad_factor=2,          # Zero padding factor - Reduced to avoid visual smearing
                  max_targets=3,              # Maximum targets per sample
-                 save_path='data/radar_corrected',
+                 save_path='data/radar_corrected_test5',
                  precision='float32',
                  drawfig=False,
-                 datapath=None):
+                 datapath=None,
+                 cfar_params=None):          # Explicit CFAR parameters override
         """
         Initialize corrected radar dataset with proper FMCW parameters
         
         Args:
             num_samples: Number of samples to generate
-            fc: Center frequency in Hz (77 GHz for automotive radar)
-            B: Bandwidth in Hz (150 MHz)
-            T_chirp: Chirp duration in seconds (20 μs)
-            N_samples: Number of samples per chirp (1024)
-            N_chirps: Number of chirps per frame (128)
-            R_max: Maximum detection range in meters (100 m)
+            radar_config: Dictionary containing radar parameters (optional)
+            config_name: Name of predefined config to use if radar_config is None ('config1', 'config2')
+            fc, B, T_chirp, fs, N_chirps, R_max: Overrides for specific parameters
+            N_samples: (Deprecated) Can still be used if fs is not provided
             SNR_dB_min: Minimum SNR in dB
             SNR_dB_max: Maximum SNR in dB
             zero_pad_factor: Zero padding factor for FFT
@@ -69,16 +133,46 @@ class AIRadarDataset(Dataset):
             precision: Data precision ('float32' or 'float16')
             drawfig: Whether to generate visualization plots
             datapath: Path to existing dataset (if loading)
+            cfar_params: Dictionary to override CFAR parameters
         """
         
-        # Store basic parameters
+        # Load Base Configuration
+        if radar_config is None:
+            if config_name in RADAR_CONFIGS:
+                cfg = RADAR_CONFIGS[config_name]
+                print(f"Loading Radar Configuration: {config_name} ({cfg['name']})")
+            else:
+                print(f"Warning: Config '{config_name}' not found. Using defaults (config1).")
+                cfg = RADAR_CONFIGS['config1']
+        else:
+            cfg = radar_config
+            
+        # Store parameters, allowing overrides
+        self.config = cfg # Store full config
+        self.signal_type = cfg.get('signal_type', 'FMCW')
         self.num_samples = num_samples
-        self.fc = fc
-        self.B = B
-        self.T = T_chirp
-        self.Ns = N_samples
-        self.Nc = N_chirps
-        self.R_max = R_max
+        self.fc = fc if fc is not None else cfg.get('fc', 77e9)
+        self.B = B if B is not None else cfg.get('B', 1.5e9)
+        self.T = T_chirp if T_chirp is not None else cfg.get('T_chirp', 40e-6)
+        self.Nc = N_chirps if N_chirps is not None else cfg.get('N_chirps', 128)
+        self.R_max = R_max if R_max is not None else cfg.get('R_max', 100)
+        
+        # Handle Sampling Rate (fs) and Samples per Chirp (Ns)
+        # Priority: 1. Explicit fs arg, 2. Config fs, 3. Explicit N_samples arg, 4. Config N_samples (Legacy)
+        
+        self.fs = fs if fs is not None else cfg.get('fs', None)
+        
+        if self.fs is not None:
+            # Calculate N_samples from fs
+            self.Ns = int(self.fs * self.T)
+            if N_samples is not None:
+                print(f"Info: N_samples argument ({N_samples}) ignored because fs ({self.fs/1e6} MHz) is provided.")
+        else:
+            # Fallback to N_samples
+            self.Ns = N_samples if N_samples is not None else cfg.get('N_samples', 2048)
+            self.fs = self.Ns / self.T
+            print(f"Info: fs not provided. Calculated fs = {self.fs/1e6:.2f} MHz from N_samples ({self.Ns})")
+        
         self.SNR_dB_min = SNR_dB_min
         self.SNR_dB_max = SNR_dB_max
         self.max_targets = max_targets
@@ -86,14 +180,26 @@ class AIRadarDataset(Dataset):
         self.drawfig = drawfig
         self.precision = precision
         
+        # CFAR Parameters
+        default_cfar = {'num_train': 10, 'num_guard': 4, 'threshold_offset': 15, 'nms_kernel_size': 5}
+        config_cfar = cfg.get('cfar_params', default_cfar)
+        self.cfar_params = cfar_params if cfar_params is not None else config_cfar
+        
         # Calculate derived parameters
-        self.lambda_c = c / fc
-        self.slope = B / T_chirp
-        self.zero_pad = zero_pad_factor * N_samples
+        self.lambda_c = c / self.fc
+        self.slope = self.B / self.T
+        self.zero_pad = zero_pad_factor * self.Ns
         
-        # ✅ Sampling rate from max range (anti-aliasing)
-        self.fs = int(np.ceil((4 * B * R_max) / (T_chirp * c)))
+        # ✅ Sampling rate: Ensure it matches Ns/T and satisfies Nyquist for R_max
+        # Theoretical max beat freq = Slope * 2 * R_max / c
+        f_beat_max = self.slope * 2 * self.R_max / c
+        fs_required = 2 * f_beat_max
         
+        # Verify Nyquist
+        if self.fs < fs_required:
+            print(f"WARNING: Sampling rate {self.fs/1e6:.2f} MHz is below Nyquist {fs_required/1e6:.2f} MHz for R_max={self.R_max}m")
+            print("Consider increasing fs/N_samples or reducing T_chirp/R_max.")
+    
         # ✅ Doppler max velocity
         self.v_max = self.lambda_c / (4 * self.T)
         
@@ -101,35 +207,56 @@ class AIRadarDataset(Dataset):
         self.t_fast = np.arange(self.Ns) / self.fs
         self.t_slow = np.arange(self.Nc) * self.T
         
-        # ✅ Range axis using correct beat-to-range conversion
-        range_res = (c * self.fs) / (2 * self.slope * self.zero_pad)
-        self.range_axis = np.arange(self.zero_pad // 2) * range_res
+        if self.signal_type == 'OTFS':
+            # ✅ OTFS Range Axis
+            # Delay resolution = 1/fs
+            # Range resolution = c / (2 * fs)
+            range_res = c / (2 * self.fs)
+            self.range_axis = np.arange(self.Ns) * range_res
+            
+            # Set dimensions for dataset
+            self.num_range_bins = self.Ns
+            self.num_doppler_bins = self.Nc
+            
+        else:
+            # ✅ FMCW Range Axis using correct beat-to-range conversion
+            range_res = (c * self.fs) / (2 * self.slope * self.zero_pad)
+            self.range_axis = np.arange(self.zero_pad // 2) * range_res
+            
+            # Set dimensions for dataset
+            self.num_range_bins = self.zero_pad // 2
+            self.num_doppler_bins = self.Nc
         
         # ✅ Velocity axis from Doppler FFT
         self.velocity_axis = np.fft.fftshift(np.fft.fftfreq(self.Nc, d=self.T)) * self.lambda_c / 2
         
         # Calculate system parameters
-        self.range_resolution = c / (2 * B)
+        self.range_resolution = c / (2 * self.B)
         self.velocity_resolution = self.lambda_c / (2 * self.Nc * self.T)
         self.max_unambiguous_velocity = self.lambda_c / (4 * self.T)
         
-        # Set dimensions for dataset
-        self.num_range_bins = self.zero_pad // 2
-        self.num_doppler_bins = self.Nc
+        # Initialize data containers
+        self.time_domain_data = None
+        self.range_doppler_maps = None
+        self.target_masks = None
+        self.target_info = None
+        self.cfar_detections = None
         
         print("\n=== Corrected Radar System Parameters ===")
+        print(f"✅ Signal Type         : {self.signal_type}")
         print(f"✅ Center Frequency    : {self.fc/1e9:.1f} GHz")
         print(f"✅ Bandwidth           : {self.B/1e6:.1f} MHz")
-        print(f"✅ Chirp Duration      : {self.T*1e6:.1f} μs")
+        print(f"✅ Chirp/Symbol Duration: {self.T*1e6:.1f} μs")
         print(f"✅ Sample Rate         : {self.fs/1e6:.1f} MHz")
         print(f"✅ Maximum Range       : {self.R_max:.1f} m")
         print(f"✅ Range Resolution    : {self.range_resolution:.2f} m")
         print(f"✅ Maximum Velocity    : {self.v_max:.1f} m/s")
         print(f"✅ Velocity Resolution : {self.velocity_resolution:.2f} m/s")
-        print(f"✅ Samples per Chirp   : {self.Ns}")
-        print(f"✅ Number of Chirps    : {self.Nc}")
+        print(f"✅ Samples per Chirp/Sym: {self.Ns}")
+        print(f"✅ Number of Chirps/Sym: {self.Nc}")
         print(f"✅ Range Bins          : {self.num_range_bins}")
         print(f"✅ Doppler Bins        : {self.num_doppler_bins}")
+        print(f"✅ CFAR Parameters     : {self.cfar_params}")
         print("========================================\n")
         
         # Initialize storage for generated data
@@ -137,7 +264,7 @@ class AIRadarDataset(Dataset):
         self.range_doppler_maps = None    # Shape: [num_samples, num_doppler_bins, num_range_bins] - Range-Doppler magnitude maps
         self.target_masks = None          # Shape: [num_samples, num_doppler_bins, num_range_bins, 1] - Binary target masks
         self.target_info = None           # List of dictionaries containing target metadata
-        self.cfar_detections = None       # Shape: [num_samples] - List of CFAR detection results per sample
+        self.cfar_detections = None       # Shape: [num_samples] - List of CFAR detection results
         
         if datapath is not None:
             print(f"Loading radar data from {datapath}")
@@ -173,51 +300,85 @@ class AIRadarDataset(Dataset):
         
         return targets
     
-    def simulate_fmcw_signal(self, targets, snr_db):
+    def simulate_fmcw_signal(self, targets, snr_db=20):
         """
-        Simulate FMCW radar signal with multiple targets
+        Simulate FMCW radar signal for multiple targets using vectorized operations.
+        
+        The received signal is a mix of reflected signals from all targets.
+        For each target, the beat signal is:
+        s(t) = A * exp(j * 2*pi * (fb * t_fast + fd * t_slow))
+        where:
+        - fb = 2 * R * slope / c  (Beat frequency due to range)
+        - fd = 2 * v / lambda     (Doppler frequency due to velocity)
         
         Args:
             targets: List of target dictionaries
-            snr_db: Signal-to-noise ratio in dB
+            snr_db: Signal-to-Noise Ratio in dB
             
         Returns:
-            Tuple of (beat_signal, range_doppler_map)
+            beat: Time domain beat signal (complex)
+            rdm: Range-Doppler map (magnitude in dB)
         """
         # Initialize beat signal
-        beat = np.zeros((self.Nc, self.Ns), dtype=complex)
+        beat = np.zeros((self.Nc, self.Ns), dtype=np.complex128)
         
-        # Add each target's contribution
-        for target in targets:
-            R_true = target['range']
-            v_true = target['velocity']
-            rcs_linear = 10 ** (target['rcs'] / 10)
+        if targets:
+            # Vectorized target parameter extraction
+            ranges = np.array([t['range'] for t in targets])
+            velocities = np.array([t['velocity'] for t in targets])
+            rcs = np.array([t['rcs'] for t in targets])
             
-            # Calculate beat frequencies
-            fb = 2 * R_true * self.slope / c
-            fd = 2 * v_true / self.lambda_c
+            # Convert RCS to linear amplitude
+            rcs_linear = 10 ** (rcs / 10)
+            amplitudes = np.sqrt(rcs_linear)
             
-            # Generate target signal with amplitude based on RCS
-            amplitude = np.sqrt(rcs_linear)
-            target_signal = amplitude * np.exp(1j * 2 * np.pi * (
-                fb * self.t_fast[None, :] + fd * self.t_slow[:, None]
-            ))
+            # Calculate frequencies
+            # fb: Beat frequency (Hz) = 2 * Range * Slope / c
+            # fd: Doppler frequency (Hz) = 2 * Velocity / Lambda
+            fb = 2 * ranges * self.slope / c
+            fd = 2 * velocities / self.lambda_c
             
-            beat += target_signal
+            # Prepare for broadcasting: (num_targets, num_chirps, num_samples)
+            # fb, fd, amp: (K,) -> (K, 1, 1)
+            fb_grid = fb[:, None, None]
+            fd_grid = fd[:, None, None]
+            amp_grid = amplitudes[:, None, None]
+            
+            # t_fast: (1, 1, Ns)
+            # t_slow: (1, Nc, 1)
+            t_fast_grid = self.t_fast[None, None, :]
+            t_slow_grid = self.t_slow[None, :, None]
+            
+            # Calculate phase and signal
+            phase = 2 * np.pi * (fb_grid * t_fast_grid + fd_grid * t_slow_grid)
+            signal = amp_grid * np.exp(1j * phase)
+            
+            # Sum over all targets
+            beat = np.sum(signal, axis=0)
         
-        # Apply Hann window
-        window = np.hanning(self.Ns)
-        beat *= window[None, :]
+        # Apply Hann window to reduce spectral leakage (Fast-time / Range)
+        window_range = np.hanning(self.Ns)
+        beat *= window_range[None, :]
         
-        # Add AWGN
-        power = np.mean(np.abs(beat)**2)
-        snr_linear = 10 ** (snr_db / 10)
-        noise = (np.random.randn(*beat.shape) + 1j * np.random.randn(*beat.shape)) * np.sqrt(power / (2 * snr_linear))
-        beat += noise
+        # Apply Hann window to reduce spectral leakage (Slow-time / Doppler)
+        window_doppler = np.hanning(self.Nc)
+        beat *= window_doppler[:, None]
+        
+        # Add Additive White Gaussian Noise (AWGN)
+        signal_power = np.mean(np.abs(beat)**2)
+        if signal_power > 0:
+            snr_linear = 10 ** (snr_db / 10)
+            noise_power = signal_power / snr_linear
+            noise_scale = np.sqrt(noise_power / 2) # Divide by 2 for complex noise
+            noise = (np.random.randn(*beat.shape) + 1j * np.random.randn(*beat.shape)) * noise_scale
+            beat += noise
         
         # Perform FFTs to generate Range-Doppler Map
+        # Range FFT (Fast-time)
         range_fft = np.fft.fft(beat, n=self.zero_pad, axis=1)
-        range_fft = range_fft[:, :self.zero_pad // 2]
+        range_fft = range_fft[:, :self.zero_pad // 2] # Keep positive frequencies
+        
+        # Doppler FFT (Slow-time)
         doppler_fft = np.fft.fftshift(np.fft.fft(range_fft, axis=0), axes=0)
         
         # Convert to magnitude in dB
@@ -225,6 +386,148 @@ class AIRadarDataset(Dataset):
         
         return beat, rdm
     
+    def _otfs_modulate(self, dd_grid):
+        """
+        Modulates a Delay-Doppler (M x N) grid to a time-domain signal.
+        Tx Chain: ISFFT (DD->TF) -> Heisenberg (TF->Time)
+        """
+        # dd_grid shape: (Ns, Nc) = (Delay, Doppler)
+        # ISFFT over Delay (axis 0) and FFT over Doppler (axis 1)
+        tf_grid = np.fft.ifft(dd_grid, axis=0)
+        tf_grid = np.fft.fft(tf_grid, axis=1)
+
+        # Heisenberg Transform: IFFT over subcarriers (axis 0)
+        time_domain_grid = np.fft.ifft(tf_grid, axis=0)
+        
+        # Serialize (column-major)
+        tx_signal = time_domain_grid.flatten(order='F')
+        return tx_signal
+
+    def _otfs_demodulate(self, rx_signal):
+        """
+        Demodulates a time-domain signal back to a Delay-Doppler grid.
+        Rx Chain: Wigner (Time->TF) -> SFFT (TF->DD)
+        """
+        # Deserialize
+        time_domain_grid = rx_signal.reshape((self.Ns, self.Nc), order='F')
+        
+        # Wigner Transform: FFT over time samples (axis 0)
+        tf_grid = np.fft.fft(time_domain_grid, axis=0)
+        
+        # SFFT: IFFT over Time (axis 1) and FFT over Freq (axis 0)
+        dd_grid = np.fft.ifft(tf_grid, axis=1)
+        dd_grid = np.fft.fft(dd_grid, axis=0)
+        
+        return dd_grid
+
+    def simulate_otfs_signal(self, targets, snr_db=20):
+        """
+        Simulate OTFS radar signal.
+        """
+        # 1. Generate QAM Symbols (QPSK)
+        num_symbols = self.Ns * self.Nc
+        bits = np.random.randint(0, 4, num_symbols)
+        # QPSK mapping
+        mod_map = {
+            0: (1 + 1j) / np.sqrt(2),
+            1: (1 - 1j) / np.sqrt(2),
+            2: (-1 + 1j) / np.sqrt(2),
+            3: (-1 - 1j) / np.sqrt(2)
+        }
+        symbols = np.array([mod_map[b] for b in bits])
+        tx_dd_grid = symbols.reshape((self.Ns, self.Nc))
+
+        # 2. Modulate to Time Domain
+        tx_signal = self._otfs_modulate(tx_dd_grid)
+
+        # 3. Apply Channel (Delay, Doppler, Noise)
+        n_samples = tx_signal.size
+        rx_signal = np.zeros(n_samples, dtype=complex)
+        time_vector = np.arange(n_samples) / self.fs
+
+        for target in targets:
+            # Calculate delay and doppler
+            range_m = target['range']
+            velocity_mps = target['velocity']
+            rcs = target['rcs']
+            
+            # RCS to amplitude
+            amplitude = np.sqrt(10**(rcs/10))
+
+            # 2-way delay
+            delay_sec = 2 * range_m / c
+            delay_samples = int(round(delay_sec * self.fs))
+
+            if delay_samples < n_samples:
+                delayed_signal = np.roll(tx_signal, delay_samples)
+                # Zero out wrapped around part (optional, but cleaner for radar)
+                delayed_signal[:delay_samples] = 0 
+                
+                # Doppler shift (2-way)
+                doppler_hz = 2 * velocity_mps * self.fc / c
+                doppler_shift = np.exp(1j * 2 * np.pi * doppler_hz * time_vector)
+                
+                rx_signal += amplitude * delayed_signal * doppler_shift
+
+        # 4. Add Noise
+        signal_power = np.mean(np.abs(rx_signal)**2)
+        if signal_power > 0:
+            snr_linear = 10**(snr_db/10)
+            noise_power = signal_power / snr_linear
+            noise = (np.random.randn(n_samples) + 1j * np.random.randn(n_samples)) * np.sqrt(noise_power/2)
+            rx_signal += noise
+
+        # 5. Demodulate
+        rx_dd_grid = self._otfs_demodulate(rx_signal)
+
+        # 6. Channel Estimation (Deconvolution in DD domain)
+        # H_est = IFFT2( FFT2(RX) / FFT2(TX) )
+        # This assumes the channel acts as a circular convolution in the DD domain.
+        
+        rx_dd_fft = np.fft.fft2(rx_dd_grid)
+        tx_dd_fft = np.fft.fft2(tx_dd_grid)
+        
+        # Regularized division
+        epsilon = 1e-6
+        # tx_dd_fft_conj = np.conj(tx_dd_fft)
+        # ddm_fft = (rx_dd_fft * tx_dd_fft_conj) / (np.abs(tx_dd_fft)**2 + epsilon)
+        # Or simple ZF with regularization
+        ddm_fft = rx_dd_fft / (tx_dd_fft + epsilon)
+        
+        ddm_complex = np.fft.ifft2(ddm_fft)
+        
+        # 7. Format Output
+        # ddm_complex is (Ns, Nc) -> (Delay, Doppler)
+        # We want (Doppler, Delay) for consistency with RDM
+        ddm_transposed = ddm_complex.T # (Nc, Ns)
+        
+        # Shift zero frequency to center
+        # Delay is usually 0 to max, Doppler is +/-
+        # FFT shift only Doppler (axis 0 of transposed)
+        # Also need to check if Delay needs shifting. 
+        # In OTFS, delay is usually [0, max].
+        # Doppler is [-max, max].
+        # So we shift Doppler.
+        ddm_shifted = np.fft.fftshift(ddm_transposed, axes=0)
+        
+        # Magnitude in dB
+        ddm_mag = np.abs(ddm_shifted)
+        ddm_db = 20 * np.log10(ddm_mag + 1e-6)
+        
+        # Crop to match range bins if needed (FMCW uses zero_pad//2)
+        # Here we just take the first Ns/2 delay bins if we want to match RDM structure or keep full?
+        # FMCW RDM has num_range_bins = zero_pad // 2.
+        # Here we have Ns bins.
+        # If we want to match self.num_range_bins = self.zero_pad // 2 = Ns (since zero_pad_factor=2).
+        # Actually self.zero_pad = zero_pad_factor * Ns.
+        # self.num_range_bins = zero_pad // 2 = Ns.
+        # So the shape matches (Nc, Ns).
+        
+        # Reshape time signal for storage (Nc, Ns)
+        rx_time_reshaped = rx_signal.reshape((self.Ns, self.Nc), order='F').T # (Nc, Ns)
+        
+        return rx_time_reshaped, ddm_db
+
     def create_target_mask(self, targets):
         """
         Create binary mask for target locations in range-doppler map
@@ -252,21 +555,21 @@ class AIRadarDataset(Dataset):
         
         return mask
     
-    def _cfar_2d_custom(self, rd_map, num_train=8, num_guard=4, range_res=0.5, 
+    def _cfar_2d_custom(self, rd_map_db, num_train=8, num_guard=4, range_res=0.5, 
                        doppler_res=0.25, max_range=100, max_speed=50, 
                        threshold_offset=4, nms_kernel_size=3):
         """
-        Custom CFAR implementation with adjustable threshold offset
+        Custom CFAR implementation optimized for 2D dB maps.
         
         Args:
-            rd_map: Input range-Doppler map [num_rx, 2, num_doppler, num_range]
+            rd_map_db: Input range-Doppler map in dB [num_doppler, num_range]
             num_train: Number of training cells per side
             num_guard: Number of guard cells around CUT
             range_res: Range resolution in meters per bin
             doppler_res: Doppler resolution in m/s per bin
             max_range: Maximum detection range in meters
             max_speed: Maximum absolute speed in m/s
-            threshold_offset: Threshold offset in dB (lower = more sensitive)
+            threshold_offset: Threshold offset in dB
             nms_kernel_size: Non-maximum suppression kernel size
             
         Returns:
@@ -275,14 +578,7 @@ class AIRadarDataset(Dataset):
         from scipy.signal import convolve2d
         from scipy.ndimage import maximum_filter
         
-        num_rx, _, num_doppler, num_range = rd_map.shape
-        
-        # Convert to magnitude in dB
-        real = rd_map[:, 0]
-        imag = rd_map[:, 1]
-        complex_map = real + 1j * imag
-        mag = np.abs(complex_map).mean(axis=0)
-        mag_db = 20 * np.log10(mag + 1e-12)
+        rows, cols = rd_map_db.shape
         
         # CFAR window setup
         k = num_guard + num_train
@@ -293,35 +589,39 @@ class AIRadarDataset(Dataset):
                    num_train:num_train + 2*num_guard + 1] = 1
         train_kernel = full_kernel - guard_area
         
-        # Greatest-Of CFAR
+        # Greatest-Of CFAR kernels
         horiz_kernel = train_kernel.copy()
         horiz_kernel[num_train:num_train + 2*num_guard + 1, :] = 0
         vert_kernel = train_kernel.copy()
         vert_kernel[:, num_train:num_train + 2*num_guard + 1] = 0
         
-        noise_h = convolve2d(mag_db, horiz_kernel / np.sum(horiz_kernel), 
+        # Estimate noise level using convolution
+        # Note: rd_map_db is already in dB, so we are averaging dB values (Log-CFAR approximation)
+        noise_h = convolve2d(rd_map_db, horiz_kernel / np.sum(horiz_kernel), 
                             mode='same', boundary='symm')
-        noise_v = convolve2d(mag_db, vert_kernel / np.sum(vert_kernel), 
+        noise_v = convolve2d(rd_map_db, vert_kernel / np.sum(vert_kernel), 
                             mode='same', boundary='symm')
         noise_est = np.maximum(noise_h, noise_v)
         
-        # Apply adjustable threshold offset
+        # Apply threshold
         threshold = noise_est + threshold_offset
-        detections = mag_db > threshold
+        detections = rd_map_db > threshold
         
         # Non-maximum suppression
         if nms_kernel_size > 1:
-            local_max = maximum_filter(mag_db, size=nms_kernel_size)
-            detections &= (mag_db == local_max)
+            local_max = maximum_filter(rd_map_db, size=nms_kernel_size)
+            detections &= (rd_map_db == local_max)
         
         doppler_idxs, range_idxs = np.where(detections)
         results = []
+        
+        num_doppler = rows
         
         for d_idx, r_idx in zip(doppler_idxs, range_idxs):
             range_m = r_idx * range_res
             velocity_mps = (d_idx - num_doppler // 2) * doppler_res
             
-            # Relaxed range filtering - allow closer targets
+            # Filter by range and velocity limits
             if not (0.5 < range_m < max_range and abs(velocity_mps) < max_speed):
                 continue
                 
@@ -340,90 +640,50 @@ class AIRadarDataset(Dataset):
         Perform CFAR (Constant False Alarm Rate) detection on Range-Doppler map
         
         Args:
-            rd_map: Range-Doppler magnitude map
-                   Shape: [doppler_bins, range_bins] - 2D magnitude array
+            rd_map: Range-Doppler magnitude map in dB
+                   Shape: [doppler_bins, range_bins]
         
         Returns:
-            detection_results: List of detection dictionaries, each containing:
-                - range_idx: int - Range bin index
-                - doppler_idx: int - Doppler bin index  
-                - range_m: float - Range in meters
-                - velocity_mps: float - Velocity in m/s
-                - angle_deg: float or None - Angle of arrival in degrees (if available)
-                - magnitude: float - Detection magnitude
+            detection_results: List of detection dictionaries
         """
-        if not CFAR_AVAILABLE:
-            # Fallback to simple peak detection
-            i_peak, j_peak = np.unravel_index(np.argmax(rd_map), rd_map.shape)
-            R_det = self.range_axis[j_peak]
-            v_det = self.velocity_axis[i_peak]
-            detection_results = [{
-                'range_idx': j_peak,
-                'doppler_idx': i_peak,
-                'range_m': R_det, 
-                'velocity_mps': v_det, 
-                'angle_deg': None,
-                'magnitude': rd_map[i_peak, j_peak]
-            }]
-            return detection_results
-        
-        try:
-            # Prepare RD map for CFAR (add receive antenna and channel dimensions)
-            # CFAR expects shape: [num_rx, 2, num_doppler, num_range]
-            # We simulate single RX with real channel only
-            rd_map_cfar = np.zeros((1, 2, rd_map.shape[0], rd_map.shape[1]), dtype=np.float32)
-            rd_map_cfar[0, 0, :, :] = rd_map  # Real channel
-            rd_map_cfar[0, 1, :, :] = 0       # Imaginary channel (zeros)
+        # Calculate resolution parameters from axes
+        range_res = self.range_axis[1] - self.range_axis[0]
+        velocity_res = self.velocity_axis[1] - self.velocity_axis[0]
             
-            # Calculate resolution parameters
-            range_res = self.range_axis[1] - self.range_axis[0]  # meters per range bin
-            velocity_res = self.velocity_axis[1] - self.velocity_axis[0]  # m/s per velocity bin
-            
-            # Perform CFAR detection with more sensitive parameters
-            cfar_results = self._cfar_2d_custom(
-                rd_map_cfar,
-                num_train=8,        # Number of training cells per side
-                num_guard=4,        # Number of guard cells around CUT
-                range_res=range_res,
-                doppler_res=velocity_res,
-                max_range=self.R_max,
-                max_speed=50,       # Maximum speed in m/s
-                threshold_offset=4, # More sensitive threshold (was 12 dB)
-                nms_kernel_size=3   # Non-maximum suppression kernel
-            )
-            
-            # Add magnitude information to CFAR results
-            for detection in cfar_results:
-                d_idx = detection['doppler_idx']
-                r_idx = detection['range_idx']
-                if 0 <= d_idx < rd_map.shape[0] and 0 <= r_idx < rd_map.shape[1]:
-                    detection['magnitude'] = rd_map[d_idx, r_idx]
-                else:
-                    detection['magnitude'] = 0.0
-            
-            return cfar_results
-            
-        except Exception as e:
-            print(f"CFAR detection failed: {e}")
-            # Fallback to simple peak detection
-            i_peak, j_peak = np.unravel_index(np.argmax(rd_map), rd_map.shape)
-            R_det = self.range_axis[j_peak]
-            v_det = self.velocity_axis[i_peak]
-            detection_results = [{
-                'range_idx': j_peak,
-                'doppler_idx': i_peak,
-                'range_m': R_det, 
-                'velocity_mps': v_det, 
-                'angle_deg': None,
-                'magnitude': rd_map[i_peak, j_peak]
-            }]
-            return detection_results
-    
+        # Perform CFAR detection
+        # We use the internal custom CFAR which is optimized for this dataset
+        cfar_results = self._cfar_2d_custom(
+            rd_map,
+            num_train=self.cfar_params.get('num_train', 10),
+            num_guard=self.cfar_params.get('num_guard', 4),
+            range_res=range_res,
+            doppler_res=velocity_res,
+            max_range=self.R_max,
+            max_speed=50,       # Maximum speed in m/s
+            threshold_offset=self.cfar_params.get('threshold_offset', 15),
+            nms_kernel_size=self.cfar_params.get('nms_kernel_size', 5)
+        )
+
+        # Add magnitude information to CFAR results
+        for detection in cfar_results:
+            d_idx = detection['doppler_idx']
+            r_idx = detection['range_idx']
+            if 0 <= d_idx < rd_map.shape[0] and 0 <= r_idx < rd_map.shape[1]:
+                detection['magnitude'] = rd_map[d_idx, r_idx]
+                
+        return cfar_results
+
+
     def generate_dataset(self):
         """
-        Generate the complete radar dataset with step-by-step visualizations
+        Generate the radar dataset including:
+        1. Target generation
+        2. FMCW signal simulation (beat signal)
+        3. Range-Doppler Map generation
+        4. CFAR detection
+        5. Data storage and visualization
         """
-        print(f"Generating {self.num_samples} radar samples...")
+        print(f"Generating {self.num_samples} samples...")
         
         # Initialize data arrays with detailed shape documentation
         self.time_domain_data = np.zeros((self.num_samples, self.Nc, self.Ns, 2), dtype=self.precision)
@@ -440,31 +700,32 @@ class AIRadarDataset(Dataset):
         
         self.cfar_detections = []  # Store CFAR detection results for each sample
         
-        if self.drawfig:
-            vis_path = os.path.join(self.save_path, "visualization")
-            os.makedirs(vis_path, exist_ok=True)
-        
-        for i in tqdm(range(self.num_samples), desc="Generating samples"):
-            # Generate targets for this sample
+        # Create directory for visualizations if needed
+        vis_path = os.path.join(self.save_path, 'visualizations')
+        if self.drawfig and not os.path.exists(vis_path):
+            os.makedirs(vis_path)
+            
+        for i in tqdm(range(self.num_samples)):
+            # Generate random targets for this sample
+            # Each target has range, velocity, and RCS
             targets = self.generate_targets()
             
-            # Generate SNR for this sample
+            # Calculate SNR for this sample (randomized between min and max)
             snr_db = random.uniform(self.SNR_dB_min, self.SNR_dB_max)
             
-            # Generate TX signal for visualization
-            t_chirp = np.linspace(0, self.T, self.Ns)
-            tx_signal = np.exp(1j * 2 * np.pi * (self.fc * t_chirp + 0.5 * self.slope * t_chirp**2))
-            
-            # Step-by-step visualizations for first few samples
-            if self.drawfig and i < 3 and VISUALIZATION_AVAILABLE:
-                # 1. Visualize TX chirp signal
+            # Visualize Transmit (TX) Signal for the first sample
+            if self.drawfig and i == 0 and VISUALIZATION_AVAILABLE and self.signal_type == 'FMCW':
+                # Generate ideal TX signal for visualization
+                t = np.linspace(0, self.T, int(self.fs * self.T))
+                tx_signal = np.cos(2 * np.pi * (self.fc * t + 0.5 * self.slope * t**2))
+                
+                # 1. Visualize time domain and spectrum
                 plot_signal_time_and_spectrum(
                     signal=tx_signal,
                     sample_rate=self.fs,
                     total_duration=self.T,
                     title_prefix="TX Chirp",
-                    center_freq=self.fc,
-                    textstr=None,
+                    textstr=f"fc={self.fc/1e9:.1f}GHz, B={self.B/1e6:.1f}MHz",
                     normalize=False,
                     save_path=os.path.join(vis_path, f"tx_chirp_{i}.png"),
                     draw_window=False
@@ -483,12 +744,16 @@ class AIRadarDataset(Dataset):
                     save_path=os.path.join(vis_path, f"tx_chirp_freq_{i}.png")
                 )
             
-            # Simulate FMCW signal
-            beat_signal, rdm = self.simulate_fmcw_signal(targets, snr_db)
+            # Simulate Signal based on type
+            if self.signal_type == 'OTFS':
+                beat_signal, rdm = self.simulate_otfs_signal(targets, snr_db)
+            else:
+                # FMCW
+                beat_signal, rdm = self.simulate_fmcw_signal(targets, snr_db)
             
             # Additional visualizations for beat signal
             if self.drawfig and i < 3 and VISUALIZATION_AVAILABLE:
-                # 3. Visualize beat signal (first chirp)
+                # 3. Visualize beat signal (first chirp/symbol)
                 beat_chirp = beat_signal[0, :]
                 plot_signal_time_and_spectrum(
                      signal=beat_chirp,
@@ -526,7 +791,8 @@ class AIRadarDataset(Dataset):
             
             # Generate comprehensive visualization for first few samples
             if self.drawfig and i < 5:
-                self.plot_sample(i, targets, rdm, vis_path)
+                # Pass pre-computed detections to avoid re-calculation
+                self.plot_sample(i, targets, rdm, vis_path, detections=cfar_results)
                 
                 # Add 3D visualization using external function
                 if VISUALIZATION_AVAILABLE:
@@ -555,9 +821,17 @@ class AIRadarDataset(Dataset):
         print(f"Dataset generation complete. Saving to {self.save_path}")
         self.save_dataset()
     
-    def plot_sample(self, sample_idx, targets, rdm, save_dir):
+    def plot_sample(self, sample_idx, targets, rdm, save_dir, detections=None):
         """
-        Plot range-doppler map with target annotations (2D and 3D) using CFAR detection
+        Plot range-doppler map with target annotations (2D) using CFAR detection results.
+        Includes comprehensive metric evaluation (TP/FP, Position/Velocity Accuracy).
+        
+        Args:
+            sample_idx: Index of the sample
+            targets: Ground truth targets
+            rdm: Range-Doppler Map (dB)
+            save_dir: Directory to save plot
+            detections: Optional pre-computed CFAR detections
         """
         # 2D Range-Doppler Map with more space for legend
         fig, ax = plt.subplots(figsize=(20, 10))  # Increased figure size
@@ -574,76 +848,124 @@ class AIRadarDataset(Dataset):
         ax.set_ylabel("Velocity (m/s)")
         ax.set_title(f"Range-Doppler Map with CFAR Detection - Sample {sample_idx}")
         
-        # CFAR Detection for multiple targets using the new member function
-        detection_results = self.cfar_detection(rdm)
+        # CFAR Detection for multiple targets (use provided or compute)
+        detection_results = detections if detections is not None else self.cfar_detection(rdm)
         
-        # Define colors for different targets and detections
+        # Define colors for different targets and detections (needed for 3D plot)
         target_colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink', 'gray']
         detection_colors = ['yellow', 'cyan', 'magenta', 'lime', 'gold', 'coral', 'lightblue', 'lightgreen']
         
-        # Plot target ground truth with different colors
-        legend_elements = []
-        for j, target in enumerate(targets):
-            color = target_colors[j % len(target_colors)]
-            ax.scatter(target['range'], target['velocity'], 
-                      facecolors='none', edgecolors=color, s=120, 
-                      linewidth=2)
-            
-            # Add to legend with target info
-            legend_elements.append(
-                plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='none',
-                          markeredgecolor=color, markersize=10, linewidth=2,
-                          label=f'🎯 Target {j+1}: R={target["range"]:.1f}m, V={target["velocity"]:.1f}m/s')
-            )
+        # --- Metric Evaluation Logic ---
+        tp = 0
+        fp = 0
+        fn = 0
+        range_errors = []
+        velocity_errors = []
         
-        # Plot CFAR detection results
-        for j, detection in enumerate(detection_results[:5]):  # Limit to 5 detections for clarity
-            color = detection_colors[j % len(detection_colors)]
-            ax.scatter(detection['range_m'], detection['velocity_mps'], 
-                      marker='x', color=color, s=200, linewidth=3)
-            
-            legend_elements.append(
-                plt.Line2D([0], [0], marker='x', color=color, markersize=12, linewidth=3,
-                          label=f'✅ CFAR Det {j+1}: R={detection["range_m"]:.1f}m, V={detection["velocity_mps"]:.1f}m/s')
-            )
+        # Matching thresholds
+        match_dist_thresh = 3.0  # meters (Euclidean distance in R-V space might need scaling, but simple separate checks work)
         
-        # Calculate detection performance metrics
-        if targets and detection_results:
-            # Calculate detection errors for each target
-            for i, target in enumerate(targets):
-                # Find closest detection to this target
-                min_error = float('inf')
-                closest_detection = None
-                for detection in detection_results:
-                    error = np.sqrt((target['range'] - detection['range_m'])**2 + 
-                                   (target['velocity'] - detection['velocity_mps'])**2)
-                    if error < min_error:
-                        min_error = error
-                        closest_detection = detection
+        # Clone lists to keep track of unmatched
+        unmatched_targets = targets.copy()
+        unmatched_detections = detection_results.copy()
+        matched_pairs = []
+        
+        # Greedy matching
+        for target in targets:
+            best_det = None
+            best_dist = float('inf')
+            best_det_idx = -1
+            
+            for i, det in enumerate(unmatched_detections):
+                # Calculate distance (normalized or raw)
+                # Here using raw Euclidean distance, but could weigh range/doppler differently
+                d_r = target['range'] - det['range_m']
+                d_v = target['velocity'] - det['velocity_mps']
+                dist = np.sqrt(d_r**2 + d_v**2)
                 
-                if closest_detection and min_error < 10:  # Within reasonable range
-                    range_error = abs(target['range'] - closest_detection['range_m'])
-                    velocity_error = abs(target['velocity'] - closest_detection['velocity_mps'])
-                    legend_elements.append(
-                        plt.Line2D([0], [0], color='none',
-                                  label=f'📏 T{i+1} Errors: ΔR={range_error:.2f}m, ΔV={velocity_error:.2f}m/s')
-                    )
+                if dist < match_dist_thresh and dist < best_dist:
+                    best_dist = dist
+                    best_det = det
+                    best_det_idx = i
+            
+            if best_det:
+                # Found a match (TP)
+                tp += 1
+                range_errors.append(abs(target['range'] - best_det['range_m']))
+                velocity_errors.append(abs(target['velocity'] - best_det['velocity_mps']))
+                matched_pairs.append((target, best_det))
+                
+                # Remove from unmatched lists
+                unmatched_targets.remove(target)
+                unmatched_detections.pop(best_det_idx)
+            else:
+                # No match found (FN)
+                fn += 1
+                
+        # Remaining detections are False Positives
+        fp = len(unmatched_detections)
         
-        # Add detection statistics
-        legend_elements.append(
-            plt.Line2D([0], [0], color='none',
-                      label=f'📊 Detections: {len(detection_results)}, Targets: {len(targets)}')
+        # Calculate aggregate metrics
+        mean_range_error = np.mean(range_errors) if range_errors else 0.0
+        mean_velocity_error = np.mean(velocity_errors) if velocity_errors else 0.0
+        
+        # --- Visualization ---
+        
+        legend_elements = []
+        
+        # 1. Plot Ground Truth (Matched vs Missed)
+        for target in matched_pairs:
+            t = target[0]
+            ax.scatter(t['range'], t['velocity'], facecolors='none', edgecolors='lime', s=150, linewidth=2, label='Matched GT')
+            # Draw line to detection
+            d = target[1]
+            ax.plot([t['range'], d['range_m']], [t['velocity'], d['velocity_mps']], 'w--', alpha=0.5)
+            
+        for target in unmatched_targets:
+            ax.scatter(target['range'], target['velocity'], facecolors='none', edgecolors='red', s=150, linewidth=2, label='Missed GT (FN)')
+            
+        # 2. Plot Detections (TP vs FP)
+        for pair in matched_pairs:
+            d = pair[1]
+            ax.scatter(d['range_m'], d['velocity_mps'], marker='x', color='cyan', s=100, linewidth=2, label='True Positive (TP)')
+            
+        for det in unmatched_detections:
+            ax.scatter(det['range_m'], det['velocity_mps'], marker='x', color='orange', s=100, linewidth=2, label='False Alarm (FP)')
+            
+        # Deduplicate legend labels
+        handles, labels = plt.gca().get_legend_handles_labels()
+        by_label = dict(zip(labels, handles))
+        
+        # Add Metrics to Legend
+        legend_elements.extend(by_label.values())
+        
+        # Create a metrics summary text
+        metrics_text = (
+            f"Evaluation Metrics:\n"
+            f"-------------------\n"
+            f"Targets: {len(targets)}\n"
+            f"Detections: {len(detection_results)}\n"
+            f"TP: {tp} | FP: {fp} | FN: {len(unmatched_targets)}\n"
+            f"Range Error (MAE): {mean_range_error:.2f} m\n"
+            f"Vel Error (MAE): {mean_velocity_error:.2f} m/s"
         )
         
-        # Place legend on the right side with more space
-        ax.legend(handles=legend_elements, bbox_to_anchor=(1.25, 1), loc='upper left', fontsize=10)
+        # Add text box
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+        # Move metrics text to top left
+        ax.text(0.02, 0.98, metrics_text, transform=ax.transAxes, fontsize=10,
+                verticalalignment='top', bbox=props)
         
-        # Adjust layout to prevent legend overlap
-        plt.subplots_adjust(right=0.75)  # Make room for legend
+        # Place legend
+        # Move legend to top right, inside the plot if possible, or outside
+        ax.legend(handles=legend_elements, loc='upper right', bbox_to_anchor=(1.0, 1.0))
+        
+        # Adjust layout
+        # plt.subplots_adjust(right=0.75) # No longer needed if we don't put things outside to the right
         save_path_2d = os.path.join(save_dir, f"rdm_sample_{sample_idx}.png")
         plt.savefig(save_path_2d, dpi=150, bbox_inches='tight')
         plt.close()
-        
+
         # 3D Range-Doppler Map with CFAR detections
         fig = plt.figure(figsize=(22, 12))  # Increased figure size
         ax = fig.add_subplot(111, projection='3d')
@@ -651,9 +973,10 @@ class AIRadarDataset(Dataset):
         # Create meshgrid for 3D plot
         R, V = np.meshgrid(self.range_axis, self.velocity_axis)
         
-        # Plot 3D surface
+        # Plot 3D surface with high resolution
+        # rstride=1, cstride=1 ensures we plot every point
         surf = ax.plot_surface(R, V, rdm, cmap='viridis', alpha=0.8, 
-                              linewidth=0, antialiased=True)
+                              linewidth=0, antialiased=True, rstride=1, cstride=1)
         
         # Add target markers in 3D with different colors
         legend_elements_3d = []
@@ -789,8 +1112,17 @@ class AIRadarDataset(Dataset):
             import json
             target_info_str = f['target_info'][:]
             self.target_info = [json.loads(info) for info in target_info_str]
+            
+            # Extract CFAR detections from target_info if available
+            self.cfar_detections = []
+            for info in self.target_info:
+                if 'cfar_detections' in info:
+                    self.cfar_detections.append(info['cfar_detections'])
+                else:
+                    self.cfar_detections.append([])
         
         print(f"Loaded dataset with {len(self.target_info)} samples")
+        self.num_samples = len(self.target_info)
     
     def __len__(self):
         return self.num_samples if self.range_doppler_maps is not None else 0
@@ -842,19 +1174,73 @@ class AIRadarDataset(Dataset):
 
 
 if __name__ == "__main__":
-    # Test the corrected dataset
-    dataset = AIRadarDataset(
-        num_samples=10,
+    # Test the corrected dataset with multiple configurations
+    
+    # --- 1. Generate Data for Config 1 (77 GHz) ---
+    print("\n" + "="*50)
+    print("Generating Data for Config 1 (77 GHz Automotive)")
+    print("="*50)
+    
+    dataset_c1 = AIRadarDataset(
+        num_samples=2,
+        config_name='config1',
         drawfig=True,
-        save_path='data/radar_corrected_test3'
+        save_path='data/radar_config1_test'
     )
     
-    print(f"\nDataset created with {len(dataset)} samples")
+    print(f"\nConfig 1 Dataset created with {len(dataset_c1)} samples")
+    sample_c1 = dataset_c1[0]
+    print(f"Config 1 Sample 0 shapes:")
+    print(f"  Time domain: {sample_c1['time_domain'].shape}")
+    print(f"  Range-Doppler map: {sample_c1['range_doppler_map'].shape}")
+    print(f"  Target mask: {sample_c1['target_mask'].shape}")
+    print(f"  Number of targets: {len(sample_c1['target_info']['targets'])}")
     
-    # Test loading a sample
-    sample = dataset[0]
-    print(f"Sample 0 shapes:")
-    print(f"  Time domain: {sample['time_domain'].shape}")
-    print(f"  Range-Doppler map: {sample['range_doppler_map'].shape}")
-    print(f"  Target mask: {sample['target_mask'].shape}")
-    print(f"  Number of targets: {len(sample['target_info']['targets'])}")
+    # --- 2. Generate Data for Config 2 (10 GHz) ---
+    print("\n" + "="*50)
+    print("Generating Data for Config 2 (10 GHz X-Band)")
+    print("="*50)
+    
+    dataset_c2 = AIRadarDataset(
+        num_samples=2,
+        config_name='config2',
+        drawfig=True,
+        save_path='data/radar_config2_test'
+    )
+    
+    print(f"\nConfig 2 Dataset created with {len(dataset_c2)} samples")
+    sample_c2 = dataset_c2[0]
+    print(f"Config 2 Sample 0 shapes:")
+    print(f"  Time domain: {sample_c2['time_domain'].shape}")
+    print(f"  Range-Doppler map: {sample_c2['range_doppler_map'].shape}")
+    print(f"  Target mask: {sample_c2['target_mask'].shape}")
+    print(f"  Number of targets: {len(sample_c2['target_info']['targets'])}")
+    print(f"  CFAR Detections: {len(sample_c2['cfar_detections'])}")
+    
+    # --- 3. Generate Data for Config OTFS ---
+    print("\n" + "="*50)
+    print("Generating Data for Config OTFS (77 GHz)")
+    print("="*50)
+    
+    dataset_otfs = AIRadarDataset(
+        num_samples=2,
+        config_name='config_otfs',
+        drawfig=True,
+        save_path='data/radar_otfs_test'
+    )
+    
+    print(f"\nConfig OTFS Dataset created with {len(dataset_otfs)} samples")
+    sample_otfs = dataset_otfs[0]
+    print(f"Config OTFS Sample 0 shapes:")
+    print(f"  Time domain: {sample_otfs['time_domain'].shape}")
+    print(f"  Range-Doppler map: {sample_otfs['range_doppler_map'].shape}")
+    print(f"  Target mask: {sample_otfs['target_mask'].shape}")
+    print(f"  Number of targets: {len(sample_otfs['target_info']['targets'])}")
+    print(f"  CFAR Detections: {len(sample_otfs['cfar_detections'])}")
+
+    print("\n" + "="*50)
+    print("Generation Complete. Visualizations saved to:")
+    print("  - data/radar_config1_test/")
+    print("  - data/radar_config2_test/")
+    print("  - data/radar_otfs_test/")
+    print("==================================================")

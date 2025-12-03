@@ -25,7 +25,6 @@ from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection, Line3DCollection
 from matplotlib.patches import FancyArrowPatch
 from mpl_toolkits.mplot3d import proj3d
-from AIRadarLib.radar_det import cfar_2d_numpy, cfar_2d_advanced
 
 # -----------------------------
 # Physics & Radar params
@@ -75,11 +74,12 @@ def rcs_from_intensity(intensity, label=None):
 
     # Fallback for real LiDAR data (0..1 or 0..255)
     intensity_norm = intensity
-    if hasattr(intensity, 'dtype') and intensity.dtype != np.float32 and intensity.dtype != np.float64:
-        intensity_norm = intensity.astype(np.float32) / 255.0
-    elif isinstance(intensity, (float, int)) and intensity > 1.0:
-         intensity_norm = float(intensity) / 255.0
-    
+    if not isinstance(intensity, (float, int)): # Check if it's array-like
+        if intensity.dtype != np.float32 and intensity.dtype != np.float64:
+            intensity_norm = intensity.astype(np.float32) / 255.0
+    elif intensity > 1.0: # Is a float, but > 1.0 (so 0-255 range)
+        intensity_norm = intensity / 255.0
+        
     base_db = -25.0 + 35.0 * float(np.clip(intensity_norm, 0.0, 1.0))
     if label is not None and label in RCS_TABLE_DBSM:
         base_db = 0.5*base_db + 0.5*RCS_TABLE_DBSM[label]
@@ -225,32 +225,6 @@ def rd_map(iq):
     RD = np.fft.fftshift(rd_mat, axes=(0,))
     
     return 20*np.log10(np.abs(RD) + 1e-6)
-
-def rd_map_complex(iq):
-    """
-    Performs 2D FFT Range-Doppler processing with a 2-pulse canceler MTI.
-    Returns the complex RD map (no dB), suitable for CFAR.
-    """
-    M, Ns = iq.shape
-    mat = iq.copy()
-
-    win_fast = np.hanning(Ns)
-    mat = mat * win_fast[None, :]
-
-    range_fft = np.fft.fft(mat, axis=1)
-
-    mti_shifted = np.roll(range_fft, 1, axis=0)
-    range_fft_mti = range_fft - mti_shifted
-    range_fft_mti[0, :] = 0
-
-    win_slow = np.hanning(M)
-    range_fft_mti = range_fft_mti * win_slow[:, None]
-
-    rd_mat = np.fft.fft(range_fft_mti, axis=0)
-
-    RD = np.fft.fftshift(rd_mat, axes=(0,))
-
-    return RD
 
 # -----------------------------
 # Dataset adapters (lightweight)
@@ -505,74 +479,6 @@ def viz_rd(RD_dB, out_png, params: RadarParams, target_gt_list=None, sensor_orig
     plt.savefig(out_png)
     plt.close()
 
-def viz_rd_with_detections(RD_dB, detections, out_png, params: RadarParams,
-                           target_gt_list=None, sensor_origin=np.array([0.0,0.0,0.0])):
-    M, Ns = RD_dB.shape
-    R_unamb = params.unambiguous_range()
-    range_bins = np.linspace(0, R_unamb, Ns)
-    v_unamb = params.unambiguous_doppler_vel()
-    doppler_bins = np.linspace(-v_unamb/2, v_unamb/2, M)
-
-    plt.figure(figsize=(12, 6))
-    v_max = np.max(RD_dB)
-    v_min = -120
-    plt.pcolormesh(range_bins, doppler_bins, RD_dB, shading='auto', vmin=v_min, vmax=v_max)
-
-    # Plot ground truth
-    gt_coords = get_target_rd_coords(target_gt_list, params, sensor_origin)
-    if len(gt_coords) > 0:
-        gt_ranges = [gc['range'] for gc in gt_coords]
-        gt_vels = [gc['velocity'] for gc in gt_coords]
-        gt_labels = [gc['label'] for gc in gt_coords]
-        plt.plot(gt_ranges, gt_vels, 'rx', markersize=10, markeredgewidth=2, label='Ground Truth')
-        for r, v, label in zip(gt_ranges, gt_vels, gt_labels):
-            plt.text(r + 0.5, v + 0.5, label, color='red', fontsize=9, ha='left', va='bottom',
-                     bbox=dict(facecolor='white', alpha=0.5, edgecolor='none', boxstyle='round,pad=0.1'))
-
-    # Plot CFAR detections
-    if detections is not None and len(detections) > 0:
-        det_ranges = [d['range_m'] for d in detections]
-        det_vels = [d['velocity_mps'] for d in detections]
-        plt.plot(det_ranges, det_vels, 'go', markersize=6, alpha=0.8, label=f'Detections ({len(detections)})')
-
-    plt.legend()
-    plt.title("Range-Doppler Map (dB) with CFAR Detections")
-    plt.xlabel(f"Range (m) [Max: {R_unamb:.1f} m]")
-    plt.ylabel(f"Velocity (m/s) [Max: {v_unamb/2:.1f} m/s]")
-    plt.colorbar(label="Power (dB)")
-    plt.tight_layout()
-    plt.savefig(out_png)
-    plt.close()
-
-def compare_detections_to_gt(detections, target_gt_list, params: RadarParams,
-                             sensor_origin=np.array([0.0,0.0,0.0]), range_tol=2.0, vel_tol=2.0):
-    gt_coords = get_target_rd_coords(target_gt_list, params, sensor_origin)
-    if detections is None:
-        detections = []
-    matched = 0
-    used = [False] * len(detections)
-    for gc in gt_coords:
-        gr = gc['range']
-        gv = gc['velocity']
-        found = False
-        for k, d in enumerate(detections):
-            if used[k]:
-                continue
-            if abs(d['range_m'] - gr) <= range_tol and abs(d['velocity_mps'] - gv) <= vel_tol:
-                matched += 1
-                used[k] = True
-                found = True
-                break
-    missed = max(0, len(gt_coords) - matched)
-    false_alarms = max(0, len(detections) - matched)
-    return {
-        'matched': matched,
-        'missed_gt': missed,
-        'false_alarms': false_alarms,
-        'num_gt': len(gt_coords),
-        'num_det': len(detections)
-    }
-
 def viz_rd_3d(RD_dB, out_png, params: RadarParams, target_gt_list=None, sensor_origin=np.array([0.0,0.0,0.0])):
     M, Ns = RD_dB.shape
     R_unamb = params.unambiguous_range()
@@ -661,7 +567,6 @@ def viz_bev(points_xyz, out_png, peak_bins=None, params: RadarParams = None):
 
 def viz_intensity_rcs(intensity, rcs, out_png):
     if intensity is None or len(intensity) == 0:
-        print("Warning: rcs.png is empty because no points were provided.")
         return
     
     # Separate ground and target points
@@ -835,12 +740,12 @@ def viz_bev_3d(out_png, pts_xyz, target_gt_list, params: RadarParams, lidar_conf
     max_plot_range = lidar_config.get('max_range', params.max_range_m) * 1.1
     ax.set_xlim([0, max_plot_range])
     ax.set_ylim([-max_plot_range/2, max_plot_range/2])
-    ax.set_zlim([0, params.sensor_height_m + max_plot_range/4]) 
+    ax.set_zlim([0, params.sensor_height_m + max_plot_range/4]) # Ground at Z=0
     
     try:
         ax.set_aspect('equal')
     except NotImplementedError:
-        ax.set_box_aspect([2, 1, 0.66])
+        ax.set_box_aspect([2, 1, 0.66]) # Approximate equal aspect
 
     ax.view_init(elev=20, azim=-120)
     plt.tight_layout()
@@ -1115,6 +1020,7 @@ def run_dataset_demo(outdir):
         "max_range": R_unamb * 0.9, 
     }
     
+    # <--- NEW: Define high and low velocity ranges to demo MTI filter --->
     target_config = {
         "pos_x": (5.0, R_unamb * 0.8),
         "pos_y": (-R_unamb * 0.4, R_unamb * 0.4),
@@ -1168,52 +1074,12 @@ def run_dataset_demo(outdir):
         print("----------------------------------")
         
         print(f"Saving visualizations to: {viz_dir}/sample_{i:02d}_*")
-
+        
         viz_rd(RD_dB, os.path.join(viz_dir, f"sample_{i:02d}_rd_2d.png"), 
                sample['params'], target_gt_list=gt_list, sensor_origin=sensor_origin)
         
         viz_rd_3d(RD_dB, os.path.join(viz_dir, f"sample_{i:02d}_rd_3d.png"), 
                   sample['params'], target_gt_list=gt_list, sensor_origin=sensor_origin)
-
-        # --- FMCW CFAR detection on complex RD ---
-        iq = sample['iq_cube']
-        RD_complex = rd_map_complex(iq)
-        M, Ns = RD_complex.shape
-        R_unamb_local = sample['params'].unambiguous_range()
-        v_unamb_local = sample['params'].unambiguous_doppler_vel()
-        range_res = R_unamb_local / Ns
-        doppler_res = v_unamb_local / M
-        rd_map_cfar = np.zeros((1, 2, M, Ns), dtype=np.float32)
-        rd_map_cfar[0, 0] = RD_complex.real.astype(np.float32)
-        rd_map_cfar[0, 1] = RD_complex.imag.astype(np.float32)
-        detections = cfar_2d_advanced(
-            rd_map_cfar,
-            num_train=8,
-            num_guard=4,
-            range_res=range_res,
-            doppler_res=doppler_res,
-            max_range=R_unamb_local,
-            max_speed=v_unamb_local / 2,
-            method='GO',
-            pfa=1e-5,
-            nms_kernel_size=3,
-            estimate_aoa=False,
-            suppress_zero_doppler_width=1,
-            min_snr_db=6.0
-        )
-        print(f"  CFAR: {len(detections)} detections found.")
-        viz_rd_with_detections(
-            RD_dB, detections,
-            os.path.join(viz_dir, f"sample_{i:02d}_rd_2d_det.png"),
-            sample['params'], target_gt_list=gt_list, sensor_origin=sensor_origin
-        )
-        metrics = compare_detections_to_gt(
-            detections, gt_list, sample['params'], sensor_origin, range_tol=2.0, vel_tol=2.0
-        )
-        print(
-            f"  Compare: matched={metrics['matched']}/{metrics['num_gt']} gt, "
-            f"missed_gt={metrics['missed_gt']}, false_alarms={metrics['false_alarms']}"
-        )
         
         viz_range_profile(RD_dB, os.path.join(viz_dir, f"sample_{i:02d}_range.png"), sample['params'])
         
