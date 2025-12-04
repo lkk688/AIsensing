@@ -30,7 +30,7 @@ from tqdm import tqdm
 # Ensure AIRadar directory is in python path or use relative import if running from root
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from AIRadar.AIradar_datasetv5 import AIRadarDataset
+from AIRadar.AIradar_datasetv6 import AIRadarDataset
 
 # Try to import torch.fft for modern PyTorch versions
 try:

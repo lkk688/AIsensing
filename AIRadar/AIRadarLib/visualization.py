@@ -334,13 +334,20 @@ def plot_3d_range_doppler_map_with_ground_truth(
     num_doppler_bins,
     title_prefix='',
     save_path=None,
-    apply_doppler_centering=True
+    apply_doppler_centering=True,
+    detections=None,
+    view_range_limits=None,
+    view_velocity_limits=None,
+    is_db=False,
+    stride=4
 ):
     """
-    Plot a 3D Range-Doppler map with ground truth target annotations.
+    Plot a 3D Range-Doppler map with ground truth target annotations and CFAR detections.
+    Uses physical units (Meters and m/s) for axes.
 
     Args:
-        rd_map: np.ndarray, shape (2, num_doppler_bins, num_range_bins), real and imaginary parts of RD map
+        rd_map: np.ndarray, shape (2, num_doppler_bins, num_range_bins) if is_db=False, 
+                or (num_doppler_bins, num_range_bins) if is_db=True.
         targets: list of dicts, each with keys 'distance', 'velocity', 'rcs'
         range_resolution: float, range resolution in meters
         velocity_resolution: float, velocity resolution in m/s
@@ -349,36 +356,117 @@ def plot_3d_range_doppler_map_with_ground_truth(
         title_prefix: str, prefix for plot title/labeling/saving
         save_path: str, directory to save the figure
         apply_doppler_centering: bool, whether Doppler FFT is centered (affects target position calculation)
+        detections: list of dicts, optional CFAR detection results
+        view_range_limits: tuple, (min, max) range in meters to display
+        view_velocity_limits: tuple, (min, max) velocity in m/s to display
+        is_db: bool, if True, rd_map is treated as already in dB.
+        stride: int, stride for surface plot downsampling (higher is faster)
     """
-    rd_magnitude = np.sqrt(rd_map[0]**2 + rd_map[1]**2)
-    rd_db = 20 * np.log10(rd_magnitude + 1e-10)
-    X, Y = np.meshgrid(np.arange(num_range_bins), np.arange(num_doppler_bins))
-    fig = plt.figure(figsize=(12, 6))
+    if is_db:
+        rd_db = rd_map
+    else:
+        rd_magnitude = np.sqrt(rd_map[0]**2 + rd_map[1]**2)
+        rd_db = 20 * np.log10(rd_magnitude + 1e-10)
+    
+    # Create physical axes
+    range_axis = np.arange(num_range_bins) * range_resolution
+    if apply_doppler_centering:
+        velocity_axis = (np.arange(num_doppler_bins) - num_doppler_bins // 2) * velocity_resolution
+    else:
+        velocity_axis = np.arange(num_doppler_bins) * velocity_resolution
+        
+    X, Y = np.meshgrid(range_axis, velocity_axis)
+    
+    fig = plt.figure(figsize=(14, 8))
     ax = fig.add_subplot(111, projection='3d')
-    surf = ax.plot_surface(X, Y, rd_db, cmap='jet', linewidth=0, antialiased=True)
-    ax.set_xlabel('Range Bin')
-    ax.set_ylabel('Doppler Bin')
+    
+    # Plot surface
+    surf = ax.plot_surface(X, Y, rd_db, cmap='viridis', linewidth=0, antialiased=True, alpha=0.8, rstride=stride, cstride=stride)
+    
+    ax.set_xlabel('Range (m)')
+    ax.set_ylabel('Velocity (m/s)')
     ax.set_zlabel('Magnitude (dB)')
-    ax.set_title('3D Range-Doppler Map with Ground Truth')
-    for target in targets:
+    ax.set_title(f'3D Range-Doppler Map with Ground Truth & Detections - {title_prefix}')
+    
+    # Set view limits if provided
+    if view_range_limits:
+        ax.set_xlim(view_range_limits)
+    if view_velocity_limits:
+        ax.set_ylim(view_velocity_limits)
+    
+    # Add colorbar
+    fig.colorbar(surf, ax=ax, shrink=0.5, aspect=10, label='Magnitude (dB)')
+
+    # Plot Ground Truth Targets
+    for i, target in enumerate(targets):
+        r_val = target['distance']
+        v_val = target['velocity']
+        
+        # Find indices for z-value lookup
         if apply_doppler_centering:
-            # When centered, zero range is at num_range_bins/2
-            range_bin = int(num_range_bins // 2 + target['distance'] / range_resolution)
-            # When centered, zero velocity is at num_doppler_bins/2
-            doppler_bin = int(num_doppler_bins // 2 + target['velocity'] / velocity_resolution)
+            r_idx = int(r_val / range_resolution)
+            v_idx = int(num_doppler_bins // 2 + v_val / velocity_resolution)
         else:
-            # When not centered, zero range is at bin 0
-            range_bin = int(target['distance'] / range_resolution)
-            # When not centered, zero velocity is at bin 0
-            doppler_bin = int(target['velocity'] / velocity_resolution) % num_doppler_bins
+            r_idx = int(r_val / range_resolution)
+            v_idx = int(v_val / velocity_resolution) % num_doppler_bins
             
-        if (0 <= range_bin < num_range_bins and 0 <= doppler_bin < num_doppler_bins):
-            z_val = rd_db[doppler_bin, range_bin]
-            ax.scatter([range_bin], [doppler_bin], [z_val], color='r', s=50, marker='o')
+        if (0 <= r_idx < num_range_bins and 0 <= v_idx < num_doppler_bins):
+            z_val = rd_db[v_idx, r_idx]
+            # Lift the marker slightly above the surface
+            ax.scatter([r_val], [v_val], [z_val + 2], color='red', s=100, marker='o', 
+                      label='Ground Truth' if i == 0 else "")
+            
+            # Add label
+            ax.text(r_val, v_val, z_val + 10, 
+                   f"T{i+1}", color='black', fontsize=10, fontweight='bold')
+
+    # Plot Detections (TP/FP)
+    if detections:
+        tp_count = 0
+        fp_count = 0
+        
+        # Helper to check if a detection matches any target
+        def is_tp(det_r_idx, det_d_idx, targets_list, r_tol=2, d_tol=2):
+            for t in targets_list:
+                if apply_doppler_centering:
+                    t_r_idx = int(t['distance'] / range_resolution) # Assuming range starts at 0
+                    t_d_idx = int(num_doppler_bins // 2 + t['velocity'] / velocity_resolution)
+                else:
+                    t_r_idx = int(t['distance'] / range_resolution)
+                    t_d_idx = int(t['velocity'] / velocity_resolution) % num_doppler_bins
+                
+                if abs(det_r_idx - t_r_idx) <= r_tol and abs(det_d_idx - t_d_idx) <= d_tol:
+                    return True
+            return False
+
+        for i, det in enumerate(detections):
+            r_idx = det['range_idx']
+            d_idx = det['doppler_idx']
+            
+            if (0 <= r_idx < num_range_bins and 0 <= d_idx < num_doppler_bins):
+                z_val = rd_db[d_idx, r_idx]
+                
+                # Convert indices to physical units for plotting
+                r_phys = r_idx * range_resolution
+                if apply_doppler_centering:
+                    v_phys = (d_idx - num_doppler_bins // 2) * velocity_resolution
+                else:
+                    v_phys = d_idx * velocity_resolution
+                
+                if is_tp(r_idx, d_idx, targets):
+                    # True Positive
+                    ax.scatter([r_phys], [v_phys], [z_val + 2], color='lime', s=80, marker='x', 
+                              linewidth=2, label='Correct Detection' if tp_count == 0 else "")
+                    tp_count += 1
+                else:
+                    # False Positive
+                    ax.scatter([r_phys], [v_phys], [z_val + 2], color='yellow', s=80, marker='x', 
+                              linewidth=2, label='False Positive' if fp_count == 0 else "")
+                    fp_count += 1
+    
+    ax.legend(loc='upper right')
     plt.tight_layout(rect=[0, 0, 1, 0.95])
-    # os.makedirs(save_path, exist_ok=True)
-    # plt.savefig(os.path.join(save_path, f'sample_{sample_idx}_rd_map_3d.png'))
-    # plt.close(fig)
+    
     if save_path is not None:
         plt.savefig(save_path)
         plt.close()
