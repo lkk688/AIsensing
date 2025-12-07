@@ -253,6 +253,23 @@ def load_or_generate_base_dataset(
 # ----------------------------------------------------------------------
 # Deep dataset wrapper: builds radar/comm tensors + labels
 # ----------------------------------------------------------------------
+def summarize_snr_for_split(base_ds, name: str, max_samples: int = 200):
+    snrs = []
+    for i in range(min(len(base_ds), max_samples)):
+        info = base_ds[i]["target_info"]
+        snr_db = float(info.get("snr_db", 0.0))
+        snrs.append(snr_db)
+    if not snrs:
+        print(f"[Diag] No SNR data for {name}")
+        return
+    snrs = np.array(snrs, dtype=np.float32)
+    print(
+        f"[Diag] {name}: N={len(snrs)}, "
+        f"SNR mean={snrs.mean():.2f} dB, "
+        f"min={snrs.min():.2f}, "
+        f"max={snrs.max():.2f}"
+    )
+
 class RadarCommDeepDataset(Dataset):
     """
     Wraps a base dataset (AIRadar_Comm_Dataset or RadarCommDumpDataset) and
@@ -1494,6 +1511,20 @@ def main():
             num_workers=2,
             pin_memory=True,
         )
+    
+    print("\n=== SNR diagnostics per config/split ===")
+    for cfg_name in TRAIN_CONFIGS:
+        summarize_snr_for_split(
+            base_train_datasets[cfg_name],
+            f"{cfg_name} train",
+            max_samples=200,
+        )
+        summarize_snr_for_split(
+            base_val_datasets[cfg_name],
+            f"{cfg_name} val",
+            max_samples=200,
+        )
+    print("========================================\n")
 
     # ------------------------ Build model & optimizer ------------------------
     model = JointRadarCommNet(
