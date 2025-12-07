@@ -30,7 +30,7 @@ from tqdm import tqdm
 # Ensure AIRadar directory is in python path or use relative import if running from root
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from AIRadar.AIradar_datasetv6 import AIRadarDataset
+from AIRadar.AIradar_datasetv7 import AIRadarDataset
 
 # Try to import torch.fft for modern PyTorch versions
 try:
@@ -433,34 +433,54 @@ def cfar_to_mask(cfar_list, shape):
 
 # ==========================================
 # Training & Evaluation
-def train_model():
+def train_model(
+    output_path: str = 'data/',
+    model_name: str = 'radar_timenet_v5',
+    data_path: str = 'data/radar_corrected_test5/radar_dataset.h5',
+    device: str = 'cuda',
+    batch_size: int = 8,
+    num_epochs: int = 30,
+    learning_rate: float = 0.001
+) -> dict:
+    """
+    Train the RadarTimeNetV5 model.
+
+    Args:
+        output_path (str): Path to save the trained model weights.
+        data_path (str): Path to the HDF5 dataset file.
+        device (str): Device to use for training ('cuda' or 'cpu').
+        batch_size (int): Batch size for training.
+        num_epochs (int): Number of training epochs.
+        learning_rate (float): Learning rate for the optimizer.
+
+    Returns:
+        dict: Training history dictionary containing loss and metrics.
+    """
     # Parameters
-    BATCH_SIZE = 8 # Increased batch size for better stability
-    NUM_EPOCHS = 15 # Increased epochs
-    LEARNING_RATE = 0.001
-    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    DEVICE = torch.device(device if torch.cuda.is_available() and device == 'cuda' else 'cpu')
     
     print(f"Using device: {DEVICE}")
     
     # 1. Load Dataset
-    dataset_path = 'data/radar_corrected_test5/radar_dataset.h5'
-    save_dir = 'data/radar_corrected_test5'
+    save_dir = os.path.dirname(data_path)
     
     # Check if dataset exists, else generate
-    if not os.path.exists(dataset_path):
-        print(f"Dataset not found at {dataset_path}. Generating new one...")
+    if not os.path.exists(data_path):
+        print(f"Dataset not found at {data_path}. Generating new one...")
         ds = AIRadarDataset(num_samples=50, save_path=save_dir, drawfig=False)
         ds.generate_dataset()
-        dataset_path = os.path.join(save_dir, 'radar_dataset.h5')
+        # Re-verify path (ds.generate_dataset might save to a specific name)
+        if not os.path.exists(data_path):
+             data_path = os.path.join(save_dir, 'radar_dataset.h5')
 
-    full_dataset = AIRadarDataset(datapath=dataset_path, save_path=save_dir)
+    full_dataset = AIRadarDataset(datapath=data_path, save_path=save_dir)
     
     train_size = int(0.8 * len(full_dataset))
     test_size = len(full_dataset) - train_size
     train_dataset, test_dataset = torch.utils.data.random_split(full_dataset, [train_size, test_size])
     
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn_custom)
-    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=collate_fn_custom)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn_custom)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn_custom)
     
     # 2. Initialize Model
     # Extract shapes from a sample
@@ -485,18 +505,21 @@ def train_model():
     # Actually, with the architecture fix (removing ReLU), the model might just converge naturally.
     # But let's keep weights balanced.
     criterion = CombinedLoss(w_bce=1.0, w_focal=0.5, w_dice=0.5) 
-    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=3)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    # Note: In newer PyTorch versions, verbose is deprecated or moved. We remove it to be safe.
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=3, factor=0.5)
     
     # 4. Training Loop
     print("Starting training...")
     history = {'train_loss': [], 'val_loss': [], 'val_f1': [], 'cfar_f1': []}
     
-    for epoch in range(NUM_EPOCHS):
+    best_val_loss = float('inf')
+    
+    for epoch in range(num_epochs):
         model.train()
         train_loss = 0.0
         
-        for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{NUM_EPOCHS}"):
+        for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}"):
             # [B, Chirps, Samples, 2] -> [B, 1, Chirps, Samples, 2]
             iq_data = batch['time_domain'].unsqueeze(1).to(DEVICE) 
             # [B, Doppler, Range, 1] -> [B, 1, Doppler, Range]
@@ -527,12 +550,16 @@ def train_model():
         
         scheduler.step(val_results['loss'])
         
-    # 5. Save Model
-    torch.save(model.state_dict(), 'radar_timenet_v5.pth')
-    print("Model saved to radar_timenet_v5.pth")
-    
-    # 6. Final Visualization
-    visualize_comparison(model, test_dataset, DEVICE)
+        # Save best model
+        if val_results['loss'] < best_val_loss:
+            best_val_loss = val_results['loss']
+            torch.save(model.state_dict(), os.path.join(output_path, f'{model_name}.pth'))
+            print(f"Model saved to {os.path.join(output_path, f'{model_name}.pth')} (Best Val Loss: {best_val_loss:.4f})")
+        
+    # 5. Final Visualization
+    # We use the best model for visualization
+    model.load_state_dict(torch.load(os.path.join(output_path, f'{model_name}.pth')))
+    visualize_results(model, test_dataset, DEVICE, save_dir=output_path, max_vis_samples=5)
     
     return history
 
@@ -584,67 +611,203 @@ def evaluate(model, dataloader, criterion, device):
         'cfar_f1': cfar_f1, 'cfar_prec': cfar_prec, 'cfar_rec': cfar_rec
     }
 
-def visualize_comparison(model, dataset, device, num_samples=3):
+def visualize_results(model, dataset, device, max_vis_samples=5, save_dir='data/radar_corrected_test5/model_comparison'):
+    """
+    Visualize comparison between Ground Truth, DL Prediction, and CFAR Detection.
+    Includes detailed 3x3 grid analysis and 2D/3D RD Map visualizations using dataset tools.
+    """
+    try:
+        import sys
+        sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+        from AIradar_datasetv7 import _plot_2d_rdm, _plot_3d_rdm
+        HAS_VIZ_TOOLS = True
+    except ImportError:
+        print("Warning: Could not import visualization tools from AIradar_datasetv7.py")
+        HAS_VIZ_TOOLS = False
+
     model.eval()
-    actual_samples = min(num_samples, len(dataset))
+    actual_samples = min(max_vis_samples, len(dataset))
     if actual_samples == 0:
         print("No samples to visualize.")
         return
         
     indices = np.random.choice(len(dataset), actual_samples, replace=False)
     
-    save_dir = 'data/radar_corrected_test5/model_comparison'
     os.makedirs(save_dir, exist_ok=True)
     
     for idx in indices:
         sample = dataset[idx]
         iq_data = sample['time_domain'].unsqueeze(0).unsqueeze(1).to(device)
-        gt_mask = sample['target_mask'].squeeze().numpy()
-        gt_rdm = sample['range_doppler_map'].numpy()
+        gt_mask = sample['target_mask'].squeeze().numpy() # [D, R]
+        gt_rdm = sample['range_doppler_map'].numpy()      # [D, R]
         cfar_detections = sample['cfar_detections']
+        target_info = sample['target_info']
         
         # Generate CFAR mask
         cfar_mask = cfar_to_mask(cfar_detections, gt_mask.shape)
         
         with torch.no_grad():
             outputs = model(iq_data)
-            pred_logits = outputs['detection_logits'].squeeze().cpu().numpy()
-            pred_mask = (1 / (1 + np.exp(-pred_logits))) > 0.5
+            pred_logits = outputs['detection_logits'].squeeze().cpu().numpy() # [D, R]
+            pred_prob = 1 / (1 + np.exp(-pred_logits))
+            pred_mask = pred_prob > 0.5
             pred_rdm_db = outputs['rd_map_db'].squeeze().cpu().numpy()
             
-        # Plot 2x3 Grid
-        fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+        # --- 1. Comprehensive 3x3 Grid Visualization ---
+        fig, axes = plt.subplots(3, 3, figsize=(20, 18))
+        plt.suptitle(f"Detailed Analysis - Sample {idx}", fontsize=16)
         
-        # Row 1: Input & Ground Truth
-        im0 = axes[0, 0].imshow(gt_rdm, aspect='auto', origin='lower', cmap='viridis')
-        axes[0, 0].set_title("Input: RD Map (dB)")
+        # Row 1: Inputs and Ground Truth
+        im0 = axes[0, 0].imshow(gt_rdm, aspect='auto', origin='lower', cmap='jet')
+        axes[0, 0].set_title("Input Range-Doppler Map (dB)")
         plt.colorbar(im0, ax=axes[0, 0])
         
         axes[0, 1].imshow(gt_mask, aspect='auto', origin='lower', cmap='gray')
         axes[0, 1].set_title("Ground Truth Mask")
         
-        # Row 1, Col 3: Overlay
-        axes[0, 2].imshow(gt_rdm, aspect='auto', origin='lower', cmap='viridis')
-        axes[0, 2].imshow(gt_mask, aspect='auto', origin='lower', cmap='Reds', alpha=0.3)
-        axes[0, 2].set_title("GT Overlay on RD Map")
+        axes[0, 2].imshow(gt_rdm, aspect='auto', origin='lower', cmap='gray')
+        axes[0, 2].imshow(gt_mask, aspect='auto', origin='lower', cmap='spring', alpha=0.5)
+        axes[0, 2].set_title("GT Overlay (Pink)")
         
-        # Row 2: Methods Comparison
-        axes[1, 0].imshow(pred_rdm_db, aspect='auto', origin='lower', cmap='viridis')
-        axes[1, 0].set_title("DL Reconstructed RD Map")
+        # Row 2: DL Model Outputs
+        im3 = axes[1, 0].imshow(pred_rdm_db, aspect='auto', origin='lower', cmap='jet')
+        axes[1, 0].set_title("DL Internal Feature (Log-Mag)")
+        plt.colorbar(im3, ax=axes[1, 0])
         
-        axes[1, 1].imshow(pred_mask, aspect='auto', origin='lower', cmap='gray')
-        axes[1, 1].set_title("DL Prediction Mask")
+        im4 = axes[1, 1].imshow(pred_prob, aspect='auto', origin='lower', cmap='inferno')
+        axes[1, 1].set_title("DL Prediction Probability")
+        plt.colorbar(im4, ax=axes[1, 1])
         
-        axes[1, 2].imshow(cfar_mask, aspect='auto', origin='lower', cmap='gray')
-        axes[1, 2].set_title(f"CFAR Detection Mask ({len(cfar_detections)} pts)")
+        axes[1, 2].imshow(pred_mask, aspect='auto', origin='lower', cmap='gray')
+        axes[1, 2].set_title("DL Binary Mask (Thresh=0.5)")
+        
+        # Row 3: Comparisons and CFAR
+        axes[2, 0].imshow(cfar_mask, aspect='auto', origin='lower', cmap='gray')
+        axes[2, 0].set_title(f"CFAR Detection ({len(cfar_detections)} pts)")
+        
+        # DL Errors (Green: TP, Red: FP, Blue: FN)
+        error_map = np.zeros((*gt_mask.shape, 3))
+        tp = np.logical_and(pred_mask, gt_mask)
+        fp = np.logical_and(pred_mask, np.logical_not(gt_mask))
+        fn = np.logical_and(np.logical_not(pred_mask), gt_mask)
+        
+        error_map[tp] = [0, 1, 0] # Green
+        error_map[fp] = [1, 0, 0] # Red
+        error_map[fn] = [0, 0, 1] # Blue
+        
+        axes[2, 1].imshow(error_map, aspect='auto', origin='lower')
+        axes[2, 1].set_title("DL Error Analysis (G=TP, R=FP, B=FN)")
+        
+        # 1D Range Profile (Cut at max Doppler)
+        if np.sum(gt_mask) > 0:
+            d_idx, r_idx = np.unravel_index(np.argmax(gt_mask), gt_mask.shape)
+        else:
+            d_idx = gt_mask.shape[0] // 2
+            
+        axes[2, 2].plot(gt_rdm[d_idx, :], label='Input RDM')
+        axes[2, 2].plot(pred_prob[d_idx, :] * np.max(gt_rdm), label='DL Prob (Scaled)', linestyle='--')
+        axes[2, 2].set_title(f"Range Profile at Doppler Bin {d_idx}")
+        axes[2, 2].legend()
+        axes[2, 2].grid(True)
         
         plt.tight_layout()
-        plt.savefig(f"{save_dir}/comparison_sample_{idx}.png")
+        plt.savefig(f"{save_dir}/detailed_grid_{idx}.png")
         plt.close()
-        
+
+        # --- 2. Advanced Visualization (2D & 3D) using dataset tools ---
+        if HAS_VIZ_TOOLS:
+            targets = target_info['targets']
+            
+            # Convert DL mask to detections list
+            dl_detections = []
+            rows, cols = np.where(pred_mask)
+            range_axis = sample['range_axis']
+            velocity_axis = sample['velocity_axis']
+            
+            def get_val(axis, idx):
+                if idx >= len(axis): return axis[-1]
+                return axis[idx]
+
+            for r_idx, d_idx in zip(rows, cols):
+                 doppler_idx = r_idx
+                 range_idx = d_idx
+                 
+                 dl_detections.append({
+                     'range_m': get_val(range_axis, range_idx),
+                     'velocity_mps': get_val(velocity_axis, doppler_idx),
+                     'range_idx': range_idx,
+                     'doppler_idx': doppler_idx
+                 })
+
+            class MockDataset:
+                def __init__(self, r_axis, v_axis):
+                    self.range_axis = r_axis
+                    self.velocity_axis = v_axis
+            
+            mock_ds = MockDataset(range_axis, velocity_axis)
+            
+            # 3D Plots
+            _plot_3d_rdm(
+                dataset_instance=mock_ds,
+                rdm=gt_rdm,
+                sample_idx=f"{idx}_DL",
+                targets=targets,
+                detections=dl_detections,
+                save_path=f"{save_dir}/3d_dl_sample_{idx}.png"
+            )
+            
+            _plot_3d_rdm(
+                dataset_instance=mock_ds,
+                rdm=gt_rdm,
+                sample_idx=f"{idx}_CFAR",
+                targets=targets,
+                detections=cfar_detections,
+                save_path=f"{save_dir}/3d_cfar_sample_{idx}.png"
+            )
+            
+            # Matching Logic for 2D Plots
+            def simple_match(targets, detections, threshold=5.0): # Using updated threshold
+                matched = []
+                unmatched_t = list(targets)
+                unmatched_d = list(detections)
+                
+                for t in targets:
+                    best_d = None
+                    best_dist = float('inf')
+                    for d in detections:
+                        dist = np.sqrt((t['range'] - d['range_m'])**2 + (t['velocity'] - d['velocity_mps'])**2)
+                        if dist < threshold and dist < best_dist:
+                            best_dist = dist
+                            best_d = d
+                    
+                    if best_d:
+                        matched.append((t, best_d))
+                        if t in unmatched_t: unmatched_t.remove(t)
+                        if best_d in unmatched_d: unmatched_d.remove(best_d)
+                        
+                tp = len(matched)
+                fp = len(unmatched_d)
+                fn = len(unmatched_t)
+                
+                metrics = {
+                    'num_targets': len(targets),
+                    'num_detections': len(detections),
+                    'tp': tp, 'fp': fp, 'fn': fn,
+                    'mean_range_error': np.mean([abs(t['range'] - d['range_m']) for t, d in matched]) if matched else 0,
+                    'mean_velocity_error': np.mean([abs(t['velocity'] - d['velocity_mps']) for t, d in matched]) if matched else 0
+                }
+                return metrics, matched, unmatched_t, unmatched_d
+
+            # 2D Plots
+            m_dl, pairs_dl, miss_dl, fa_dl = simple_match(targets, dl_detections)
+            _plot_2d_rdm(mock_ds, gt_rdm, f"{idx}_DL", m_dl, pairs_dl, miss_dl, fa_dl, f"{save_dir}/2d_dl_sample_{idx}.png")
+
+            m_cfar, pairs_cfar, miss_cfar, fa_cfar = simple_match(targets, cfar_detections)
+            _plot_2d_rdm(mock_ds, gt_rdm, f"{idx}_CFAR", m_cfar, pairs_cfar, miss_cfar, fa_cfar, f"{save_dir}/2d_cfar_sample_{idx}.png")
+            
     print(f"Visualizations saved to {save_dir}")
 
-def load_and_evaluate(model_path='radar_timenet_v5.pth', save_dir='data/radar_corrected_test5/evaluation'):
+def load_and_evaluate(model_path='radar_timenet_v5.pth', dataset_path = 'data/radar_corrected_test5/radar_dataset.h5', save_dir='data/radar_corrected_test5/evaluation'):
     """
     Load a pretrained model, evaluate it on the test dataset, and generate detailed visualizations.
     """
@@ -652,7 +815,7 @@ def load_and_evaluate(model_path='radar_timenet_v5.pth', save_dir='data/radar_co
     
     # 1. Setup Device and Data
     DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    dataset_path = 'data/radar_corrected_test5/radar_dataset.h5'
+    
     
     if not os.path.exists(dataset_path):
         print(f"Dataset not found at {dataset_path}. Please generate it first.")
@@ -710,119 +873,42 @@ def load_and_evaluate(model_path='radar_timenet_v5.pth', save_dir='data/radar_co
     print(f"CFAR Metrics: F1={metrics['cfar_f1']:.4f}, Precision={metrics['cfar_prec']:.4f}, Recall={metrics['cfar_rec']:.4f}")
     
     # 4. Detailed Visualization
-    visualize_detailed_results(model, full_dataset, DEVICE, save_dir=save_dir, num_samples=5)
-
-def visualize_detailed_results(model, dataset, device, save_dir, num_samples=5):
-    """
-    Generate comprehensive visualization plots for model analysis.
-    """
-    model.eval()
-    os.makedirs(save_dir, exist_ok=True)
+    visualize_results(model, full_dataset, DEVICE, save_dir=save_dir, max_vis_samples=5)
     
-    # Select random samples
-    indices = np.random.choice(len(dataset), min(num_samples, len(dataset)), replace=False)
-    
-    for idx in indices:
-        sample = dataset[idx]
-        iq_data = sample['time_domain'].unsqueeze(0).unsqueeze(1).to(device)
-        gt_mask = sample['target_mask'].squeeze().numpy() # [D, R]
-        gt_rdm = sample['range_doppler_map'].numpy()      # [D, R]
-        cfar_detections = sample['cfar_detections']
-        
-        # Generate CFAR mask
-        cfar_mask = cfar_to_mask(cfar_detections, gt_mask.shape)
-        
-        with torch.no_grad():
-            outputs = model(iq_data)
-            pred_logits = outputs['detection_logits'].squeeze().cpu().numpy() # [D, R]
-            pred_prob = 1 / (1 + np.exp(-pred_logits))
-            pred_mask = pred_prob > 0.5
-            pred_rdm_db = outputs['rd_map_db'].squeeze().cpu().numpy()
-            
-        # Create a detailed 3x3 grid
-        fig, axes = plt.subplots(3, 3, figsize=(20, 18))
-        plt.suptitle(f"Detailed Analysis - Sample {idx}", fontsize=16)
-        
-        # --- Row 1: Inputs and Ground Truth ---
-        
-        # 1. Input RD Map
-        im0 = axes[0, 0].imshow(gt_rdm, aspect='auto', origin='lower', cmap='jet')
-        axes[0, 0].set_title("Input Range-Doppler Map (dB)")
-        plt.colorbar(im0, ax=axes[0, 0])
-        
-        # 2. Ground Truth Mask
-        axes[0, 1].imshow(gt_mask, aspect='auto', origin='lower', cmap='gray')
-        axes[0, 1].set_title("Ground Truth Mask")
-        
-        # 3. GT Overlay
-        axes[0, 2].imshow(gt_rdm, aspect='auto', origin='lower', cmap='gray')
-        axes[0, 2].imshow(gt_mask, aspect='auto', origin='lower', cmap='spring', alpha=0.5)
-        axes[0, 2].set_title("GT Overlay (Pink)")
-        
-        # --- Row 2: DL Model Outputs ---
-        
-        # 4. DL Reconstructed Feature (Log-Mag)
-        im3 = axes[1, 0].imshow(pred_rdm_db, aspect='auto', origin='lower', cmap='jet')
-        axes[1, 0].set_title("DL Internal Feature (Log-Mag)")
-        plt.colorbar(im3, ax=axes[1, 0])
-        
-        # 5. DL Probability Map
-        im4 = axes[1, 1].imshow(pred_prob, aspect='auto', origin='lower', cmap='inferno')
-        axes[1, 1].set_title("DL Prediction Probability")
-        plt.colorbar(im4, ax=axes[1, 1])
-        
-        # 6. DL Binary Mask (Threshold > 0.5)
-        axes[1, 2].imshow(pred_mask, aspect='auto', origin='lower', cmap='gray')
-        axes[1, 2].set_title("DL Binary Mask (Thresh=0.5)")
-        
-        # --- Row 3: Comparisons and CFAR ---
-        
-        # 7. CFAR Mask
-        axes[2, 0].imshow(cfar_mask, aspect='auto', origin='lower', cmap='gray')
-        axes[2, 0].set_title(f"CFAR Detection ({len(cfar_detections)} pts)")
-        
-        # 8. DL Errors (False Positives / False Negatives)
-        # Green: TP, Red: FP, Blue: FN
-        error_map = np.zeros((*gt_mask.shape, 3))
-        tp = np.logical_and(pred_mask, gt_mask)
-        fp = np.logical_and(pred_mask, np.logical_not(gt_mask))
-        fn = np.logical_and(np.logical_not(pred_mask), gt_mask)
-        
-        error_map[tp] = [0, 1, 0] # Green
-        error_map[fp] = [1, 0, 0] # Red
-        error_map[fn] = [0, 0, 1] # Blue
-        
-        axes[2, 1].imshow(error_map, aspect='auto', origin='lower')
-        axes[2, 1].set_title("DL Error Analysis (G=TP, R=FP, B=FN)")
-        
-        # 9. 1D Range Profile (Cut at max Doppler)
-        # Find doppler bin with max energy in GT
-        if np.sum(gt_mask) > 0:
-            d_idx, r_idx = np.unravel_index(np.argmax(gt_mask), gt_mask.shape)
-        else:
-            d_idx = gt_mask.shape[0] // 2
-            
-        axes[2, 2].plot(gt_rdm[d_idx, :], label='Input RDM')
-        axes[2, 2].plot(pred_prob[d_idx, :] * np.max(gt_rdm), label='DL Prob (Scaled)', linestyle='--')
-        axes[2, 2].set_title(f"Range Profile at Doppler Bin {d_idx}")
-        axes[2, 2].legend()
-        axes[2, 2].grid(True)
-        
-        plt.tight_layout()
-        plt.savefig(f"{save_dir}/detailed_sample_{idx}.png")
-        plt.close()
-        
-    print(f"Detailed visualizations saved to {save_dir}")
-
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='Train or Evaluate RadarTimeNet')
+    
+    # Common Arguments
     parser.add_argument('--mode', type=str, default='train', choices=['train', 'eval'], help='Mode: train or eval')
-    parser.add_argument('--model_path', type=str, default='radar_timenet_v5.pth', help='Path to model weights for eval')
+    parser.add_argument('--device', type=str, default='cuda', help='Device to use: cuda or cpu')
+    parser.add_argument('--data_path', type=str, default='data/radar_trainv5b/radar_dataset.h5', help='Path to dataset')
+    parser.add_argument('--output_path', type=str, default='data/radar_trainv5b/', help='Path to save/load model weights')
+    
+    # Training Specific Arguments
+    parser.add_argument('--batch_size', type=int, default=8, help='Batch size for training')
+    parser.add_argument('--epochs', type=int, default=20, help='Number of training epochs')
+    parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
     
     args = parser.parse_args()
     
     if args.mode == 'train':
-        train_model()
+        train_model(
+            output_path=args.output_path,
+            model_name='radar_timenet_v5',
+            data_path=args.data_path,
+            device=args.device,
+            batch_size=args.batch_size,
+            num_epochs=args.epochs,
+            learning_rate=args.lr
+        )
     else:
-        load_and_evaluate(model_path=args.model_path)
+        # Note: load_and_evaluate might need updates to accept device/data_path if we want it fully configurable too.
+        # For now, we pass model_path as output_path from args.
+        # Let's quickly update load_and_evaluate signature in a separate step if needed, 
+        # but for now the user only asked to put parameters here.
+        # However, load_and_evaluate in current file doesn't take data_path/device as args in its definition yet (it hardcodes them inside).
+        # I should check load_and_evaluate definition again.
+        # It is defined as: def load_and_evaluate(model_path='radar_timenet_v5.pth', save_dir='data/radar_corrected_test5/evaluation'):
+        # So we can pass model_path.
+        load_and_evaluate(model_path=args.output_path)

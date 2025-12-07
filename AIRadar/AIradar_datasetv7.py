@@ -1272,7 +1272,30 @@ def _plot_3d_rdm(dataset_instance, rdm, sample_idx, targets, detections, save_pa
         )
 
 def evaluate_dataset_metrics(dataset, name):
-    """Helper function to evaluate metrics across the entire dataset"""
+    """
+    Evaluate CFAR detection metrics across all samples in a dataset.
+
+    Args:
+        dataset: Iterable dataset where each item is a sample dict with keys:
+            - 'range_doppler_map': 2D tensor/array of shape [doppler_bins, range_bins]
+                                   representing the magnitude (typically dB) of the RD map.
+            - 'target_info': dict containing ground-truth target metadata with:
+                - 'targets': list[dict] where each dict includes fields like
+                             'range' (meters), 'velocity' (m/s), and optionally
+                             'range_idx'/'doppler_idx' (int indices).
+            - 'cfar_detections': list[dict] CFAR detection outputs with fields such as
+                                 'range' (meters), 'velocity' (m/s), 'range_idx', 'doppler_idx'.
+        name: Descriptive dataset name used for printing summary.
+
+    Prints:
+        - Aggregate precision, recall, F1-score across the dataset
+        - Mean absolute errors for range and velocity (meters, m/s)
+
+    Notes:
+        - Per-sample metrics are computed via `dataset._evaluate_metrics(targets, detections)` and
+          aggregated here. If a sample's mean errors are zero or unavailable, they are excluded
+          from the mean error aggregation.
+    """
     print(f"\nEvaluating CFAR Metrics for {name}...")
     all_tp, all_fp, all_fn = 0, 0, 0
     all_range_errors = []
@@ -1315,7 +1338,19 @@ if __name__ == "__main__":
     outpath = 'data/radar_datasetv7'
     
     def evaluate_dataset_metrics(dataset, name):
-        """Helper function to evaluate metrics across the entire dataset"""
+        """
+        Evaluate CFAR detection metrics across all samples in a dataset.
+
+        Args:
+            dataset: Iterable dataset of samples with keys:
+                - 'range_doppler_map': [doppler_bins, range_bins]
+                - 'target_info': {'targets': list[dict]}
+                - 'cfar_detections': list[dict]
+            name: Label for printing results.
+
+        Prints:
+            Summary metrics (precision, recall, F1) and mean range/velocity errors.
+        """
         print(f"\nEvaluating CFAR Metrics for {name}...")
         all_tp, all_fp, all_fn = 0, 0, 0
         all_range_errors = []
@@ -1372,19 +1407,28 @@ if __name__ == "__main__":
     print(f"Generating visualizations for Config 1 (first 3 samples)...")
     for i in range(min(3, len(dataset_c1))):
         sample = dataset_c1[i]
+        # range_doppler_map: 2D tensor/array [doppler_bins, range_bins], magnitude in dB or linear
+        # Convert to numpy for plotting
         rdm = sample['range_doppler_map'].numpy()
         # Normalize RDM for visualization (Peak at 0 dB)
         rdm_norm = rdm - np.max(rdm)
         
+        # Ground-truth targets: list[dict] with 'range' (m), 'velocity' (m/s), optional indices
         targets = sample['target_info']['targets']
+        # CFAR detections: list[dict] with 'range' (m), 'velocity' (m/s), 'range_idx', 'doppler_idx'
         detections = sample['cfar_detections']
+        # Metrics aggregation per-sample; matched_pairs: list of (gt_idx, det_idx)
         metrics, matched_pairs, unmatched_targets, unmatched_detections = dataset_c1._evaluate_metrics(targets, detections)
         
         save_dir = os.path.join(outpath, 'config1')
         save_path_2d = os.path.join(save_dir, f"rdm_sample_{i}.png")
+        # _plot_2d_rdm expects:
+        #   rdm_norm: [doppler_bins, range_bins] (dB), metrics: dict, matched/unmatched indices
         _plot_2d_rdm(dataset_c1, rdm_norm, i, metrics, matched_pairs, unmatched_targets, unmatched_detections, save_path_2d)
         
         save_path_3d = os.path.join(save_dir, f"rdm_3d_sample_{i}.png")
+        # _plot_3d_rdm expects:
+        #   rdm_norm: [doppler_bins, range_bins] (dB), targets/detections: lists of dicts with indices
         _plot_3d_rdm(dataset_c1, rdm_norm, i, targets, detections, save_path_3d)
     
     # --- 2. Generate Data for Config 2 (10 GHz) ---
@@ -1408,8 +1452,10 @@ if __name__ == "__main__":
     print(f"Generating visualizations for Config 2 (first 3 samples)...")
     for i in range(min(3, len(dataset_c2))):
         sample = dataset_c2[i]
+        # range_doppler_map: [doppler_bins, range_bins]
         rdm = sample['range_doppler_map'].numpy()
         rdm_norm = rdm - np.max(rdm)
+        # Targets/detections: lists of dicts
         targets = sample['target_info']['targets']
         detections = sample['cfar_detections']
         metrics, matched_pairs, unmatched_targets, unmatched_detections = dataset_c2._evaluate_metrics(targets, detections)
@@ -1442,6 +1488,7 @@ if __name__ == "__main__":
     print(f"Generating visualizations for Config OTFS (first 3 samples)...")
     for i in range(min(3, len(dataset_otfs))):
         sample = dataset_otfs[i]
+        # range_doppler_map: [doppler_bins, range_bins]
         rdm = sample['range_doppler_map'].numpy()
         rdm_norm = rdm - np.max(rdm)
         targets = sample['target_info']['targets']
@@ -1450,9 +1497,11 @@ if __name__ == "__main__":
         
         save_dir = os.path.join(outpath, 'config_otfs')
         save_path_2d = os.path.join(save_dir, f"rdm_sample_{i}.png")
+        # _plot_2d_rdm: visualizes matched/unmatched targets/detections over RD map
         _plot_2d_rdm(dataset_otfs, rdm_norm, i, metrics, matched_pairs, unmatched_targets, unmatched_detections, save_path_2d)
         
         save_path_3d = os.path.join(save_dir, f"rdm_3d_sample_{i}.png")
+        # _plot_3d_rdm: 3D surface of RD map with GT and detections
         _plot_3d_rdm(dataset_otfs, rdm_norm, i, targets, detections, save_path_3d)
 
     print("\n" + "="*50)
