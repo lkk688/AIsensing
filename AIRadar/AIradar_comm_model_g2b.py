@@ -1443,7 +1443,7 @@ def quick_sanity_test(args):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", type=str, choices=["train", "evaluate", "inference", "test"],
-                        default="test")
+                        default="evaluate")
     parser.add_argument("--train_samples_per_config", type=int, default=400)
     parser.add_argument("--val_samples_per_config", type=int, default=100)
     parser.add_argument("--test_samples_per_config", type=int, default=100)
@@ -1456,7 +1456,7 @@ def main():
     parser.add_argument("--device", type=str,
                         default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--out_dir", type=str, default="data/AIradar_comm_model_g2")
-    parser.add_argument("--ckpt", type=str, default=None)
+    parser.add_argument("--ckpt", type=str, default="data/AIradar_comm_model_g2/joint_net_generalized_best.pt")
     parser.add_argument("--sample_idx", type=int, default=0)
     parser.add_argument("--prob_thresh", type=float, default=0.7)
     parser.add_argument("--draw_fig_gen", default=True,
@@ -1616,6 +1616,20 @@ def main():
         model.load_state_dict(ckpt["model_state"])
         model.to(device)
 
+        # --- Optional sanity: full evaluation on TRAIN splits ---
+        print("\n=== Sanity check: full evaluation on TRAIN splits ===\n")
+        for cfg_name in TRAIN_CONFIGS:
+            cfg = RADAR_COMM_CONFIGS[cfg_name]
+            if cfg["mode"] != "TRADITIONAL":
+                continue
+            base_train_ds_eval = base_train_datasets[cfg_name]
+            deep_train_ds_eval = RadarCommDeepDataset(base_train_ds_eval, cfg_name)
+            eval_dir_train = os.path.join(args.out_dir, f"eval_train_{cfg_name}")
+            run_full_evaluation(
+                model, deep_train_ds_eval, base_train_ds_eval, cfg,
+                device, eval_dir_train, prob_thresh=args.prob_thresh,
+            )
+
         eval_configs = sorted(set(TRAIN_CONFIGS + TEST_CONFIGS))
         print("\n=== Running full evaluation on configs:", eval_configs, "===\n")
 
@@ -1722,3 +1736,13 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+"""
+python AIRadar/AIradar_comm_model_g2b.py \
+  --mode train \
+  --epochs 20 \
+  --batch_size 4 \
+  --train_samples_per_config 400 \
+  --val_samples_per_config 100 \
+  --data_root data/AIradar_comm_model_g2b
+"""
