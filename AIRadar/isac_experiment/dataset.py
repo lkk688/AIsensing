@@ -278,3 +278,185 @@ def comm_dl_gen_batch_OTFS(ebn0_db, batch=8, M=64, N=256, cp_len=32, rng=None):
         y_list.append(y.astype(np.float32))
         
     return torch.from_numpy(np.stack(x_list)), torch.from_numpy(np.stack(y_list))
+
+# ============================================================================
+# G2 Dataset Integration
+# ============================================================================
+
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))  # Add AIRadar to path
+
+class G2DatasetWrapper(torch.utils.data.Dataset):
+    """Wrapper for AIradar_comm_dataset_g2 to integrate with isac_experiment.
+    
+    Provides unified interface for multiple radar/comm configurations.
+    Returns normalized RDM, target heatmap, comm features, and config embedding.
+    """
+    
+    def __init__(self, config_names=None, samples_per_config=100, snr_range=(10, 30),
+                 target_size=(256, 256), include_comm=True):
+        """
+        Args:
+            config_names: List of config names from RADAR_COMM_CONFIGS_G2
+            samples_per_config: Number of samples per configuration
+            snr_range: (min_snr, max_snr) for random SNR selection
+            target_size: Target RDM size for normalization
+            include_comm: Whether to include communication features
+        """
+        super().__init__()
+        
+        # Import G2 dataset
+        try:
+            from AIradar_comm_dataset_g2 import AIRadar_Comm_Dataset_G2, RADAR_COMM_CONFIGS_G2
+            self.G2Dataset = AIRadar_Comm_Dataset_G2
+            self.G2_CONFIGS = RADAR_COMM_CONFIGS_G2
+        except ImportError:
+            raise ImportError("AIradar_comm_dataset_g2 not found. Ensure it's in AIRadar folder.")
+        
+        if config_names is None:
+            config_names = ['CN0566_TRADITIONAL', 'CN0566_OTFS_ISAC']
+        
+        self.config_names = config_names
+        self.samples_per_config = samples_per_config
+        self.snr_range = snr_range
+        self.target_size = target_size
+        self.include_comm = include_comm
+        
+        # Pre-generate samples for each config
+        self.samples = []
+        self.config_indices = []
+        
+        for config_idx, config_name in enumerate(config_names):
+            print(f"[G2Wrapper] Loading {config_name}...")
+            ds = self.G2Dataset(
+                config_name=config_name,
+                num_samples=samples_per_config,
+                save_path=f'/tmp/g2_wrapper_{config_name}',
+                drawfig=False,
+                fixed_snr=None,  # Random SNR in range
+                enable_clutter=True
+            )
+            
+            for i in range(len(ds)):
+                self.samples.append(ds[i])
+                self.config_indices.append(config_idx)
+    
+    def __len__(self):
+        return len(self.samples)
+    
+    def __getitem__(self, idx):
+        sample = self.samples[idx]
+        config_idx = self.config_indices[idx]
+        config_name = self.config_names[config_idx]
+        config = self.G2_CONFIGS[config_name]
+        
+        # Get RDM and normalize
+        rdm = sample['rd_map']  # (H, W) in dB
+        rdm_norm = _rd_normalize(rdm)
+        
+        # Resize to target size if needed
+        if rdm_norm.shape != self.target_size:
+            rdm_tensor = torch.from_numpy(rdm_norm)[None, None, ...]
+            rdm_tensor = torch.nn.functional.interpolate(
+                rdm_tensor, size=self.target_size, mode='bilinear', align_corners=False
+            )
+            rdm_norm = rdm_tensor.squeeze().numpy()
+        
+        # Create target heatmap from CFAR detections
+        targets = sample['target_info']['targets']
+        r_axis = sample['r_axis']
+        v_axis = sample['v_axis']
+        
+        # Simple heatmap from targets
+        heatmap = np.zeros(self.target_size, dtype=np.float32)
+        for t in targets:
+            r_bin = int(t['range'] / r_axis[-1] * self.target_size[1])
+            v_bin = int((t['velocity'] - v_axis[0]) / (v_axis[-1] - v_axis[0]) * self.target_size[0])
+            r_bin = np.clip(r_bin, 0, self.target_size[1]-1)
+            v_bin = np.clip(v_bin, 0, self.target_size[0]-1)
+            
+            # Gaussian splat
+            yy, xx = np.mgrid[0:self.target_size[0], 0:self.target_size[1]]
+            g = np.exp(-((xx-r_bin)**2/(2*3**2) + (yy-v_bin)**2/(2*3**2)))
+            heatmap = np.maximum(heatmap, g.astype(np.float32))
+        
+        # Config embedding
+        from .models.generalized_radar import ConfigEncoder
+        config_tensor = ConfigEncoder.encode_config(config)
+        
+        result = {
+            'rdm': torch.from_numpy(rdm_norm)[None, ...],  # (1, H, W)
+            'heatmap': torch.from_numpy(heatmap)[None, ...],  # (1, H, W)
+            'config': config_tensor,
+            'config_idx': config_idx,
+            'config_name': config_name,
+        }
+        
+        # Include comm features if requested
+        if self.include_comm and 'comm_info' in sample:
+            comm = sample['comm_info']
+            result['ber'] = comm.get('ber', 0.0)
+            result['mod_order'] = config.get('mod_order', 16)
+            result['tx_symbols'] = torch.from_numpy(np.array(comm.get('tx_symbols', [])))
+            result['rx_symbols'] = torch.from_numpy(np.array(comm.get('rx_symbols', [])))
+        
+        return result
+
+
+def make_g2_loaders(config_names=None, samples_per_config=100, batch_size=8, 
+                    val_split=0.2, workers=0):
+    """Create train and validation loaders for G2 dataset.
+    
+    Args:
+        config_names: List of G2 config names
+        samples_per_config: Samples per config
+        batch_size: Batch size
+        val_split: Fraction for validation
+        workers: DataLoader workers
+    
+    Returns:
+        train_loader, val_loader
+    """
+    ds = G2DatasetWrapper(
+        config_names=config_names,
+        samples_per_config=samples_per_config,
+        target_size=(256, 256),
+        include_comm=True
+    )
+    
+    # Split into train/val
+    n_val = int(len(ds) * val_split)
+    n_train = len(ds) - n_val
+    train_ds, val_ds = torch.utils.data.random_split(ds, [n_train, n_val])
+    
+    train_loader = torch.utils.data.DataLoader(
+        train_ds, batch_size=batch_size, shuffle=True, num_workers=workers,
+        collate_fn=_g2_collate_fn
+    )
+    val_loader = torch.utils.data.DataLoader(
+        val_ds, batch_size=batch_size, shuffle=False, num_workers=workers,
+        collate_fn=_g2_collate_fn
+    )
+    
+    return train_loader, val_loader
+
+
+def _g2_collate_fn(batch):
+    """Custom collate function for G2 dataset."""
+    rdm = torch.stack([b['rdm'] for b in batch])
+    heatmap = torch.stack([b['heatmap'] for b in batch])
+    config = torch.stack([b['config'] for b in batch])
+    config_idx = torch.tensor([b['config_idx'] for b in batch])
+    
+    result = {
+        'rdm': rdm,
+        'heatmap': heatmap,
+        'config': config,
+        'config_idx': config_idx,
+    }
+    
+    if 'ber' in batch[0]:
+        result['ber'] = torch.tensor([b['ber'] for b in batch])
+        result['mod_order'] = torch.tensor([b['mod_order'] for b in batch])
+    
+    return result
