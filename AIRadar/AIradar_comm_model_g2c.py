@@ -93,20 +93,31 @@ class ConfigEncoder(nn.Module):
     
     def __init__(self, embed_dim=64):
         super().__init__()
-        # 8 input features
-        self.fc = nn.Sequential(
+        # Support both legacy 8-dim and new 5-dim config inputs
+        self.fc_legacy = nn.Sequential(
             nn.Linear(8, 32),
+            nn.ReLU(),
+            nn.Linear(32, embed_dim),
+            nn.ReLU()
+        )
+        self.fc_generalized = nn.Sequential(
+            nn.Linear(5, 32),
             nn.ReLU(),
             nn.Linear(32, embed_dim),
             nn.ReLU()
         )
         
     def forward(self, config_tensor):
-        return self.fc(config_tensor)
+        # Auto-detect input dimension
+        if config_tensor.dim() == 1:
+            config_tensor = config_tensor.unsqueeze(0)
+        if config_tensor.shape[-1] == 5:
+            return self.fc_generalized(config_tensor)
+        return self.fc_legacy(config_tensor)
     
     @staticmethod
     def encode_config(config: dict) -> torch.Tensor:
-        """Convert config dict to normalized tensor."""
+        """Legacy: Convert config dict to normalized tensor (8-dim)."""
         channel_id = ConfigEncoder.CHANNEL_MAP.get(config.get('channel_model', 'multipath'), 1)
         mode_id = ConfigEncoder.MODE_MAP.get(config.get('mode', 'TRADITIONAL'), 0)
         return torch.tensor([
@@ -118,6 +129,20 @@ class ConfigEncoder(nn.Module):
             channel_id / 3,
             mode_id,
             config.get('radar_T', 50e-6) * 1e4,
+        ], dtype=torch.float32)
+    
+    @staticmethod
+    def encode_config_generalized(config: dict) -> torch.Tensor:
+        """
+        Continuous physical parameter encoding for zero-shot generalization.
+        Uses only physical parameters without discrete IDs.
+        """
+        return torch.tensor([
+            config.get('fc', 10e9) / 100e9,        # Carrier Freq (normalized 0-100GHz)
+            config.get('radar_B', 500e6) / 2e9,    # Bandwidth (normalized 0-2GHz)
+            config.get('snr_db', 20) / 40,         # Estimated SNR (normalized ~0-1)
+            config.get('delay_spread', 1e-7) * 1e7, # Channel geometry (scaled)
+            np.log2(config.get('mod_order', 4)) / 6.0,  # Bits per symbol (0-1)
         ], dtype=torch.float32)
 
 
@@ -208,60 +233,531 @@ class GeneralizedRadarNet(nn.Module):
 
 
 # ----------------------------------------------------------------------
-# Generalized Communication Model
+# Complex-Valued Convolution Backbone (for I/Q processing)
 # ----------------------------------------------------------------------
-class GeneralizedCommNet(nn.Module):
-    """Generalized communication demapper with config conditioning."""
-    
-    def __init__(self, in_ch=2, base_ch=64, cond_dim=64, max_mod_order=64):
+class ComplexConvBlock(nn.Module):
+    """
+    Complex convolution that respects I/Q phase-amplitude coupling.
+    Mathematically: (A+Bi)*(C+Di) = (AC-BD) + (AD+BC)i
+    Uses GroupNorm instead of BatchNorm for stability in signal processing.
+    """
+    def __init__(self, in_ch, out_ch, kernel_size=3, stride=1, padding=1):
         super().__init__()
+        self.conv_re = nn.Conv2d(in_ch, out_ch, kernel_size, stride, padding)
+        self.conv_im = nn.Conv2d(in_ch, out_ch, kernel_size, stride, padding)
+        self.norm_re = nn.GroupNorm(min(8, out_ch), out_ch)
+        self.norm_im = nn.GroupNorm(min(8, out_ch), out_ch)
+        
+    def forward(self, x_re, x_im):
+        # Complex multiplication: (conv_re + conv_im*j) * (x_re + x_im*j)
+        # Real output = Re*x_re - Im*x_im
+        out_re = self.conv_re(x_re) - self.conv_im(x_im)
+        # Imaginary output = Re*x_im + Im*x_re
+        out_im = self.conv_re(x_im) + self.conv_im(x_re)
+        
+        out_re = F.relu(self.norm_re(out_re))
+        out_im = F.relu(self.norm_im(out_im))
+        return out_re, out_im
+
+
+class ComplexResBlock(nn.Module):
+    """Residual Complex Convolution Block with skip connection."""
+    def __init__(self, ch, kernel_size=3):
+        super().__init__()
+        self.conv1 = ComplexConvBlock(ch, ch, kernel_size, padding=kernel_size//2)
+        self.conv2_re = nn.Conv2d(ch, ch, kernel_size, padding=kernel_size//2)
+        self.conv2_im = nn.Conv2d(ch, ch, kernel_size, padding=kernel_size//2)
+        self.norm_re = nn.GroupNorm(min(8, ch), ch)
+        self.norm_im = nn.GroupNorm(min(8, ch), ch)
+        
+    def forward(self, x_re, x_im):
+        h_re, h_im = self.conv1(x_re, x_im)
+        h_re = self.norm_re(self.conv2_re(h_re))
+        h_im = self.norm_im(self.conv2_im(h_im))
+        return F.relu(x_re + h_re), F.relu(x_im + h_im)  # Residual skip
+
+
+class ResFiLMBlock(nn.Module):
+    """
+    FiLM conditioning with residual connection for gradient stability.
+    Uses GroupNorm instead of BatchNorm (signal processing best practice).
+    """
+    def __init__(self, ch, cond_dim):
+        super().__init__()
+        self.norm = nn.GroupNorm(min(8, ch), ch)
+        self.conv = nn.Conv2d(ch, ch, 3, padding=1)
+        self.film = FiLMLayer(ch, cond_dim)
+        
+    def forward(self, x, cond):
+        h = self.norm(x)
+        h = F.relu(self.conv(h))
+        h = self.film(h, cond)
+        return x + h  # Residual skip connection
+
+
+class SimpleBitDemapper(nn.Module):
+    """
+    Per-pixel MLP that maps I/Q + channel info to bit LLRs.
+    
+    Uses all 5 input channels: I, Q, H_mag, H_phase, SNR
+    This provides the demapper with channel state information needed
+    for soft demapping in noisy/fading conditions.
+    """
+    MAX_BITS = 6
+    
+    def __init__(self, hidden_dim=256, in_channels=5):
+        super().__init__()
+        self.in_channels = in_channels
+        
+        # Per-pixel MLP: 5 inputs -> 6 bit LLRs
+        # Deeper network with more capacity for noisy data
+        self.mlp = nn.Sequential(
+            nn.Linear(in_channels, hidden_dim),
+            nn.LeakyReLU(0.1),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LeakyReLU(0.1),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LeakyReLU(0.1),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.LeakyReLU(0.1),
+            nn.Linear(hidden_dim // 2, self.MAX_BITS),
+        )
+        
+        # Output scaling for better initial LLR range
+        self.output_scale = nn.Parameter(torch.ones(1) * 3.0)
+        
+        # Initialize final layer with larger weights for stronger initial outputs
+        nn.init.xavier_uniform_(self.mlp[-1].weight, gain=2.0)
+    
+    def forward(self, x, config_tensor=None, mod_order=None, config_id=None):
+        """
+        Args:
+            x: [B, C, H, W] where C is 5 (I, Q, H_mag, H_phase, snr)
+        Returns:
+            llr: [B, 6, H, W] bit LLRs
+        """
+        B, C, H, W = x.shape
+        
+        # Use all available channels (up to 5)
+        in_ch = min(C, self.in_channels)
+        features = x[:, :in_ch]  # [B, in_ch, H, W]
+        
+        # Reshape for per-pixel MLP: [B, H, W, in_ch]
+        features = features.permute(0, 2, 3, 1).contiguous()
+        
+        # Flatten spatial dims: [B*H*W, in_ch]
+        features_flat = features.view(-1, in_ch)
+        
+        # Pad if fewer channels than expected
+        if in_ch < self.in_channels:
+            padding = torch.zeros(features_flat.size(0), self.in_channels - in_ch, 
+                                  device=features_flat.device)
+            features_flat = torch.cat([features_flat, padding], dim=1)
+        
+        # MLP forward: [B*H*W, 6]
+        llr_flat = self.mlp(features_flat)
+        
+        # Reshape back: [B, H, W, 6] -> [B, 6, H, W]
+        llr = llr_flat.view(B, H, W, self.MAX_BITS).permute(0, 3, 1, 2)
+        
+        # Scale for reasonable LLR range
+        return llr * self.output_scale
+    
+    def get_symbol_logits(self, llr_logits, mod_order):
+        """Convert LLR to symbol logits for backward compatibility."""
+        active_bits = int(np.log2(mod_order))
+        active_llr = llr_logits[:, :active_bits]  # [B, bits, H, W]
+        
+        # Convert bit probabilities to symbol logits
+        bit_probs = torch.sigmoid(active_llr)  # [B, bits, H, W]
+        
+        # Enumerate all possible symbols
+        B, _, H, W = active_llr.shape
+        n_symbols = mod_order
+        
+        symbol_logits = torch.zeros(B, n_symbols, H, W, device=active_llr.device)
+        for sym in range(n_symbols):
+            log_prob = 0
+            for b in range(active_bits):
+                bit_val = (sym >> b) & 1
+                if bit_val == 1:
+                    log_prob = log_prob + torch.log(bit_probs[:, b] + 1e-8)
+                else:
+                    log_prob = log_prob + torch.log(1 - bit_probs[:, b] + 1e-8)
+            symbol_logits[:, sym] = log_prob
+        
+        return symbol_logits
+
+
+# ----------------------------------------------------------------------
+# Universal Communication Demapper with Bit-Wise LLR Output
+# ----------------------------------------------------------------------
+class UniversalCommNet(nn.Module):
+    """
+    Universal demapper using complex convolutions and bit-wise LLR output.
+    
+    Architecture:
+        Input [B, 2, H, W] (I/Q) → Complex Backbone → Features
+                                → FiLM Config Adapter → Adapted Features
+                                → Universal LLR Head → [B, max_bits, H, W]
+    
+    Key improvements over AdaptiveCommNet:
+        1. Complex convolutions respect I/Q phase-amplitude coupling
+        2. Single universal head instead of QAM-specific adapters
+        3. Bit-wise LLR output with masking for different mod orders
+        4. GroupNorm + Residual connections for training stability
+    """
+    MAX_BITS = 6  # log2(64) = 6 bits for 64-QAM max
+    
+    def __init__(self, in_ch=2, base_ch=64, cond_dim=64):
+        super().__init__()
+        self.base_ch = base_ch
+        self.cond_dim = cond_dim
+        self.config_encoder = ConfigEncoder(embed_dim=cond_dim)
+        
+        # ========== Complex-Valued Backbone ==========
+        # Input: 2 channels (I, Q) treated as complex signal
+        self.complex_conv1 = ComplexConvBlock(1, base_ch, 3, padding=1)
+        self.complex_conv2 = ComplexConvBlock(base_ch, base_ch, 3, padding=1)
+        self.complex_res = ComplexResBlock(base_ch)
+        self.complex_conv3 = ComplexConvBlock(base_ch, base_ch*2, 3, stride=2, padding=1)
+        self.complex_res2 = ComplexResBlock(base_ch*2)
+        
+        # Merge I/Q back to single representation
+        self.merge_conv = nn.Conv2d(base_ch*2 * 2, base_ch*2, 1)  # 2x for concat of re/im
+        self.merge_norm = nn.GroupNorm(8, base_ch*2)
+        
+        # ========== FiLM Residual Adapter ==========
+        self.adapter1 = ResFiLMBlock(base_ch*2, cond_dim)
+        self.adapter2 = ResFiLMBlock(base_ch*2, cond_dim)
+        
+        # ========== Channel Info Processing ==========
+        # Additional channels for H_mag, H_phase, snr (if provided)
+        self.has_channel_info = True
+        self.channel_encoder = nn.Sequential(
+            nn.Conv2d(3, base_ch, 3, padding=1),  # H_mag, H_phase, snr
+            nn.GroupNorm(8, base_ch),
+            nn.ReLU(),
+            nn.Conv2d(base_ch, base_ch*2, 3, stride=2, padding=1),
+            nn.GroupNorm(8, base_ch*2),
+            nn.ReLU(),
+        )
+        
+        # Fusion layer
+        self.fusion = nn.Conv2d(base_ch*2 * 2, base_ch*2, 1)
+        self.fusion_norm = nn.GroupNorm(8, base_ch*2)
+        
+        # ========== Universal Bit-Wise LLR Head ==========
+        # Outputs 6 LLR values per symbol position (max 64-QAM)
+        self.llr_head = nn.Sequential(
+            nn.Conv2d(base_ch*2, base_ch, 3, padding=1),
+            nn.GroupNorm(8, base_ch),
+            nn.ReLU(),
+            nn.Conv2d(base_ch, base_ch, 3, padding=1),
+            nn.GroupNorm(8, base_ch),
+            nn.ReLU(),
+            nn.ConvTranspose2d(base_ch, base_ch, 2, stride=2),  # Upsample to match input
+            nn.GroupNorm(8, base_ch),
+            nn.ReLU(),
+            nn.Conv2d(base_ch, self.MAX_BITS, 1),  # Final: 6 LLR outputs
+        )
+        
+    def normalize_iq(self, x_re, x_im):
+        """Normalize I/Q to unit average power for consistent input scale."""
+        power = torch.sqrt(x_re**2 + x_im**2 + 1e-8)
+        avg_power = torch.mean(power, dim=(2, 3), keepdim=True)
+        return x_re / (avg_power + 1e-6), x_im / (avg_power + 1e-6)
+        
+    def forward(self, x, config_tensor, mod_order=None, config_id=None):
+        """
+        Args:
+            x: [B, C, H, W] where C can be:
+               - 2: (I, Q) only
+               - 5: (eq_real, eq_imag, H_mag, H_phase, snr) - legacy format
+            config_tensor: [B, cond_dim] or [B, 5] conditioning
+            mod_order: modulation order (4, 16, or 64) - determines active bits
+            config_id: ignored (for backward compatibility)
+        Returns:
+            llr_logits: [B, max_bits, H, W] - bit-wise LLR values
+        """
+        B, C, H, W = x.shape
+        
+        # Handle NaN/Inf from edge cases
+        if torch.isnan(x).any() or torch.isinf(x).any():
+            x = torch.nan_to_num(x, nan=0.0, posinf=1.0, neginf=-1.0)
+        
+        # Split into I/Q and optional channel info
+        if C >= 5:
+            # Legacy format: (eq_real, eq_imag, H_mag, H_phase, snr)
+            x_re = x[:, 0:1]  # [B, 1, H, W]
+            x_im = x[:, 1:2]  # [B, 1, H, W]
+            channel_info = x[:, 2:5]  # [B, 3, H, W]
+        else:
+            # New format: just I/Q
+            x_re = x[:, 0:1]
+            x_im = x[:, 1:2]
+            channel_info = None
+        
+        # ========== I/Q Power Normalization ==========
+        # Critical: normalize to unit power for consistent input to complex backbone
+        x_re, x_im = self.normalize_iq(x_re, x_im)
+        
+        # Config encoding
+        cond = self.config_encoder(config_tensor)
+        
+        # ========== Complex Backbone ==========
+        h_re, h_im = self.complex_conv1(x_re, x_im)
+        h_re, h_im = self.complex_conv2(h_re, h_im)
+        h_re, h_im = self.complex_res(h_re, h_im)
+        h_re, h_im = self.complex_conv3(h_re, h_im)
+        h_re, h_im = self.complex_res2(h_re, h_im)
+        
+        # Merge complex to real representation
+        h = torch.cat([h_re, h_im], dim=1)  # [B, base_ch*4, H/2, W/2]
+        h = F.relu(self.merge_norm(self.merge_conv(h)))  # [B, base_ch*2, H/2, W/2]
+        
+        # ========== Fuse Channel Info ==========
+        if channel_info is not None and self.has_channel_info:
+            ch_feat = self.channel_encoder(channel_info)  # [B, base_ch*2, H/2, W/2]
+            h = torch.cat([h, ch_feat], dim=1)
+            h = F.relu(self.fusion_norm(self.fusion(h)))
+        
+        # ========== FiLM Adaptation ==========
+        h = self.adapter1(h, cond)
+        h = self.adapter2(h, cond)
+        
+        # ========== LLR Output ==========
+        llr_logits = self.llr_head(h)  # [B, 6, H, W]
+        
+        # NOTE: Do NOT mask here - let the loss function handle active bits
+        # This ensures gradients flow through all bits during training
+        return llr_logits
+    
+    def get_symbol_logits(self, llr_logits, mod_order):
+        """
+        Convert bit-wise LLRs to symbol logits for backward compatibility.
+        This creates M-ary symbol probabilities from binary bit likelihoods.
+        
+        Args:
+            llr_logits: [B, max_bits, H, W]
+            mod_order: M (4, 16, 64)
+        Returns:
+            symbol_logits: [B, mod_order, H, W]
+        """
+        B, _, H, W = llr_logits.shape
+        active_bits = int(np.log2(mod_order))
+        
+        # Get active LLRs
+        active_llr = llr_logits[:, :active_bits]  # [B, k, H, W]
+        
+        # Convert LLR to bit probabilities: p(b=1) = sigmoid(llr)
+        bit_probs = torch.sigmoid(active_llr)  # [B, k, H, W]
+        
+        # Build symbol probabilities (product of bit probs matching Gray code)
+        # For each symbol s, compute prod_i p(b_i = s_i) where s_i is i-th bit of s
+        symbol_logits = torch.zeros(B, mod_order, H, W, device=llr_logits.device)
+        
+        for s in range(mod_order):
+            log_prob = torch.zeros(B, H, W, device=llr_logits.device)
+            for i in range(active_bits):
+                bit_val = (s >> i) & 1
+                if bit_val == 1:
+                    log_prob += torch.log(bit_probs[:, i] + 1e-8)
+                else:
+                    log_prob += torch.log(1 - bit_probs[:, i] + 1e-8)
+            symbol_logits[:, s] = log_prob
+        
+        return symbol_logits
+
+
+# ----------------------------------------------------------------------
+# Adaptive Communication Demapper with QAM-Specific Adapters (LEGACY)
+# ----------------------------------------------------------------------
+class AdaptiveCommNet(nn.Module):
+    """CNN backbone with QAM-specific adapter heads.
+    
+    Architecture:
+        Input [B, 4, H, W] → ZF Pre-Eq → [B, 6, H, W]
+                          → Shared Backbone → Features [B, base_ch*2, H, W]
+                          → QAM Adapter (selected by mod_order) → Logits
+    
+    Each adapter is a small 1x1 conv head that specializes in its QAM order's
+    decision boundaries. The backbone learns general channel-aware features,
+    while adapters learn QAM-specific constellation geometry.
+    
+    Training strategy:
+        1. Train backbone + all adapters jointly
+        2. Optionally freeze backbone, fine-tune specific adapter
+    """
+    
+    SUPPORTED_MOD_ORDERS = [4, 16, 64]  # QPSK, 16-QAM, 64-QAM
+    
+    def __init__(self, in_ch=4, base_ch=64, cond_dim=64, max_mod_order=64):
+        super().__init__()
+        self.base_ch = base_ch
         self.max_mod_order = max_mod_order
         self.config_encoder = ConfigEncoder(embed_dim=cond_dim)
         
-        # CNN backbone
-        self.conv1 = nn.Conv2d(in_ch, base_ch, 3, padding=1)
+        # ========== Shared Backbone ==========
+        # Input: 5 channels (eq_real, eq_imag, H_mag, H_phase, snr)
+        # ZF equalization is done in dataset with constellation-aware normalization
+        actual_in_ch = 5
+        
+        self.conv1 = nn.Conv2d(actual_in_ch, base_ch, 3, padding=1)
+        self.bn1 = nn.BatchNorm2d(base_ch)
         self.film1 = FiLMLayer(base_ch, cond_dim)
         
         self.conv2 = nn.Conv2d(base_ch, base_ch*2, 3, padding=1)
+        self.bn2 = nn.BatchNorm2d(base_ch*2)
         self.film2 = FiLMLayer(base_ch*2, cond_dim)
         
         self.conv3 = nn.Conv2d(base_ch*2, base_ch*2, 3, padding=1)
+        self.bn3 = nn.BatchNorm2d(base_ch*2)
         self.film3 = FiLMLayer(base_ch*2, cond_dim)
         
-        self.out_conv = nn.Conv2d(base_ch*2, max_mod_order, 1)
+        self.conv4 = nn.Conv2d(base_ch*2, base_ch*2, 3, padding=1)
+        self.bn4 = nn.BatchNorm2d(base_ch*2)
         
-    def forward(self, x, config_tensor, mod_order=None):
+        # ========== Per-QAM Adapter Heads ==========
+        # Each adapter is a small network specialized for its modulation order
+        self.adapters = nn.ModuleDict()
+        for mod in self.SUPPORTED_MOD_ORDERS:
+            self.adapters[str(mod)] = self._build_adapter(base_ch*2, mod)
+        
+        # Fallback adapter for unsupported mod_orders (uses max)
+        self.fallback_adapter = nn.Conv2d(base_ch*2, max_mod_order, 1)
+        
+    def _build_adapter(self, in_ch, out_ch):
+        """Build adapter head with capacity proportional to modulation order."""
+        # Deeper adapter for higher-order modulation (16-QAM and above)
+        if out_ch >= 16:
+            return nn.Sequential(
+                nn.Conv2d(in_ch, in_ch, 3, padding=1),
+                nn.BatchNorm2d(in_ch),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(in_ch, in_ch, 3, padding=1),  # Extra layer for 16-QAM+
+                nn.BatchNorm2d(in_ch),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(in_ch, out_ch, 1),  # 1x1 to output logits
+            )
+        else:
+            return nn.Sequential(
+                nn.Conv2d(in_ch, in_ch, 3, padding=1),
+                nn.BatchNorm2d(in_ch),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(in_ch, out_ch, 1),
+            )
+    
+    def freeze_backbone(self):
+        """Freeze backbone for adapter-only fine-tuning."""
+        for name, param in self.named_parameters():
+            if 'adapter' not in name and 'fallback' not in name:
+                param.requires_grad = False
+        print("[AdaptiveCommNet] Backbone frozen, only adapters trainable")
+    
+    def unfreeze_backbone(self):
+        """Unfreeze backbone for full training."""
+        for param in self.parameters():
+            param.requires_grad = True
+        print("[AdaptiveCommNet] All parameters trainable")
+    
+    def forward_backbone(self, x, config_tensor):
+        """Forward through shared backbone.
+        
+        Args:
+            x: [B, 5, H, W] - (eq_real, eq_imag, H_mag, H_phase, snr)
+               Already ZF-equalized and constellation-normalized from dataset
+        """
+        # Input validation - handle NaN/Inf from edge cases
+        if torch.isnan(x).any() or torch.isinf(x).any():
+            x = torch.nan_to_num(x, nan=0.0, posinf=1.0, neginf=-1.0)
+        
         cond = self.config_encoder(config_tensor)
         
-        h = F.relu(self.film1(self.conv1(x), cond))
-        h = F.relu(self.film2(self.conv2(h), cond))
-        h = F.relu(self.film3(self.conv3(h), cond))
+        h = F.relu(self.film1(self.bn1(self.conv1(x)), cond))
+        h = F.relu(self.film2(self.bn2(self.conv2(h)), cond))
+        h = F.relu(self.film3(self.bn3(self.conv3(h)), cond))
+        h = F.relu(self.bn4(self.conv4(h)))
         
-        logits = self.out_conv(h)
+        return h
+    
+    def forward(self, x, config_tensor, mod_order=None, config_id=None):
+        """
+        Args:
+            x: [B, 5, H, W] - (eq_real, eq_imag, H_mag, H_phase, snr)
+            config_tensor: [B, cond_dim] conditioning
+            mod_order: modulation order (4, 16, or 64) - selects adapter
+            config_id: ignored
+        Returns:
+            logits: [B, mod_order, H, W]
+        """
+        # Backbone feature extraction
+        features = self.forward_backbone(x, config_tensor)
         
-        # Mask to actual mod_order if specified
-        if mod_order is not None and mod_order < self.max_mod_order:
-            logits = logits[:, :mod_order, :, :]
+        # Select appropriate adapter based on mod_order
+        mod_key = str(mod_order) if mod_order in self.SUPPORTED_MOD_ORDERS else None
+        
+        if mod_key and mod_key in self.adapters:
+            logits = self.adapters[mod_key](features)
+        else:
+            # Fallback for unsupported mod_orders
+            logits = self.fallback_adapter(features)
+            if mod_order is not None and mod_order < self.max_mod_order:
+                logits = logits[:, :mod_order, :, :]
         
         return logits
+
+
+# Backward compatibility aliases
+GeneralizedCommNet = AdaptiveCommNet
+ChannelAwareCommNet = AdaptiveCommNet
 
 
 # ----------------------------------------------------------------------
 # Joint Model
 # ----------------------------------------------------------------------
 class JointRadarCommNet_G2(nn.Module):
-    """Joint Radar+Comm network with G2 features."""
+    """Joint Radar+Comm network with G2 features.
     
-    def __init__(self, base_ch=48, cond_dim=64, max_mod_order=64):
+    Supports multiple comm architectures:
+      - use_universal=True: Complex convolutions + LLR output
+      - use_simple=True: Simple per-pixel MLP demapper (recommended)
+      - Both False: Legacy QAM-specific adapters
+    """
+    
+    def __init__(self, base_ch=48, cond_dim=64, max_mod_order=64, 
+                 use_universal=False, use_simple=False):
         super().__init__()
+        self.use_universal = use_universal
+        self.use_simple = use_simple
         self.radar_net = GeneralizedRadarNet(base_ch=base_ch, cond_dim=cond_dim)
-        self.comm_net = GeneralizedCommNet(base_ch=base_ch, cond_dim=cond_dim, 
-                                           max_mod_order=max_mod_order)
         
-    def forward(self, radar_input, comm_input, config_tensor, mod_order=None):
+        if use_simple:
+            # Simple per-pixel MLP demapper (best for QAM)
+            self.comm_net = SimpleBitDemapper(hidden_dim=256)
+        elif use_universal:
+            # New architecture: complex convolutions + LLR output
+            self.comm_net = UniversalCommNet(base_ch=base_ch, cond_dim=cond_dim)
+        else:
+            # Legacy architecture: QAM-specific adapters
+            self.comm_net = AdaptiveCommNet(base_ch=base_ch, cond_dim=cond_dim, 
+                                            max_mod_order=max_mod_order)
+        
+    def forward(self, radar_input, comm_input, config_tensor, mod_order=None, config_id=None):
         radar_logits = self.radar_net(radar_input, config_tensor)
-        comm_logits = self.comm_net(comm_input, config_tensor, mod_order)
+        comm_logits = self.comm_net(comm_input, config_tensor, mod_order, config_id)
         return radar_logits, comm_logits
+    
+    def get_symbol_logits(self, llr_logits, mod_order):
+        """Convert LLR to symbol logits (only valid when use_universal or use_simple)."""
+        if self.use_universal or self.use_simple:
+            return self.comm_net.get_symbol_logits(llr_logits, mod_order)
+        return llr_logits  # Already symbol logits
+
+
+# Alias for new architecture
+JointRadarCommNet_G2_Universal = lambda **kw: JointRadarCommNet_G2(use_universal=True, **kw)
+JointRadarCommNet_G2_Simple = lambda **kw: JointRadarCommNet_G2(use_simple=True, **kw)
 
 
 # ----------------------------------------------------------------------
@@ -274,19 +770,23 @@ class G2DeepDataset(Dataset):
     
     def __init__(self, config_name: str, num_samples: int, 
                  save_root: str, split: str = 'train',
-                 target_size=(512, 512), radar_sigma=3.0):
+                 target_size=(512, 512), radar_sigma=3.0,
+                 enable_rf_impairments=True):
         super().__init__()
         self.config_name = config_name
         self.config = RADAR_COMM_CONFIGS_G2[config_name]
         self.target_size = target_size
         self.radar_sigma = radar_sigma
         self.config_id = CONFIG_ID_MAP[config_name]
+        self.enable_rf_impairments = enable_rf_impairments
         
+        # Cache file name includes RF impairments flag to avoid mixing data
+        cache_suffix = '_rf' if enable_rf_impairments else ''
         save_path = os.path.join(save_root, split, config_name)
         os.makedirs(save_path, exist_ok=True)
         
         # Check for cached data
-        cache_file = os.path.join(save_path, f'cache_{num_samples}.pkl')
+        cache_file = os.path.join(save_path, f'cache_{num_samples}{cache_suffix}.pkl')
         
         if os.path.exists(cache_file):
             # Load from cache
@@ -302,7 +802,7 @@ class G2DeepDataset(Dataset):
             })()
         else:
             # Generate new data
-            print(f"[Generate] Creating {config_name}/{split} ({num_samples} samples)")
+            print(f"[Generate] Creating {config_name}/{split} ({num_samples} samples, RF={enable_rf_impairments})")
             self.g2_ds = AIRadar_Comm_Dataset_G2(
                 config_name=config_name,
                 num_samples=num_samples,
@@ -310,6 +810,7 @@ class G2DeepDataset(Dataset):
                 drawfig=False,
                 enable_clutter=True,
                 enable_imperfect_csi=True,
+                enable_rf_impairments=enable_rf_impairments,
             )
             
             # Save to cache
@@ -384,14 +885,15 @@ class G2DeepDataset(Dataset):
         comm_info = sample['comm_info']
         mod_order = self.config.get('mod_order', 16)
         
-        # Get symbols
+        # Get symbols and channel estimate
         tx_symbols = np.array(comm_info.get('tx_symbols', []), dtype=np.complex64)
         rx_symbols = np.array(comm_info.get('rx_symbols', []), dtype=np.complex64)
+        channel_est = np.array(comm_info.get('channel_est', None))
         
         if len(rx_symbols) == 0:
-            # Fallback: create dummy comm data
+            # Fallback: create dummy comm data (4 channels for ChannelAwareCommNet)
             H, W = 8, 256
-            comm_input = torch.zeros(2, H, W, dtype=torch.float32)
+            comm_input = torch.zeros(4, H, W, dtype=torch.float32)
             comm_target = torch.zeros(H, W, dtype=torch.long)
         else:
             # Reshape to grid
@@ -407,8 +909,52 @@ class G2DeepDataset(Dataset):
                 n_syms = total // fft_size
                 rx_grid = rx_symbols[:n_syms * fft_size].reshape(n_syms, fft_size)
             
+            # Build channel estimate grid (H_est is per subcarrier, broadcast to all symbols)
+            if channel_est is not None and len(channel_est) > 0:
+                # Resize H_est to match fft_size if needed
+                if len(channel_est) != fft_size:
+                    from scipy.ndimage import zoom
+                    H_est_resized = zoom(channel_est.real, fft_size/len(channel_est)) + \
+                                   1j * zoom(channel_est.imag, fft_size/len(channel_est))
+                else:
+                    H_est_resized = channel_est
+                # Broadcast to all OFDM symbols
+                H_grid = np.tile(H_est_resized[None, :], (n_syms, 1))
+            else:
+                # Fallback: assume channel = 1 (no distortion)
+                H_grid = np.ones_like(rx_grid)
+            
+            # CONSTELLATION-AWARE NORMALIZATION
+            # Perform ZF equalization here to preserve geometry
+            H_safe = np.where(np.abs(H_grid) > 1e-6, H_grid, 1e-6 + 0j)
+            eq_symbols = rx_grid / H_safe
+            
+            # Scale by constellation normalization factor so symbols ~[-1, 1]
+            if mod_order == 4:
+                scale_factor = np.sqrt(2)   # QPSK
+            elif mod_order == 16:
+                scale_factor = np.sqrt(10)  # 16-QAM
+            else:
+                scale_factor = np.sqrt(42)  # 64-QAM
+            
+            eq_real = eq_symbols.real / scale_factor
+            eq_imag = eq_symbols.imag / scale_factor
+            
+            # Clip to prevent outliers from deep fades
+            eq_real = np.clip(eq_real, -3, 3)
+            eq_imag = np.clip(eq_imag, -3, 3)
+            
+            # Normalize channel magnitude info
+            H_mag = np.abs(H_grid) / (np.abs(H_grid).max() + 1e-6)
+            H_phase = np.angle(H_grid) / np.pi  # Normalize to [-1, 1]
+            
+            # Add SNR as channel for adaptive decision boundaries
+            snr_normalized = snr_db / 35.0  # Normalize to ~[0, 1]
+            snr_channel = np.full_like(eq_real, snr_normalized)
+            
+            # 5-channel input: (eq_real, eq_imag, H_mag, H_phase, snr)
             comm_input = torch.tensor(
-                np.stack([rx_grid.real, rx_grid.imag], axis=0),
+                np.stack([eq_real, eq_imag, H_mag, H_phase, snr_channel], axis=0),
                 dtype=torch.float32
             ).contiguous()
             
@@ -504,16 +1050,116 @@ def compute_losses(radar_logits, radar_target, comm_logits, comm_target,
     return total_loss, radar_loss, comm_loss
 
 
+def symbol_to_bits(symbols, mod_order):
+    """Convert symbol indices to bit representation.
+    
+    Args:
+        symbols: [B, H, W] symbol indices (0 to mod_order-1)
+        mod_order: Modulation order (4, 16, 64)
+    Returns:
+        bits: [B, num_bits, H, W] binary representation
+    """
+    num_bits = int(np.log2(mod_order))
+    B, H, W = symbols.shape
+    bits = torch.zeros(B, num_bits, H, W, device=symbols.device, dtype=torch.float32)
+    
+    for i in range(num_bits):
+        bits[:, i] = ((symbols >> i) & 1).float()
+    
+    return bits
+
+
+class MaskedBitLoss(nn.Module):
+    """Masked bit-wise BCE loss that only considers active bits for current mod_order."""
+    
+    def __init__(self):
+        super().__init__()
+        self.bce = nn.BCEWithLogitsLoss(reduction='none')
+    
+    def forward(self, logits, symbol_targets, mod_order):
+        """
+        Args:
+            logits: [B, max_bits, H, W] from UniversalCommNet (6 channels)
+            symbol_targets: [B, H, W] ground truth symbol indices
+            mod_order: Current modulation order (4, 16, 64)
+        Returns:
+            loss: Scalar, mean BCE over active bits only
+        """
+        active_bits = int(np.log2(mod_order))
+        
+        # Convert symbols to bits: [B, active_bits, H, W]
+        bit_targets = symbol_to_bits(symbol_targets, mod_order)
+        
+        # Slice only the bits relevant to current mod_order
+        relevant_logits = logits[:, :active_bits, :, :]
+        
+        # Compute bit-wise BCE
+        loss = self.bce(relevant_logits, bit_targets)
+        
+        return loss.mean()
+
+
+def compute_llr_loss(llr_logits, comm_target, mod_order, lambda_comm=1.0):
+    """Compute LLR-based communication loss with masked bits.
+    
+    Args:
+        llr_logits: [B, max_bits, H, W] LLR outputs from UniversalCommNet
+        comm_target: [B, H, W] symbol indices
+        mod_order: Modulation order (4, 16, 64)
+        lambda_comm: Weight for comm loss
+    Returns:
+        comm_loss: Bit-wise BCE loss on active bits only
+    """
+    # Convert symbol targets to bit targets
+    bit_targets = symbol_to_bits(comm_target, mod_order)  # [B, num_bits, H, W]
+    
+    # Get active bits only - critical for proper gradient flow
+    active_bits = int(np.log2(mod_order))
+    active_llr = llr_logits[:, :active_bits]  # [B, num_bits, H, W]
+    
+    # Binary cross-entropy on active bits only
+    comm_loss = F.binary_cross_entropy_with_logits(active_llr, bit_targets)
+    
+    return lambda_comm * comm_loss
+
+
+def compute_losses_llr(radar_logits, radar_target, llr_logits, comm_target,
+                       radar_pos_weight=5.0, lambda_comm=1.0, mod_order=None):
+    """Compute joint losses with LLR-based communication loss.
+    
+    Args:
+        radar_logits: [B, 1, H, W] radar detection logits
+        radar_target: [B, 1, H, W] radar heatmap targets
+        llr_logits: [B, max_bits, H, W] LLR outputs
+        comm_target: [B, H, W] symbol indices
+        radar_pos_weight: Positive class weight for radar
+        lambda_comm: Weight for comm loss
+        mod_order: Modulation order (4, 16, 64)
+    """
+    # Radar loss
+    pos_weight = torch.tensor([radar_pos_weight], device=radar_logits.device)
+    bce = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    radar_loss = bce(radar_logits, radar_target)
+    
+    # Communication LLR loss (uses only active bits)
+    comm_loss = compute_llr_loss(llr_logits, comm_target, mod_order, lambda_comm=1.0)
+    
+    total_loss = radar_loss + lambda_comm * comm_loss
+    return total_loss, radar_loss, comm_loss
+
+
 # ----------------------------------------------------------------------
 # Training Loop
 # ----------------------------------------------------------------------
 def train_one_epoch(model, train_loaders, optimizer, device, lambda_comm=1.0):
     model.train()
     total_loss = total_radar = total_comm = 0.0
-    total_ser = 0.0
+    total_ber = 0.0  # Track BER instead of SER for better comparison
     n_samples = 0
     
-    per_cfg_stats = {cfg: {'loss': 0, 'ser': 0, 'n': 0} for cfg in train_loaders}
+    per_cfg_stats = {cfg: {'loss': 0, 'ber': 0, 'n': 0} for cfg in train_loaders}
+    # Use LLR mode for both universal and simple architectures
+    use_llr = getattr(model, 'use_universal', False) or getattr(model, 'use_simple', False)
     
     for cfg_name, loader in train_loaders.items():
         for radar_in, radar_tgt, comm_in, comm_tgt, meta in loader:
@@ -522,34 +1168,50 @@ def train_one_epoch(model, train_loaders, optimizer, device, lambda_comm=1.0):
             comm_in = comm_in.to(device)
             comm_tgt = comm_tgt.to(device)
             
-            # Get config tensor
+            # Get config tensor and config_id
             config_tensors = torch.stack([m for m in meta['config_tensor']]).to(device)
             mod_order = int(meta['mod_order'][0])
+            config_id = int(meta['config_id'][0])
             
             optimizer.zero_grad()
-            radar_logits, comm_logits = model(radar_in, comm_in, config_tensors, mod_order)
+            radar_logits, comm_logits = model(radar_in, comm_in, config_tensors, mod_order, config_id)
             
-            loss, l_radar, l_comm = compute_losses(
-                radar_logits, radar_tgt, comm_logits, comm_tgt,
-                lambda_comm=lambda_comm, mod_order=mod_order
-            )
+            if use_llr:
+                # LLR-based loss for UniversalCommNet
+                loss, l_radar, l_comm = compute_losses_llr(
+                    radar_logits, radar_tgt, comm_logits, comm_tgt,
+                    lambda_comm=lambda_comm, mod_order=mod_order
+                )
+                # Convert LLR to symbol predictions for metrics
+                symbol_logits = model.get_symbol_logits(comm_logits, mod_order)
+                pred = symbol_logits.argmax(dim=1)
+            else:
+                # Symbol-based loss for AdaptiveCommNet (legacy)
+                loss, l_radar, l_comm = compute_losses(
+                    radar_logits, radar_tgt, comm_logits, comm_tgt,
+                    lambda_comm=lambda_comm, mod_order=mod_order
+                )
+                pred = comm_logits[:, :mod_order].argmax(dim=1)
             
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             
+            # Calculate BER (bit errors, not symbol errors)
             bsz = radar_in.size(0)
-            pred = comm_logits[:, :mod_order].argmax(dim=1)
-            ser = (pred != comm_tgt).float().mean().item()
+            active_bits = int(np.log2(mod_order))
+            pred_bits = symbol_to_bits(pred, mod_order)
+            gt_bits = symbol_to_bits(comm_tgt, mod_order)
+            ber = (pred_bits != gt_bits).float().mean().item()
             
             total_loss += loss.item() * bsz
             total_radar += l_radar.item() * bsz
             total_comm += l_comm.item() * bsz
-            total_ser += ser * bsz
+            total_ber += ber * bsz
             n_samples += bsz
             
             per_cfg_stats[cfg_name]['loss'] += loss.item() * bsz
-            per_cfg_stats[cfg_name]['ser'] += ser * bsz
+            per_cfg_stats[cfg_name]['ber'] += ber * bsz
             per_cfg_stats[cfg_name]['n'] += bsz
     
     if n_samples == 0:
@@ -559,18 +1221,19 @@ def train_one_epoch(model, train_loaders, optimizer, device, lambda_comm=1.0):
     for cfg in per_cfg_stats:
         if per_cfg_stats[cfg]['n'] > 0:
             per_cfg_stats[cfg]['loss'] /= per_cfg_stats[cfg]['n']
-            per_cfg_stats[cfg]['ser'] /= per_cfg_stats[cfg]['n']
+            per_cfg_stats[cfg]['ber'] /= per_cfg_stats[cfg]['n']
     
     return (total_loss / n_samples, total_radar / n_samples,
-            total_comm / n_samples, total_ser / n_samples, per_cfg_stats)
+            total_comm / n_samples, total_ber / n_samples, per_cfg_stats)
 
 
 @torch.no_grad()
 def evaluate_epoch(model, val_loaders, device, lambda_comm=1.0):
     model.eval()
     total_loss = total_radar = total_comm = 0.0
-    total_ser = 0.0
+    total_ber = 0.0
     n_samples = 0
+    use_llr = getattr(model, 'use_universal', False) or getattr(model, 'use_simple', False)
     
     for cfg_name, loader in val_loaders.items():
         for radar_in, radar_tgt, comm_in, comm_tgt, meta in loader:
@@ -581,28 +1244,40 @@ def evaluate_epoch(model, val_loaders, device, lambda_comm=1.0):
             
             config_tensors = torch.stack([m for m in meta['config_tensor']]).to(device)
             mod_order = int(meta['mod_order'][0])
+            config_id = int(meta['config_id'][0])
             
-            radar_logits, comm_logits = model(radar_in, comm_in, config_tensors, mod_order)
-            loss, l_radar, l_comm = compute_losses(
-                radar_logits, radar_tgt, comm_logits, comm_tgt,
-                lambda_comm=lambda_comm, mod_order=mod_order
-            )
+            radar_logits, comm_logits = model(radar_in, comm_in, config_tensors, mod_order, config_id)
+            
+            if use_llr:
+                loss, l_radar, l_comm = compute_losses_llr(
+                    radar_logits, radar_tgt, comm_logits, comm_tgt,
+                    lambda_comm=lambda_comm, mod_order=mod_order
+                )
+                symbol_logits = model.get_symbol_logits(comm_logits, mod_order)
+                pred = symbol_logits.argmax(dim=1)
+            else:
+                loss, l_radar, l_comm = compute_losses(
+                    radar_logits, radar_tgt, comm_logits, comm_tgt,
+                    lambda_comm=lambda_comm, mod_order=mod_order
+                )
+                pred = comm_logits[:, :mod_order].argmax(dim=1)
             
             bsz = radar_in.size(0)
-            pred = comm_logits[:, :mod_order].argmax(dim=1)
-            ser = (pred != comm_tgt).float().mean().item()
+            pred_bits = symbol_to_bits(pred, mod_order)
+            gt_bits = symbol_to_bits(comm_tgt, mod_order)
+            ber = (pred_bits != gt_bits).float().mean().item()
             
             total_loss += loss.item() * bsz
             total_radar += l_radar.item() * bsz
             total_comm += l_comm.item() * bsz
-            total_ser += ser * bsz
+            total_ber += ber * bsz
             n_samples += bsz
     
     if n_samples == 0:
         return 0, 0, 0, 0
     
     return (total_loss / n_samples, total_radar / n_samples,
-            total_comm / n_samples, total_ser / n_samples)
+            total_comm / n_samples, total_ber / n_samples)
 
 
 # ----------------------------------------------------------------------
@@ -1093,10 +1768,12 @@ def evaluate_comm_by_snr(model, device, config_name='CN0566_TRADITIONAL',
     """Evaluate DL vs Traditional (MMSE) BER at different SNR levels."""
     os.makedirs(save_path, exist_ok=True)
     model.eval()
+    use_llr = getattr(model, 'use_universal', False) or getattr(model, 'use_simple', False)
     
     print(f"\n{'='*60}")
     print(f"Communication Evaluation: DL vs Traditional by SNR")
     print(f"Config: {config_name}, SNR range: {snr_list} dB")
+    print(f"Using {'LLR' if use_llr else 'Symbol'} mode")
     print(f"{'='*60}\n")
     
     results = {'snr': [], 'dl_ber': [], 'trad_ber': []}
@@ -1117,8 +1794,8 @@ def evaluate_comm_by_snr(model, device, config_name='CN0566_TRADITIONAL',
         deep_ds = G2DeepDataset(config_name, num_samples, save_path, 'test')
         deep_ds.g2_ds = ds
         
-        dl_errors = 0
-        dl_total = 0
+        dl_bit_errors = 0
+        dl_total_bits = 0
         trad_bers = []
         
         for idx in range(len(deep_ds)):
@@ -1130,14 +1807,22 @@ def evaluate_comm_by_snr(model, device, config_name='CN0566_TRADITIONAL',
             comm_in_b = comm_in.unsqueeze(0).to(device)
             
             _, comm_logits = model(radar_in_b, comm_in_b, config_tensor, mod_order)
-            pred = comm_logits[:, :mod_order].argmax(dim=1)[0].cpu().numpy()
-            gt = comm_tgt.numpy()
             
-            dl_errors += (pred != gt).sum()
-            dl_total += gt.size
+            # Handle both LLR and symbol outputs
+            if use_llr:
+                symbol_logits = model.get_symbol_logits(comm_logits, mod_order)
+                pred = symbol_logits.argmax(dim=1)[0].cpu()
+            else:
+                pred = comm_logits[:, :mod_order].argmax(dim=1)[0].cpu()
+            
+            # Compute BER (bit-level errors)
+            pred_bits = symbol_to_bits(pred.unsqueeze(0), mod_order)[0]
+            gt_bits = symbol_to_bits(comm_tgt.unsqueeze(0), mod_order)[0]
+            dl_bit_errors += (pred_bits != gt_bits).sum().item()
+            dl_total_bits += gt_bits.numel()
             trad_bers.append(meta['ber'])
         
-        dl_ber = dl_errors / dl_total if dl_total > 0 else 0
+        dl_ber = dl_bit_errors / dl_total_bits if dl_total_bits > 0 else 0
         trad_ber = np.mean(trad_bers)
         
         results['snr'].append(snr_db)
@@ -1305,9 +1990,11 @@ def evaluate_ber_by_qam_snr(model, device, snr_list=[5, 10, 15, 20, 25, 30],
     """Evaluate BER vs SNR for different QAM modulation orders (4-QAM, 16-QAM)."""
     os.makedirs(save_path, exist_ok=True)
     model.eval()
+    use_llr = getattr(model, 'use_universal', False) or getattr(model, 'use_simple', False)
     
     print(f"\n{'='*60}")
     print(f"Communication Evaluation: BER vs SNR by QAM Order")
+    print(f"Using {'LLR' if use_llr else 'Symbol'} mode")
     print(f"{'='*60}\n")
     
     # Configs with different QAM orders
@@ -1336,8 +2023,8 @@ def evaluate_ber_by_qam_snr(model, device, snr_list=[5, 10, 15, 20, 25, 30],
             deep_ds = G2DeepDataset(cfg_name, num_samples, save_path, 'test')
             deep_ds.g2_ds = ds
             
-            dl_errors = 0
-            dl_total = 0
+            dl_bit_errors = 0
+            dl_total_bits = 0
             trad_bers = []
             
             for idx in range(len(deep_ds)):
@@ -1348,14 +2035,20 @@ def evaluate_ber_by_qam_snr(model, device, snr_list=[5, 10, 15, 20, 25, 30],
                 comm_in_b = comm_in.unsqueeze(0).to(device)
                 
                 _, comm_logits = model(radar_in_b, comm_in_b, config_tensor, mod_order)
-                pred = comm_logits[:, :mod_order].argmax(dim=1)[0].cpu().numpy()
-                gt = comm_tgt.numpy()
                 
-                dl_errors += (pred != gt).sum()
-                dl_total += gt.size
+                if use_llr:
+                    symbol_logits = model.get_symbol_logits(comm_logits, mod_order)
+                    pred = symbol_logits.argmax(dim=1)[0].cpu()
+                else:
+                    pred = comm_logits[:, :mod_order].argmax(dim=1)[0].cpu()
+                
+                pred_bits = symbol_to_bits(pred.unsqueeze(0), mod_order)[0]
+                gt_bits = symbol_to_bits(comm_tgt.unsqueeze(0), mod_order)[0]
+                dl_bit_errors += (pred_bits != gt_bits).sum().item()
+                dl_total_bits += gt_bits.numel()
                 trad_bers.append(meta['ber'])
             
-            dl_ber = dl_errors / dl_total if dl_total > 0 else 0
+            dl_ber = dl_bit_errors / dl_total_bits if dl_total_bits > 0 else 0
             trad_ber = np.mean(trad_bers)
             
             results[qam_name]['snr'].append(snr_db)
@@ -1509,27 +2202,42 @@ Lower RCS = weaker targets = harder detection
 # ----------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', choices=['train', 'evaluate', 'test', 'eval_comprehensive'], default='train')
+    parser.add_argument('--mode', choices=['train', 'evaluate', 'test', 'eval_comprehensive', 'train_curriculum'], 
+                        default='train')
     parser.add_argument('--train_samples', type=int, default=200)
     parser.add_argument('--val_samples', type=int, default=50)
     parser.add_argument('--data_root', type=str, default='data/AIradar_comm_model_g2c')
     parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--epochs', type=int, default=15)
     parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--lambda_comm', type=float, default=2.0)
+    parser.add_argument('--lambda_comm', type=float, default=100.0,
+                        help='Comm loss weight (default 100 to balance radar gradients)')
     parser.add_argument('--device', type=str, 
                        default='cuda' if torch.cuda.is_available() else 'cpu')
     parser.add_argument('--ckpt', type=str, default=None)
     parser.add_argument('--out_dir', type=str, default='data/AIradar_comm_model_g2c')
+    parser.add_argument('--use_universal', action='store_true', default=False,
+                        help='Use UniversalCommNet with complex convolutions')
+    parser.add_argument('--use_simple', action='store_true', default=True,
+                        help='Use SimpleBitDemapper (per-pixel MLP, recommended)')
+    parser.add_argument('--curriculum', action='store_true', default=False,
+                        help='Use curriculum learning: 4-QAM first, then 16-QAM')
     args = parser.parse_args()
     
     device = torch.device(args.device)
     os.makedirs(args.out_dir, exist_ok=True)
     
     # Build model
-    model = JointRadarCommNet_G2(base_ch=48, cond_dim=64, max_mod_order=MAX_MOD_ORDER)
+    arch_name = 'SimpleBitDemapper (MLP)' if args.use_simple else \
+                ('UniversalCommNet (Conv)' if args.use_universal else 'AdaptiveCommNet (Legacy)')
+    model = JointRadarCommNet_G2(
+        base_ch=48, cond_dim=64, max_mod_order=MAX_MOD_ORDER,
+        use_universal=args.use_universal,
+        use_simple=args.use_simple
+    )
     model.to(device)
     print(f"Model params: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"Comm architecture: {arch_name}")
     
     if args.mode == 'test':
         # Quick test
@@ -1579,29 +2287,101 @@ def main():
     
     if args.mode == 'train':
         best_val_loss = float('inf')
+        use_llr = getattr(model, 'use_simple', False) or getattr(model, 'use_universal', False)
         
+        # ========== COMM-ONLY PRETRAINING ==========
+        # Train just comm network for a few epochs to establish basic demapping
+        if use_llr:
+            print("\n" + "="*60)
+            print("COMM-ONLY PRETRAINING (3 epochs)")
+            print("Freezing radar network to let comm network converge first")
+            print("="*60 + "\n")
+            
+            # Freeze radar network
+            for param in model.radar_net.parameters():
+                param.requires_grad = False
+            
+            comm_optimizer = torch.optim.Adam(model.comm_net.parameters(), lr=0.01)
+            
+            for pretrain_epoch in range(1, 4):
+                model.train()
+                pretrain_loss = 0.0
+                pretrain_n = 0
+                
+                for cfg_name, loader in train_loaders.items():
+                    for radar_in, radar_tgt, comm_in, comm_tgt, meta in loader:
+                        comm_in = comm_in.to(device)
+                        comm_tgt = comm_tgt.to(device)
+                        config_tensors = torch.stack([m for m in meta['config_tensor']]).to(device)
+                        mod_order = int(meta['mod_order'][0])
+                        
+                        comm_optimizer.zero_grad()
+                        llr = model.comm_net(comm_in, config_tensors, mod_order)
+                        
+                        # Comm loss only
+                        from AIradar_comm_model_g2c import compute_llr_loss
+                        loss = compute_llr_loss(llr, comm_tgt, mod_order, lambda_comm=1.0)
+                        loss.backward()
+                        comm_optimizer.step()
+                        
+                        pretrain_loss += loss.item() * comm_in.size(0)
+                        pretrain_n += comm_in.size(0)
+                
+                # Check pretrain BER
+                model.eval()
+                with torch.no_grad():
+                    sample_ber = 0.0
+                    sample_n = 0
+                    for cfg_name, loader in list(val_loaders.items())[:1]:
+                        for radar_in, radar_tgt, comm_in, comm_tgt, meta in loader:
+                            comm_in = comm_in.to(device)
+                            comm_tgt = comm_tgt.to(device) 
+                            config_tensors = torch.stack([m for m in meta['config_tensor']]).to(device)
+                            mod_order = int(meta['mod_order'][0])
+                            
+                            llr = model.comm_net(comm_in, config_tensors, mod_order)
+                            symbol_logits = model.comm_net.get_symbol_logits(llr, mod_order)
+                            pred = symbol_logits.argmax(dim=1)
+                            
+                            pred_bits = symbol_to_bits(pred, mod_order)
+                            gt_bits = symbol_to_bits(comm_tgt, mod_order)
+                            sample_ber += (pred_bits != gt_bits).float().mean().item() * comm_in.size(0)
+                            sample_n += comm_in.size(0)
+                            break
+                    sample_ber = sample_ber / sample_n if sample_n > 0 else 0
+                
+                print(f"[Pretrain {pretrain_epoch}] Loss={pretrain_loss/pretrain_n:.4f}, BER={sample_ber:.4e}")
+            
+            # Unfreeze radar network
+            for param in model.radar_net.parameters():
+                param.requires_grad = True
+            print("\n=== Comm pretraining complete, starting joint training ===\n")
+        
+        # ========== JOINT TRAINING ==========
         for epoch in range(1, args.epochs + 1):
-            tr_loss, tr_radar, tr_comm, tr_ser, tr_cfg = train_one_epoch(
+            tr_loss, tr_radar, tr_comm, tr_ber, tr_cfg = train_one_epoch(
                 model, train_loaders, optimizer, device, args.lambda_comm
             )
-            val_loss, val_radar, val_comm, val_ser = evaluate_epoch(
+            val_loss, val_radar, val_comm, val_ber = evaluate_epoch(
                 model, val_loaders, device, args.lambda_comm
             )
             scheduler.step()
             
             print(f"[Epoch {epoch:02d}] Train: Loss={tr_loss:.4f} Radar={tr_radar:.4f} "
-                  f"Comm={tr_comm:.4f} SER={tr_ser:.4e} | "
-                  f"Val: Loss={val_loss:.4f} SER={val_ser:.4e}")
+                  f"Comm={tr_comm:.4f} BER={tr_ber:.4e} | "
+                  f"Val: Loss={val_loss:.4f} BER={val_ber:.4e}")
             
             for cfg in tr_cfg:
                 if tr_cfg[cfg]['n'] > 0:
-                    print(f"  {cfg}: SER={tr_cfg[cfg]['ser']:.4e}")
+                    print(f"  {cfg}: BER={tr_cfg[cfg]['ber']:.4e}")
             
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 torch.save({
                     'model': model.state_dict(),
                     'configs': TRAIN_CONFIGS,
+                    'use_universal': args.use_universal,
+                    'use_simple': args.use_simple,
                 }, os.path.join(args.out_dir, 'best_model.pt'))
                 print(f"  -> Saved best model")
         
@@ -1645,6 +2425,95 @@ def main():
         
         eval_out = os.path.join(args.out_dir, 'comprehensive_eval')
         run_comprehensive_evaluation(model, device, eval_out, config_name=TRAIN_CONFIGS[0])
+    
+    elif args.mode == 'train_curriculum':
+        # Curriculum learning: 4-QAM first (high SNR), then 16-QAM (all SNR)
+        print("\n" + "="*60)
+        print("CURRICULUM TRAINING MODE")
+        print("Phase 1: 4-QAM only (simple decision boundaries)")
+        print("Phase 2: 16-QAM (finer boundaries)")
+        print("="*60 + "\n")
+        
+        # Phase 1: Train on 4-QAM config only (Automotive_77GHz_LongRange uses 4-QAM)
+        phase1_config = 'Automotive_77GHz_LongRange'
+        phase1_epochs = max(args.epochs // 3, 5)
+        
+        print(f"\n=== PHASE 1: {phase1_config} for {phase1_epochs} epochs ===")
+        train_ds_p1 = G2DeepDataset(phase1_config, args.train_samples, args.data_root, 'train')
+        val_ds_p1 = G2DeepDataset(phase1_config, args.val_samples, args.data_root, 'val')
+        
+        loader_p1 = {phase1_config: DataLoader(
+            train_ds_p1, batch_size=args.batch_size, shuffle=True, 
+            num_workers=0, collate_fn=g2_collate_fn
+        )}
+        val_loader_p1 = {phase1_config: DataLoader(
+            val_ds_p1, batch_size=args.batch_size, shuffle=False,
+            num_workers=0, collate_fn=g2_collate_fn
+        )}
+        
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+        
+        for epoch in range(1, phase1_epochs + 1):
+            tr_loss, tr_radar, tr_comm, tr_ber, _ = train_one_epoch(
+                model, loader_p1, optimizer, device, args.lambda_comm
+            )
+            val_loss, _, _, val_ber = evaluate_epoch(
+                model, val_loader_p1, device, args.lambda_comm
+            )
+            print(f"[P1 Epoch {epoch:02d}] Train BER={tr_ber:.4e} | Val BER={val_ber:.4e}")
+        
+        # Phase 2: Add 16-QAM config (CN0566_TRADITIONAL)
+        phase2_config = 'CN0566_TRADITIONAL'
+        phase2_epochs = args.epochs - phase1_epochs
+        
+        print(f"\n=== PHASE 2: Add {phase2_config} for {phase2_epochs} epochs ===")
+        train_ds_p2 = G2DeepDataset(phase2_config, args.train_samples, args.data_root, 'train')
+        val_ds_p2 = G2DeepDataset(phase2_config, args.val_samples, args.data_root, 'val')
+        
+        all_loaders = {
+            phase1_config: loader_p1[phase1_config],
+            phase2_config: DataLoader(
+                train_ds_p2, batch_size=args.batch_size, shuffle=True,
+                num_workers=0, collate_fn=g2_collate_fn
+            )
+        }
+        all_val_loaders = {
+            phase1_config: val_loader_p1[phase1_config],
+            phase2_config: DataLoader(
+                val_ds_p2, batch_size=args.batch_size, shuffle=False,
+                num_workers=0, collate_fn=g2_collate_fn
+            )
+        }
+        
+        # Lower learning rate for phase 2
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = args.lr * 0.3
+        
+        best_val_loss = float('inf')
+        for epoch in range(1, phase2_epochs + 1):
+            tr_loss, tr_radar, tr_comm, tr_ber, tr_cfg = train_one_epoch(
+                model, all_loaders, optimizer, device, args.lambda_comm
+            )
+            val_loss, _, _, val_ber = evaluate_epoch(
+                model, all_val_loaders, device, args.lambda_comm
+            )
+            print(f"[P2 Epoch {epoch:02d}] Train Loss={tr_loss:.4f} BER={tr_ber:.4e} | "
+                  f"Val BER={val_ber:.4e}")
+            
+            for cfg in tr_cfg:
+                if tr_cfg[cfg]['n'] > 0:
+                    print(f"  {cfg}: BER={tr_cfg[cfg]['ber']:.4e}")
+            
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                torch.save({
+                    'model': model.state_dict(),
+                    'configs': [phase1_config, phase2_config],
+                    'use_universal': args.use_universal,
+                }, os.path.join(args.out_dir, 'best_model.pt'))
+                print(f"  -> Saved best model")
+        
+        print("\n=== Curriculum training complete ===")
 
 
 if __name__ == '__main__':
