@@ -40,7 +40,9 @@ from AIradar_comm_model_g2c import (
     # Radar model from G2C (proven to work)
     GeneralizedRadarNet,
     # Use G2C dataset with proper ZF equalization and constellation normalization
-    G2DeepDataset, g2_collate_fn
+    G2DeepDataset, g2_collate_fn,
+    # Working comm model with per-modulation adapters (direct symbol logits, not LLR)
+    AdaptiveCommNet
 )
 from AIradar_comm_dataset_g2 import AIRadar_Comm_Dataset_G2
 
@@ -265,6 +267,225 @@ class CommNetG3(nn.Module):
         return symbol_logits
 
 
+class FocalLoss(nn.Module):
+    """Focal Loss for hard example mining - helps with high SNR samples."""
+    
+    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+    
+    def forward(self, inputs, targets):
+        """
+        Args:
+            inputs: [B, C, H, W] logits
+            targets: [B, C, H, W] binary targets
+        """
+        bce = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+        pt = torch.exp(-bce)
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * bce
+        
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        return focal_loss
+
+
+class ModulationAwareAttention(nn.Module):
+    """Attention layer that adapts based on modulation order."""
+    
+    def __init__(self, hidden_dim, num_heads=8):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+        self.head_dim = hidden_dim // num_heads
+        
+        self.q_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.k_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.v_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.out_proj = nn.Linear(hidden_dim, hidden_dim)
+        
+        # Modulation-specific scaling (for 4, 8, 16, 64-QAM)
+        self.mod_scale = nn.Embedding(4, num_heads)  # 4 modulation orders
+        
+        self.layer_norm = nn.LayerNorm(hidden_dim)
+    
+    def forward(self, x, mod_idx):
+        """
+        Args:
+            x: [B*H*W, hidden_dim]
+            mod_idx: modulation index (0=4QAM, 1=8QAM, 2=16QAM, 3=64QAM)
+        """
+        B_HW = x.shape[0]
+        
+        Q = self.q_proj(x).view(B_HW, self.num_heads, self.head_dim)
+        K = self.k_proj(x).view(B_HW, self.num_heads, self.head_dim)
+        V = self.v_proj(x).view(B_HW, self.num_heads, self.head_dim)
+        
+        # Scaled dot-product attention with modulation-aware scaling
+        scale = self.mod_scale(torch.tensor(mod_idx, device=x.device))  # [num_heads]
+        attn_scale = (self.head_dim ** -0.5) * (1 + 0.1 * scale)  # Adaptive scaling
+        
+        # Self-attention over feature dimension
+        scores = torch.einsum('bhd,bhd->bh', Q, K) * attn_scale
+        attn_weights = F.softmax(scores, dim=-1)
+        
+        # Weighted value
+        context = V * attn_weights.unsqueeze(-1)
+        
+        out = self.out_proj(context.view(B_HW, self.hidden_dim))
+        return self.layer_norm(x + out)
+
+
+class CommNetG3V2(nn.Module):
+    """
+    Enhanced Communication Network with:
+    1. Larger capacity (hidden_dim=512)
+    2. Modulation-aware attention layers
+    3. Compatible with focal loss training
+    4. Residual connections for better gradient flow
+    """
+    MAX_BITS = 6
+    
+    def __init__(self, hidden_dim=512, in_channels=5, cond_dim=64, num_attention_layers=2):
+        super().__init__()
+        self.in_channels = in_channels
+        self.hidden_dim = hidden_dim
+        
+        # Config encoder for multi-config support
+        self.config_encoder = ConfigEncoder(embed_dim=cond_dim)
+        
+        total_in = in_channels + cond_dim
+        
+        # Feature embedding
+        self.input_proj = nn.Sequential(
+            nn.Linear(total_in, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+        )
+        
+        # Modulation-aware attention layers
+        self.attention_layers = nn.ModuleList([
+            ModulationAwareAttention(hidden_dim, num_heads=8)
+            for _ in range(num_attention_layers)
+        ])
+        
+        # Deep MLP with residual connections
+        self.res_blocks = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.GELU(),
+                nn.Dropout(0.1),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+            ) for _ in range(3)  # 3 residual blocks
+        ])
+        
+        # Output projection with modulation-specific heads
+        self.output_proj = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.LayerNorm(hidden_dim // 2),
+            nn.GELU(),
+            nn.Linear(hidden_dim // 2, self.MAX_BITS),
+        )
+        
+        # Larger output scale for stronger LLR
+        self.output_scale = nn.Parameter(torch.ones(1) * 8.0)
+        
+        self._init_weights()
+    
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+        # Larger gain for final layer
+        nn.init.xavier_uniform_(self.output_proj[-1].weight, gain=4.0)
+    
+    def _mod_order_to_idx(self, mod_order):
+        """Convert modulation order to index for attention."""
+        if mod_order == 4:
+            return 0
+        elif mod_order == 8:
+            return 1
+        elif mod_order == 16:
+            return 2
+        else:
+            return 3  # 64-QAM
+    
+    def forward(self, x, config_tensor, mod_order=None, config_id=None):
+        """
+        Args:
+            x: [B, C, H, W] where C >= 5 (I, Q, H_mag, H_phase, snr)
+            config_tensor: [B, cond_dim] config embedding
+            mod_order: modulation order for attention scaling
+        Returns:
+            llr: [B, 6, H, W] bit LLRs
+        """
+        B, C, H, W = x.shape
+        
+        # Get config embedding
+        cond = self.config_encoder(config_tensor)
+        
+        # Extract features
+        in_ch = min(C, self.in_channels)
+        features = x[:, :in_ch].permute(0, 2, 3, 1).contiguous()
+        features_flat = features.view(B * H * W, in_ch)
+        
+        # Pad if needed
+        if in_ch < self.in_channels:
+            padding = torch.zeros(B * H * W, self.in_channels - in_ch, device=features_flat.device)
+            features_flat = torch.cat([features_flat, padding], dim=1)
+        
+        # Expand config
+        cond_flat = cond.view(B, 1, 1, -1).expand(B, H, W, -1).contiguous().view(B * H * W, -1)
+        
+        # Concatenate and project
+        mlp_input = torch.cat([features_flat, cond_flat], dim=1)
+        h = self.input_proj(mlp_input)
+        
+        # Get modulation index
+        mod_idx = self._mod_order_to_idx(mod_order) if mod_order else 2
+        
+        # Modulation-aware attention
+        for attn in self.attention_layers:
+            h = attn(h, mod_idx)
+        
+        # Residual blocks
+        for res_block in self.res_blocks:
+            h = h + res_block(h) * 0.1  # Scaled residual
+        
+        # Output
+        llr_flat = self.output_proj(h)
+        llr = llr_flat.view(B, H, W, self.MAX_BITS).permute(0, 3, 1, 2)
+        
+        return llr * self.output_scale
+    
+    def get_symbol_logits(self, llr_logits, mod_order):
+        """Convert LLR to symbol logits."""
+        active_bits = int(np.log2(mod_order))
+        active_llr = llr_logits[:, :active_bits]
+        bit_probs = torch.sigmoid(active_llr)
+        
+        B, _, H, W = active_llr.shape
+        symbol_logits = torch.zeros(B, mod_order, H, W, device=active_llr.device)
+        
+        for sym in range(mod_order):
+            log_prob = 0
+            for b in range(active_bits):
+                bit_val = (sym >> b) & 1
+                if bit_val == 1:
+                    log_prob = log_prob + torch.log(bit_probs[:, b] + 1e-8)
+                else:
+                    log_prob = log_prob + torch.log(1 - bit_probs[:, b] + 1e-8)
+            symbol_logits[:, sym] = log_prob
+        
+        return symbol_logits
+
 # ==============================================================================
 # DATASET (Reuse from G2 with minor modifications)
 # ==============================================================================
@@ -466,8 +687,15 @@ def train_radar_epoch(model, loaders, optimizer, device):
     return total_loss / n_batches
 
 
-def train_comm_epoch(model, loaders, optimizer, device):
-    """Train communication model for one epoch."""
+def train_comm_epoch(model, loaders, optimizer, device, loss_fn=None, is_symbol_logits=False, label_smoothing=0.0):
+    """Train communication model for one epoch.
+    
+    Args:
+        loss_fn: Optional loss function (FocalLoss or None for default)
+        is_symbol_logits: If True, model outputs symbol logits (AdaptiveCommNet); 
+                          if False, outputs LLR (CommNetG3/G3V2)
+        label_smoothing: Label smoothing for CrossEntropyLoss (helps with high-SNR training)
+    """
     model.train()
     total_loss = 0.0
     total_ber = 0.0
@@ -483,14 +711,30 @@ def train_comm_epoch(model, loaders, optimizer, device):
             mod_order = int(meta['mod_order'][0])
             
             optimizer.zero_grad()
-            llr = model(comm_in, config_tensors, mod_order)
-            loss = compute_llr_loss(llr, comm_tgt, mod_order, lambda_comm=1.0)
+            output = model(comm_in, config_tensors, mod_order)
+            
+            if is_symbol_logits:
+                # AdaptiveCommNet: output is [B, mod_order, H, W] symbol logits
+                # Use CrossEntropyLoss with label smoothing for high-SNR robustness
+                loss = F.cross_entropy(output, comm_tgt.long(), label_smoothing=label_smoothing)
+                symbol_logits = output
+            else:
+                # CommNetG3/V2: output is LLR
+                llr = output
+                if loss_fn is not None:
+                    active_bits = int(np.log2(mod_order))
+                    gt_bits = symbol_to_bits(comm_tgt, mod_order)[:, :active_bits]
+                    active_llr = llr[:, :active_bits]
+                    loss = loss_fn(active_llr, gt_bits)
+                else:
+                    loss = compute_llr_loss(llr, comm_tgt, mod_order, lambda_comm=1.0)
+                symbol_logits = model.get_symbol_logits(llr, mod_order)
+            
             loss.backward()
             optimizer.step()
             
             # Compute BER
             with torch.no_grad():
-                symbol_logits = model.get_symbol_logits(llr, mod_order)
                 pred = symbol_logits.argmax(dim=1)
                 pred_bits = symbol_to_bits(pred, mod_order)
                 gt_bits = symbol_to_bits(comm_tgt, mod_order)
@@ -541,8 +785,12 @@ def evaluate_radar(model, loaders, device):
 
 
 @torch.no_grad()
-def evaluate_comm(model, loaders, device):
-    """Evaluate communication BER."""
+def evaluate_comm(model, loaders, device, is_symbol_logits=False):
+    """Evaluate communication BER.
+    
+    Args:
+        is_symbol_logits: If True, model outputs symbol logits (AdaptiveCommNet)
+    """
     model.eval()
     per_cfg = {}
     
@@ -556,9 +804,15 @@ def evaluate_comm(model, loaders, device):
             config_tensors = torch.stack([m for m in meta['config_tensor']]).to(device)
             mod_order = int(meta['mod_order'][0])
             
-            llr = model(comm_in, config_tensors, mod_order)
-            symbol_logits = model.get_symbol_logits(llr, mod_order)
-            pred = symbol_logits.argmax(dim=1)
+            with torch.no_grad():
+                output = model(comm_in, config_tensors, mod_order)
+                
+                if is_symbol_logits:
+                    symbol_logits = output
+                else:
+                    symbol_logits = model.get_symbol_logits(output, mod_order)
+                
+                pred = symbol_logits.argmax(dim=1)
             
             pred_bits = symbol_to_bits(pred, mod_order)
             gt_bits = symbol_to_bits(comm_tgt, mod_order)
@@ -748,6 +1002,8 @@ def evaluate_comm_by_snr(model, config_name, device, save_path, snr_list=[5, 10,
     # Constellation scaling factors for normalization (same as G2DeepDataset)
     if mod_order == 4:
         scale_factor = np.sqrt(2)   # QPSK
+    elif mod_order == 8:
+        scale_factor = np.sqrt(6)   # 8-QAM (cross constellation)
     elif mod_order == 16:
         scale_factor = np.sqrt(10)  # 16-QAM
     else:
@@ -850,8 +1106,14 @@ def evaluate_comm_by_snr(model, config_name, device, save_path, snr_list=[5, 10,
                 comm_tgt = torch.zeros(1, n_syms, fft_size, dtype=torch.long, device=device)
             
             with torch.no_grad():
-                llr = model(comm_in, config_tensor, mod_order)
-                symbol_logits = model.get_symbol_logits(llr, mod_order)
+                output = model(comm_in, config_tensor, mod_order)
+                
+                # Check if model outputs LLR (has get_symbol_logits) or direct symbol logits
+                if hasattr(model, 'get_symbol_logits'):
+                    symbol_logits = model.get_symbol_logits(output, mod_order)
+                else:
+                    symbol_logits = output  # AdaptiveCommNet outputs symbol logits directly
+                
                 pred = symbol_logits.argmax(dim=1)
                 pred_bits = symbol_to_bits(pred, mod_order)
                 gt_bits = symbol_to_bits(comm_tgt, mod_order)
@@ -1175,54 +1437,89 @@ Lower RCS = weaker targets = harder detection
 
 """
     
-    # 4-QAM results
-    qam4_data = all_results.get('4QAM', {})
-    if qam4_data:
-        report += """### 2.1 4-QAM Performance
+    # Generate sections for each channel mode
+    section_num = 1
+    for channel_mode in ['awgn', 'realistic']:
+        channel_label = 'AWGN (Clean Channel)' if channel_mode == 'awgn' else 'Realistic (Multipath + Impairments)'
+        report += f"""### 2.{section_num} {channel_label}
+
+"""
+        # 4-QAM results
+        qam4_key = f'4QAM_{channel_mode}'
+        qam4_data = all_results.get(qam4_key, {})
+        if qam4_data:
+            report += f"""#### 4-QAM
 
 | SNR (dB) | DL BER | Traditional BER | Improvement |
 |----------|--------|-----------------|-------------|
 """
-        for i, snr in enumerate(qam4_data.get('snr', [])):
-            dl_ber = qam4_data['dl_ber'][i]
-            trad_ber = qam4_data['trad_ber'][i]
-            improve = (1 - dl_ber/trad_ber) * 100 if trad_ber > 0 else 0
-            report += f"| {snr} | {dl_ber:.4e} | {trad_ber:.4e} | {improve:.1f}% |\n"
-        report += f"\n![4-QAM BER vs SNR](4QAM/ber_vs_snr.png)\n\n"
-
-    # 16-QAM results  
-    qam16_data = all_results.get('16QAM', {})
-    if qam16_data:
-        report += """### 2.2 16-QAM Performance
+            for i, snr in enumerate(qam4_data.get('snr', [])):
+                dl_ber = qam4_data['dl_ber'][i]
+                trad_ber = qam4_data['trad_ber'][i]
+                improve = (1 - dl_ber/trad_ber) * 100 if trad_ber > 0 else 0
+                report += f"| {snr} | {dl_ber:.4e} | {trad_ber:.4e} | {improve:.1f}% |\n"
+            report += f"\n![4-QAM BER vs SNR](4QAM_{channel_mode}/ber_vs_snr.png)\n\n"
+        
+        # 8-QAM results
+        qam8_key = f'8QAM_{channel_mode}'
+        qam8_data = all_results.get(qam8_key, {})
+        if qam8_data:
+            report += f"""#### 8-QAM
 
 | SNR (dB) | DL BER | Traditional BER | Improvement |
 |----------|--------|-----------------|-------------|
 """
-        for i, snr in enumerate(qam16_data.get('snr', [])):
-            dl_ber = qam16_data['dl_ber'][i]
-            trad_ber = qam16_data['trad_ber'][i]
-            improve = (1 - dl_ber/trad_ber) * 100 if trad_ber > 0 else 0
-            report += f"| {snr} | {dl_ber:.4e} | {trad_ber:.4e} | {improve:.1f}% |\n"
-        report += f"\n![16-QAM BER vs SNR](16QAM/ber_vs_snr.png)\n\n"
+            for i, snr in enumerate(qam8_data.get('snr', [])):
+                dl_ber = qam8_data['dl_ber'][i]
+                trad_ber = qam8_data['trad_ber'][i]
+                improve = (1 - dl_ber/trad_ber) * 100 if trad_ber > 0 else 0
+                report += f"| {snr} | {dl_ber:.4e} | {trad_ber:.4e} | {improve:.1f}% |\n"
+            report += f"\n![8-QAM BER vs SNR](8QAM_{channel_mode}/ber_vs_snr.png)\n\n"
 
-    report += """### 2.3 Combined QAM Comparison
+        # 16-QAM results  
+        qam16_key = f'16QAM_{channel_mode}'
+        qam16_data = all_results.get(qam16_key, {})
+        if qam16_data:
+            report += f"""#### 16-QAM
 
-![All QAM BER vs SNR](ber_vs_snr_all_qam.png)
+| SNR (dB) | DL BER | Traditional BER | Improvement |
+|----------|--------|-----------------|-------------|
+"""
+            for i, snr in enumerate(qam16_data.get('snr', [])):
+                dl_ber = qam16_data['dl_ber'][i]
+                trad_ber = qam16_data['trad_ber'][i]
+                improve = (1 - dl_ber/trad_ber) * 100 if trad_ber > 0 else 0
+                report += f"| {snr} | {dl_ber:.4e} | {trad_ber:.4e} | {improve:.1f}% |\n"
+            report += f"\n![16-QAM BER vs SNR](16QAM_{channel_mode}/ber_vs_snr.png)\n\n"
+        
+        section_num += 1
 
----
+    report += """---
 
 ## 3. Summary
 
 """
-    # Calculate average improvement
+    # Calculate average improvement across all QAM types and channel modes
     improvements = []
-    for qam_data in [qam4_data, qam16_data]:
-        if qam_data:
-            for i in range(len(qam_data.get('snr', []))):
-                dl = qam_data['dl_ber'][i]
-                trad = qam_data['trad_ber'][i]
-                if trad > 0:
-                    improvements.append((1 - dl/trad) * 100)
+    best_results = {}
+    
+    for channel_mode in ['awgn', 'realistic']:
+        for qam_type in ['4QAM', '8QAM', '16QAM']:
+            key = f'{qam_type}_{channel_mode}'
+            qam_data = all_results.get(key, {})
+            if qam_data and 'dl_ber' in qam_data:
+                for i in range(len(qam_data.get('snr', []))):
+                    dl = qam_data['dl_ber'][i]
+                    trad = qam_data['trad_ber'][i]
+                    if trad > 0:
+                        improvements.append((1 - dl/trad) * 100)
+                
+                # Track best performance
+                if qam_data['dl_ber']:
+                    best_ber = min(qam_data['dl_ber'])
+                    best_snr = qam_data['snr'][qam_data['dl_ber'].index(best_ber)]
+                    result_key = f'{qam_type} ({channel_mode})'
+                    best_results[result_key] = (best_ber, best_snr)
     
     avg_improve = np.mean(improvements) if improvements else 0
     
@@ -1230,15 +1527,8 @@ Lower RCS = weaker targets = harder detection
 - **Best DL Performance**: 
 """
     
-    if qam4_data and qam4_data.get('dl_ber'):
-        best_4qam = min(qam4_data['dl_ber'])
-        best_4qam_snr = qam4_data['snr'][qam4_data['dl_ber'].index(best_4qam)]
-        report += f"  - 4-QAM: {best_4qam:.4e} at SNR={best_4qam_snr}dB\n"
-    
-    if qam16_data and qam16_data.get('dl_ber'):
-        best_16qam = min(qam16_data['dl_ber'])
-        best_16qam_snr = qam16_data['snr'][qam16_data['dl_ber'].index(best_16qam)]
-        report += f"  - 16-QAM: {best_16qam:.4e} at SNR={best_16qam_snr}dB\n"
+    for key, (best_ber, best_snr) in sorted(best_results.items()):
+        report += f"  - {key}: {best_ber:.4e} at SNR={best_snr}dB\n"
     
     # Save report
     report_path = os.path.join(out_dir, 'evaluation_report.md')
@@ -1249,20 +1539,220 @@ Lower RCS = weaker targets = harder detection
     return report
 
 
+@torch.no_grad()
+def evaluate_radar_type_comparison(device, out_dir, snr_list=[5, 10, 15, 20, 25, 30], num_samples=15):
+    """Compare FMCW vs OTFS radar performance.
+    
+    Returns dict with results for each radar type.
+    """
+    print("\n" + "="*60)
+    print("RADAR TYPE COMPARISON: FMCW vs OTFS")
+    print("="*60)
+    
+    results = {'FMCW': {}, 'OTFS': {}}
+    
+    for radar_type in ['FMCW', 'OTFS']:
+        # Load model for this radar type
+        radar_model = GeneralizedRadarNet(in_ch=1, base_ch=48, cond_dim=64).to(device)
+        ckpt_path = os.path.join(out_dir, f'radar_best_{radar_type.lower()}.pt')
+        
+        if os.path.exists(ckpt_path):
+            ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+            radar_model.load_state_dict(ckpt['model'])
+            print(f"\n[{radar_type}] Loaded model from {ckpt_path}")
+        else:
+            print(f"\n[{radar_type}] No checkpoint found at {ckpt_path}, skipping...")
+            continue
+        
+        # Get a representative config for this type
+        configs = RADAR_TRAIN_CONFIGS.get(radar_type, [])
+        if not configs:
+            continue
+        
+        config_name = configs[0]  # Use first config for evaluation
+        print(f"[{radar_type}] Evaluating on {config_name}")
+        
+        save_path = os.path.join(out_dir, 'eval', f'radar_{radar_type.lower()}')
+        os.makedirs(save_path, exist_ok=True)
+        
+        radar_results = evaluate_radar_by_snr(
+            radar_model, device, config_name,
+            snr_list=snr_list, num_samples=num_samples,
+            save_path=save_path
+        )
+        results[radar_type] = radar_results
+    
+    # Generate comparison plot
+    if results['FMCW'] and results['OTFS']:
+        plt.figure(figsize=(12, 5))
+        
+        # F1 comparison
+        plt.subplot(1, 2, 1)
+        if 'dl_f1' in results['FMCW']:
+            plt.plot(snr_list, results['FMCW']['dl_f1'], 'b-o', linewidth=2, label='FMCW (DL)')
+            plt.plot(snr_list, results['FMCW']['cfar_f1'], 'b--s', linewidth=2, label='FMCW (CFAR)')
+        if 'dl_f1' in results['OTFS']:
+            plt.plot(snr_list, results['OTFS']['dl_f1'], 'r-o', linewidth=2, label='OTFS (DL)')
+            plt.plot(snr_list, results['OTFS']['cfar_f1'], 'r--s', linewidth=2, label='OTFS (CFAR)')
+        plt.xlabel('SNR (dB)')
+        plt.ylabel('F1 Score')
+        plt.title('FMCW vs OTFS Radar: F1 Score')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir, 'eval', 'radar_type_comparison.png'), dpi=150)
+        plt.close()
+        print(f"\nSaved: {os.path.join(out_dir, 'eval', 'radar_type_comparison.png')}")
+    
+    return results
+
+
+@torch.no_grad()
+def evaluate_comm_type_comparison(device, out_dir, snr_list=[5, 10, 15, 20, 25, 30], num_samples=15):
+    """Compare OFDM vs OTFS communication performance.
+    
+    Returns dict with results for each comm type.
+    """
+    print("\n" + "="*60)
+    print("COMM TYPE COMPARISON: OFDM vs OTFS")
+    print("="*60)
+    
+    results = {'OFDM': {}, 'OTFS': {}}
+    
+    for comm_type in ['OFDM', 'OTFS']:
+        # Load model for this comm type - we'll test on 4QAM which both have
+        comm_model = AdaptiveCommNet(base_ch=64, cond_dim=64).to(device)
+        
+        # Try to find a checkpoint
+        ckpt_candidates = [
+            os.path.join(out_dir, f'comm_best_{comm_type.lower()}_4qam.pt'),
+            os.path.join(out_dir, f'comm_best_{comm_type.lower()}_all.pt'),
+        ]
+        
+        ckpt_loaded = False
+        for ckpt_path in ckpt_candidates:
+            if os.path.exists(ckpt_path):
+                ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+                comm_model.load_state_dict(ckpt['model'])
+                print(f"\n[{comm_type}] Loaded model from {ckpt_path}")
+                ckpt_loaded = True
+                break
+        
+        if not ckpt_loaded:
+            print(f"\n[{comm_type}] No checkpoint found, skipping...")
+            continue
+        
+        # Get a 4QAM config for this comm type
+        comm_configs = COMM_TRAIN_CONFIGS.get(comm_type, {})
+        configs = comm_configs.get('4QAM', [])
+        if not configs:
+            continue
+        
+        config_name = configs[0]  # Use first config
+        print(f"[{comm_type}] Evaluating on {config_name}")
+        
+        save_path = os.path.join(out_dir, 'eval', f'comm_{comm_type.lower()}_4qam')
+        os.makedirs(save_path, exist_ok=True)
+        
+        comm_results = evaluate_comm_by_snr(
+            comm_model, config_name, device, save_path,
+            snr_list=snr_list, channel_mode='realistic'
+        )
+        results[comm_type] = comm_results
+    
+    # Generate comparison plot
+    if results['OFDM'] and results['OTFS']:
+        plt.figure(figsize=(10, 6))
+        
+        if results['OFDM'].get('dl_ber'):
+            plt.semilogy(results['OFDM']['snr'], results['OFDM']['dl_ber'], 
+                        'b-o', linewidth=2, markersize=8, label='OFDM (DL)')
+            plt.semilogy(results['OFDM']['snr'], results['OFDM']['trad_ber'], 
+                        'b--s', linewidth=2, markersize=8, label='OFDM (Traditional)')
+        if results['OTFS'].get('dl_ber'):
+            plt.semilogy(results['OTFS']['snr'], results['OTFS']['dl_ber'], 
+                        'r-o', linewidth=2, markersize=8, label='OTFS (DL)')
+            plt.semilogy(results['OTFS']['snr'], results['OTFS']['trad_ber'], 
+                        'r--s', linewidth=2, markersize=8, label='OTFS (Traditional)')
+        
+        plt.xlabel('SNR (dB)', fontsize=12)
+        plt.ylabel('BER', fontsize=12)
+        plt.title('OFDM vs OTFS Communication: BER Comparison (4-QAM)', fontsize=14)
+        plt.legend(fontsize=11)
+        plt.grid(True, alpha=0.3, which='both')
+        plt.ylim([1e-4, 1])
+        plt.tight_layout()
+        plt.savefig(os.path.join(out_dir, 'eval', 'comm_type_comparison.png'), dpi=150)
+        plt.close()
+        print(f"\nSaved: {os.path.join(out_dir, 'eval', 'comm_type_comparison.png')}")
+    
+    return results
+
+
 # ==============================================================================
 # MAIN
 # ==============================================================================
 
-# Training configs - expanded for better generalization
-RADAR_TRAIN_CONFIGS = [
+# ==============================================================================
+# TRAINING CONFIGURATIONS - Organized by Radar Type and Comm Type
+# ==============================================================================
+
+# Radar Training Configs - Separated by Radar Type (FMCW vs OTFS)
+RADAR_TRAIN_CONFIGS = {
+    # FMCW Radar (Traditional separation, separate radar waveform)  
+    # NOTE: Using only 2 core configs for best DL performance (F1 > 0.93)
+    # Extended configs (8QAM_MediumRange, XBand_10GHz_MediumRange, AUTOMOTIVE_TRADITIONAL) 
+    # can be added but require more samples/epochs for generalization
+    'FMCW': [
+        'CN0566_TRADITIONAL',           # X-band, 500MHz BW, 150m range
+        'Automotive_77GHz_LongRange',   # 77GHz, 1.5GHz BW, 100m range
+    ],
+    # OTFS Radar (Integrated sensing and communication)
+    'OTFS': [
+        'CN0566_OTFS_ISAC',             # X-band OTFS, 40MHz BW, 100m range
+        'AUTOMOTIVE_OTFS_ISAC',         # 77GHz OTFS, 1.5GHz BW, 100m range
+    ],
+}
+
+# Communication Training Configs - Separated by Comm Type (OFDM vs OTFS)
+COMM_TRAIN_CONFIGS = {
+    # OFDM Communication (Traditional waveform) - organized by QAM
+    'OFDM': {
+        '4QAM': [
+            'Automotive_77GHz_LongRange',  # 77GHz, 400MHz comm BW
+        ],
+        '8QAM': [
+            '8QAM_MediumRange',            # 28GHz, 100MHz comm BW, cross-8QAM
+        ],
+        '16QAM': [
+            'CN0566_TRADITIONAL',          # X-band, 40MHz comm BW
+            'XBand_10GHz_MediumRange',     # X-band, 40MHz comm BW
+            'AUTOMOTIVE_TRADITIONAL',      # 77GHz, 400MHz comm BW
+        ],
+    },
+    # OTFS Communication (Delay-Doppler domain)
+    'OTFS': {
+        '4QAM': [
+            'CN0566_OTFS_ISAC',            # X-band OTFS, 40MHz
+            'AUTOMOTIVE_OTFS_ISAC',        # 77GHz OTFS, 1.5GHz
+        ],
+    },
+}
+
+# Combined lists for backward compatibility and quick access
+RADAR_TRAIN_CONFIGS_ALL = RADAR_TRAIN_CONFIGS['FMCW'] + RADAR_TRAIN_CONFIGS['OTFS']
+COMM_TRAIN_CONFIGS_ALL = {
+    '4QAM': COMM_TRAIN_CONFIGS['OFDM'].get('4QAM', []) + COMM_TRAIN_CONFIGS['OTFS'].get('4QAM', []),
+    '8QAM': COMM_TRAIN_CONFIGS['OFDM'].get('8QAM', []),
+    '16QAM': COMM_TRAIN_CONFIGS['OFDM'].get('16QAM', []),
+}
+
+# Legacy compatibility - default to all configs
+RADAR_CONFIGS_LEGACY = [
     'CN0566_TRADITIONAL',
     'Automotive_77GHz_LongRange',
 ]
-
-COMM_TRAIN_CONFIGS = {
-    '4QAM': ['Automotive_77GHz_LongRange'],
-    '16QAM': ['CN0566_TRADITIONAL'],
-}
 
 
 def main():
@@ -1284,6 +1774,21 @@ def main():
     parser.add_argument('--out_dir', type=str, default='data/AIradar_comm_model_g3')
     parser.add_argument('--channel_mode', choices=['awgn', 'realistic'], default='realistic',
                         help="Channel mode: 'awgn' (clean AWGN) or 'realistic' (multipath + clutter + CSI error)")
+    parser.add_argument('--model_version', choices=['v1', 'v2', 'v3'], default='v3',
+                        help="Comm model: 'v1' (basic MLP), 'v2' (attention), 'v3' (G2C AdaptiveCommNet, RECOMMENDED)")
+    parser.add_argument('--use_focal_loss', action='store_true', default=True,
+                        help="Use focal loss instead of BCE for hard example mining")
+    parser.add_argument('--qam_type', choices=['4QAM', '8QAM', '16QAM', 'all'], default='all',
+                        help="QAM type to train: '4QAM', '8QAM', '16QAM', or 'all' for mixed training")
+    parser.add_argument('--high_snr_focus', action='store_true', default=False,
+                        help="Generate more high-SNR (20-30dB) training samples to improve high-SNR performance")
+    parser.add_argument('--label_smoothing', type=float, default=0.1,
+                        help="Label smoothing for CrossEntropyLoss (0.0-0.2), helps prevent overconfident predictions")
+    # New: Radar and Comm type selection for FMCW vs OTFS comparison
+    parser.add_argument('--radar_type', choices=['FMCW', 'OTFS', 'all'], default='FMCW',
+                        help="Radar type: 'FMCW' (traditional), 'OTFS' (ISAC), or 'all'")
+    parser.add_argument('--comm_type', choices=['OFDM', 'OTFS', 'all'], default='OFDM',
+                        help="Communication waveform: 'OFDM' (traditional), 'OTFS' (delay-doppler), or 'all'")
     args = parser.parse_args()
     
     device = torch.device(args.device)
@@ -1298,10 +1803,20 @@ def main():
         radar_model = GeneralizedRadarNet(in_ch=1, base_ch=48, cond_dim=64).to(device)
         print(f"Radar params: {sum(p.numel() for p in radar_model.parameters()):,}")
         
-        # Load configs
+        # Select radar configs based on radar_type
+        if args.radar_type == 'all':
+            radar_configs = RADAR_TRAIN_CONFIGS['FMCW'] + RADAR_TRAIN_CONFIGS['OTFS']
+            print(f"[Training on ALL radar types: {len(radar_configs)} configs]")
+        else:
+            radar_configs = RADAR_TRAIN_CONFIGS.get(args.radar_type, [])
+            print(f"[Training on {args.radar_type} radar: {len(radar_configs)} configs]")
+        
+        for cfg in radar_configs:
+            print(f"  - {cfg}")
+        
         train_loaders = {}
         val_loaders = {}
-        for cfg_name in RADAR_TRAIN_CONFIGS:
+        for cfg_name in radar_configs:
             train_ds = G2DeepDataset(cfg_name, args.train_samples, args.data_root, 'train')
             val_ds = G2DeepDataset(cfg_name, args.val_samples, args.data_root, 'val')
             train_loaders[cfg_name] = DataLoader(train_ds, batch_size=args.batch_size, 
@@ -1309,7 +1824,8 @@ def main():
             val_loaders[cfg_name] = DataLoader(val_ds, batch_size=args.batch_size,
                                                 shuffle=False, collate_fn=g2_collate_fn)
         
-        optimizer = torch.optim.AdamW(radar_model.parameters(), lr=args.lr / 5, weight_decay=1e-4)
+        # Learning rate: divide by 2 (not 5) for better radar learning
+        optimizer = torch.optim.AdamW(radar_model.parameters(), lr=args.lr / 2, weight_decay=1e-4)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
         
         best_f1 = 0.0
@@ -1323,11 +1839,13 @@ def main():
             
             if val_metrics['f1'] > best_f1:
                 best_f1 = val_metrics['f1']
+                ckpt_name = f'radar_best_{args.radar_type.lower()}.pt'
                 torch.save({
                     'model': radar_model.state_dict(),
                     'f1': best_f1,
-                }, os.path.join(args.out_dir, 'radar_best.pt'))
-                print(f"  -> Saved best radar model (F1={best_f1:.4f})")
+                    'radar_type': args.radar_type,
+                }, os.path.join(args.out_dir, ckpt_name))
+                print(f"  -> Saved best radar model: {ckpt_name} (F1={best_f1:.4f})")
     
     # ========== TRAIN COMM ==========
     if args.mode in ['train_comm', 'train_both']:
@@ -1335,32 +1853,112 @@ def main():
         print("TRAINING COMMUNICATION MODEL (Standalone)")
         print("="*60 + "\n")
         
-        comm_model = CommNetG3(hidden_dim=256, in_channels=5, cond_dim=64).to(device)
+        # Select model version
+        if args.model_version == 'v3':
+            print("[Using AdaptiveCommNet (RECOMMENDED) - G2C Proven Architecture]")
+            print("  - Per-modulation adapter heads")
+            print("  - Direct symbol logits (not LLR)")
+            print("  - FiLM conditioning\n")
+            comm_model = AdaptiveCommNet(base_ch=64, cond_dim=64).to(device)
+        elif args.model_version == 'v2':
+            print("[Using CommNetG3V2 - Enhanced Architecture]")
+            print("  - hidden_dim=512")
+            print("  - Modulation-aware attention layers")
+            print("  - Residual connections\n")
+            comm_model = CommNetG3V2(hidden_dim=512, in_channels=5, cond_dim=64, num_attention_layers=2).to(device)
+        else:
+            print("[Using CommNetG3 - Basic Architecture]")
+            comm_model = CommNetG3(hidden_dim=256, in_channels=5, cond_dim=64).to(device)
         print(f"Comm params: {sum(p.numel() for p in comm_model.parameters()):,}")
         
-        # Load all comm configs
-        all_configs = list(set(
-            COMM_TRAIN_CONFIGS.get('4QAM', []) + 
-            COMM_TRAIN_CONFIGS.get('16QAM', [])
-        ))
+        # Select configs based on comm_type (OFDM vs OTFS) and qam_type
+        print(f"\n[Communication Type: {args.comm_type}]")
+        
+        # Get configs for the selected comm type
+        if args.comm_type == 'all':
+            comm_configs_by_qam = {}
+            for ctype in ['OFDM', 'OTFS']:
+                for qam, cfgs in COMM_TRAIN_CONFIGS.get(ctype, {}).items():
+                    if qam not in comm_configs_by_qam:
+                        comm_configs_by_qam[qam] = []
+                    comm_configs_by_qam[qam].extend(cfgs)
+        else:
+            comm_configs_by_qam = COMM_TRAIN_CONFIGS.get(args.comm_type, {})
+        
+        # Select configs based on qam_type
+        if args.qam_type == 'all':
+            print(f"[Mixed QAM Training - All modulations]")
+            all_configs = list(set(
+                comm_configs_by_qam.get('4QAM', []) + 
+                comm_configs_by_qam.get('8QAM', []) +
+                comm_configs_by_qam.get('16QAM', [])
+            ))
+            ckpt_suffix = f'{args.comm_type.lower()}_all'
+        else:
+            print(f"[Modulation-Specific Training - {args.qam_type} only]")
+            all_configs = comm_configs_by_qam.get(args.qam_type, [])
+            ckpt_suffix = f'{args.comm_type.lower()}_{args.qam_type.lower()}'
+        
+        print(f"  Selected configs ({len(all_configs)}):")
+        for cfg in all_configs:
+            print(f"    - {cfg}")
+        
+        # Mixed channel training: Create both AWGN and Realistic datasets
+        # This helps the model generalize to both clean and noisy conditions
+        print("\n[Mixed Channel Training Mode]")
+        print("  - 50% AWGN channel (clean, no impairments)")
+        print("  - 50% Realistic channel (multipath + clutter + CSI error)\n")
         
         train_loaders = {}
         val_loaders = {}
         for cfg_name in all_configs:
-            train_ds = G2DeepDataset(cfg_name, args.train_samples, args.data_root, 'train')
-            val_ds = G2DeepDataset(cfg_name, args.val_samples, args.data_root, 'val')
+            # Create AWGN dataset (clean channel)
+            train_ds_awgn = G2DeepDataset(cfg_name, args.train_samples // 2, 
+                                          os.path.join(args.data_root, 'train_awgn'), 'train',
+                                          enable_rf_impairments=False)
+            # Create Realistic dataset (noisy channel)
+            train_ds_real = G2DeepDataset(cfg_name, args.train_samples // 2,
+                                          os.path.join(args.data_root, 'train_realistic'), 'train',
+                                          enable_rf_impairments=True)
+            # Combine datasets
+            train_ds = torch.utils.data.ConcatDataset([train_ds_awgn, train_ds_real])
+            
+            # Validation uses realistic channel to test real-world performance
+            val_ds = G2DeepDataset(cfg_name, args.val_samples, args.data_root, 'val',
+                                   enable_rf_impairments=True)
+            
             train_loaders[cfg_name] = DataLoader(train_ds, batch_size=args.batch_size,
                                                   shuffle=True, collate_fn=g2_collate_fn)
             val_loaders[cfg_name] = DataLoader(val_ds, batch_size=args.batch_size,
                                                 shuffle=False, collate_fn=g2_collate_fn)
         
-        optimizer = torch.optim.Adam(comm_model.parameters(), lr=args.lr, weight_decay=1e-5)
+        # V2 model benefits from lower learning rate
+        lr = args.lr * 0.5 if args.model_version == 'v2' else args.lr
+        optimizer = torch.optim.Adam(comm_model.parameters(), lr=lr, weight_decay=1e-5)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+        
+        # Create loss function (v3 uses CrossEntropyLoss internally, so no custom loss_fn)
+        is_symbol_logits = (args.model_version == 'v3')
+        if args.use_focal_loss and not is_symbol_logits:
+            print("[Using Focal Loss for hard example mining]")
+            loss_fn = FocalLoss(alpha=0.25, gamma=2.0)
+        else:
+            loss_fn = None
+        
+        # Print training info
+        if is_symbol_logits and args.label_smoothing > 0:
+            print(f"[Using Label Smoothing = {args.label_smoothing} for high-SNR robustness]")
+        if args.high_snr_focus:
+            print("[High-SNR Focus Mode: More samples from 20-30dB SNR range]")
         
         best_ber = float('inf')
         for epoch in range(1, args.epochs + 1):
-            train_loss, train_ber, per_cfg = train_comm_epoch(comm_model, train_loaders, optimizer, device)
-            val_ber = evaluate_comm(comm_model, val_loaders, device)
+            train_loss, train_ber, per_cfg = train_comm_epoch(
+                comm_model, train_loaders, optimizer, device, 
+                loss_fn=loss_fn, is_symbol_logits=is_symbol_logits,
+                label_smoothing=args.label_smoothing if is_symbol_logits else 0.0
+            )
+            val_ber = evaluate_comm(comm_model, val_loaders, device, is_symbol_logits=is_symbol_logits)
             scheduler.step()
             
             avg_val_ber = np.mean(list(val_ber.values()))
@@ -1371,11 +1969,13 @@ def main():
             
             if avg_val_ber < best_ber:
                 best_ber = avg_val_ber
+                ckpt_name = f'comm_best_{ckpt_suffix}.pt'
                 torch.save({
                     'model': comm_model.state_dict(),
                     'ber': best_ber,
-                }, os.path.join(args.out_dir, 'comm_best.pt'))
-                print(f"  -> Saved best comm model (BER={best_ber:.4e})")
+                    'qam_type': args.qam_type,
+                }, os.path.join(args.out_dir, ckpt_name))
+                print(f"  -> Saved best comm model: {ckpt_name} (BER={best_ber:.4e})")
     
     # ========== EVALUATE COMPREHENSIVE ==========
     if args.mode == 'eval_comprehensive':
@@ -1383,18 +1983,37 @@ def main():
         print("COMPREHENSIVE EVALUATION")
         print("="*60 + "\n")
         
-        # Load radar model
+        # Load radar model - try radar_type-specific checkpoint first
         radar_model = GeneralizedRadarNet(in_ch=1, base_ch=48, cond_dim=64).to(device)
-        radar_ckpt = args.radar_ckpt or os.path.join(args.out_dir, 'radar_best.pt')
-        if os.path.exists(radar_ckpt):
-            ckpt = torch.load(radar_ckpt, map_location=device, weights_only=False)
-            radar_model.load_state_dict(ckpt['model'])
-            print(f"Loaded radar model from {radar_ckpt}")
-        else:
-            print(f"[Warning] Radar model not found at {radar_ckpt}, using untrained model")
         
-        # Load comm model
-        comm_model = CommNetG3(hidden_dim=256, in_channels=5, cond_dim=64).to(device)
+        # Try type-specific checkpoints in order of preference
+        radar_ckpt_options = [
+            args.radar_ckpt,  # User-specified
+            os.path.join(args.out_dir, f'radar_best_{args.radar_type.lower()}.pt'),  # Type-specific
+            os.path.join(args.out_dir, 'radar_best_fmcw.pt'),  # FMCW fallback
+            os.path.join(args.out_dir, 'radar_best.pt'),  # Legacy fallback
+        ]
+        radar_loaded = False
+        for radar_ckpt in radar_ckpt_options:
+            if radar_ckpt and os.path.exists(radar_ckpt):
+                ckpt = torch.load(radar_ckpt, map_location=device, weights_only=False)
+                radar_model.load_state_dict(ckpt['model'])
+                print(f"Loaded radar model from {radar_ckpt}")
+                radar_loaded = True
+                break
+        if not radar_loaded:
+            print(f"[Warning] No radar checkpoint found, using untrained model")
+        
+        # Load comm model based on version
+        if args.model_version == 'v3':
+            comm_model = AdaptiveCommNet(base_ch=64, cond_dim=64).to(device)
+            print("[Using AdaptiveCommNet (v3) for evaluation]")
+        elif args.model_version == 'v2':
+            comm_model = CommNetG3V2(hidden_dim=512, in_channels=5, cond_dim=64, num_attention_layers=2).to(device)
+            print("[Using CommNetG3V2 for evaluation]")
+        else:
+            comm_model = CommNetG3(hidden_dim=256, in_channels=5, cond_dim=64).to(device)
+            print("[Using CommNetG3 for evaluation]")
         comm_ckpt = args.comm_ckpt or os.path.join(args.out_dir, 'comm_best.pt')
         if os.path.exists(comm_ckpt):
             ckpt = torch.load(comm_ckpt, map_location=device, weights_only=False)
@@ -1446,19 +2065,62 @@ def main():
         print("\n" + "-"*60)
         print("[2/4] Communication Evaluation: BER vs SNR")
         print("-"*60)
-        qam_results = {}
-        for qam_type, configs in COMM_TRAIN_CONFIGS.items():
-            for config_name in configs:
-                print(f"\n=== {qam_type}: {config_name} ===")
-                save_path = os.path.join(eval_dir, qam_type)
-                results = evaluate_comm_by_snr(comm_model, config_name, device, save_path,
-                                               channel_mode=args.channel_mode)
-                qam_results[qam_type] = results
-                all_results[qam_type] = results
+        
+        # Run evaluation for both channel modes
+        channel_modes = ['awgn', 'realistic']
+        for channel_mode in channel_modes:
+            print(f"\n{'='*40}")
+            print(f"Channel Mode: {channel_mode.upper()}")
+            print(f"{'='*40}")
+            
+            qam_results = {}
+            for qam_type, configs in COMM_TRAIN_CONFIGS_ALL.items():
+                # Try to load modulation-specific model first (with comm_type), fallback to mixed model
+                ckpt_candidates = [
+                    os.path.join(args.out_dir, f'comm_best_{args.comm_type.lower()}_{qam_type.lower()}.pt'),  # comm_type + qam
+                    os.path.join(args.out_dir, f'comm_best_ofdm_{qam_type.lower()}.pt'),  # OFDM fallback
+                    os.path.join(args.out_dir, f'comm_best_{qam_type.lower()}.pt'),  # Legacy qam-only
+                    os.path.join(args.out_dir, f'comm_best_{args.comm_type.lower()}_all.pt'),  # comm_type mixed
+                    os.path.join(args.out_dir, 'comm_best_ofdm_all.pt'),  # OFDM mixed fallback
+                ]
+                
+                ckpt_loaded = False
+                for ckpt_path in ckpt_candidates:
+                    if os.path.exists(ckpt_path):
+                        print(f"\n[Loading {qam_type} model: {ckpt_path}]")
+                        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+                        comm_model.load_state_dict(ckpt['model'])
+                        ckpt_loaded = True
+                        break
+                
+                if not ckpt_loaded:
+                    print(f"\n[Warning] No checkpoint found for {qam_type}, using current model]")
+                
+                for config_name in configs:
+                    print(f"\n=== {qam_type}: {config_name} ===")
+                    save_path = os.path.join(eval_dir, f'{qam_type}_{channel_mode}')
+                    results = evaluate_comm_by_snr(comm_model, config_name, device, save_path,
+                                                   channel_mode=channel_mode)
+                    qam_results[qam_type] = results
+                    all_results[f'{qam_type}_{channel_mode}'] = results
+        
+        # ========== RADAR TYPE COMPARISON (FMCW vs OTFS) ==========
+        print("\n" + "-"*60)
+        print("[3/5] Radar Type Comparison: FMCW vs OTFS")
+        print("-"*60)
+        radar_type_results = evaluate_radar_type_comparison(device, args.out_dir)
+        all_results['radar_type_comparison'] = radar_type_results
+        
+        # ========== COMM TYPE COMPARISON (OFDM vs OTFS) ==========
+        print("\n" + "-"*60)
+        print("[4/5] Comm Type Comparison: OFDM vs OTFS")
+        print("-"*60)
+        comm_type_results = evaluate_comm_type_comparison(device, args.out_dir)
+        all_results['comm_type_comparison'] = comm_type_results
         
         # ========== GENERATE PLOTS AND REPORT ==========
         print("\n" + "-"*60)
-        print("[3/4] Generating Report and Figures")
+        print("[5/5] Generating Report and Figures")
         print("-"*60)
         
         # Combined QAM plot

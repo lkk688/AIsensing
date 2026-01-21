@@ -910,19 +910,29 @@ class G2DeepDataset(Dataset):
                 rx_grid = rx_symbols[:n_syms * fft_size].reshape(n_syms, fft_size)
             
             # Build channel estimate grid (H_est is per subcarrier, broadcast to all symbols)
-            if channel_est is not None and len(channel_est) > 0:
-                # Resize H_est to match fft_size if needed
-                if len(channel_est) != fft_size:
-                    from scipy.ndimage import zoom
-                    H_est_resized = zoom(channel_est.real, fft_size/len(channel_est)) + \
-                                   1j * zoom(channel_est.imag, fft_size/len(channel_est))
+            # Handle both array and scalar channel estimates (OTFS can return scalar or 0-d array)
+            try:
+                is_valid_array = (channel_est is not None and 
+                                  isinstance(channel_est, np.ndarray) and 
+                                  channel_est.ndim > 0 and 
+                                  channel_est.size > 0)
+                
+                if is_valid_array:
+                    # Resize H_est to match fft_size if needed
+                    if len(channel_est) != fft_size:
+                        from scipy.ndimage import zoom
+                        H_est_resized = zoom(channel_est.real, fft_size/len(channel_est)) + \
+                                       1j * zoom(channel_est.imag, fft_size/len(channel_est))
+                    else:
+                        H_est_resized = channel_est
+                    # Broadcast to all OFDM symbols
+                    H_grid = np.tile(H_est_resized[None, :], (n_syms, 1))
                 else:
-                    H_est_resized = channel_est
-                # Broadcast to all OFDM symbols
-                H_grid = np.tile(H_est_resized[None, :], (n_syms, 1))
-            else:
+                    # Fallback: assume channel = 1 (no distortion) for OTFS or invalid channel_est
+                    H_grid = np.ones_like(rx_grid, dtype=np.complex64)
+            except Exception:
                 # Fallback: assume channel = 1 (no distortion)
-                H_grid = np.ones_like(rx_grid)
+                H_grid = np.ones_like(rx_grid, dtype=np.complex64)
             
             # CONSTELLATION-AWARE NORMALIZATION
             # Perform ZF equalization here to preserve geometry

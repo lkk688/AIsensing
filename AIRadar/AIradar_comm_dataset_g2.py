@@ -132,6 +132,40 @@ RADAR_COMM_CONFIGS_G2 = {
         }
     },
 
+    # 8-QAM Medium Range (Cross-8QAM constellation)
+    '8QAM_MediumRange': {
+        'mode': 'TRADITIONAL',
+        'fc': 28e9,  # mmWave 5G band
+        'mod_order': 8,  # 8-QAM (3 bits per symbol)
+        
+        'radar_B': 800e6,
+        'radar_T': 100e-6,
+        'radar_fs': 40e6,
+        
+        'comm_B': 100e6,
+        'comm_fs': 122.88e6,
+        'comm_fft_size': 256,
+        'comm_cp_len': 32,
+        'channel_model': 'multipath',
+        
+        'R_max': 80.0,
+        'num_rx': 1,
+        'cfar_params': {'num_train': 12, 'num_guard': 4, 'threshold_offset': 25, 'nms_kernel_size': 7},
+        
+        # G2 Enhancements
+        'adaptive_cfar': True,
+        'csi_error': 0.08,  # Moderate CSI error for 8-QAM
+        'clutter_params': {
+            'ground_clutter': True,
+            'ground_intensity': 0.007,
+            'k_shape': 2.5,
+            'range_exponent': 2.5,
+            'weather_clutter': True,
+            'weather_intensity': 0.025,
+            'doppler_spread': 2.5
+        }
+    },
+
     # X-Band Medium Range
     'XBand_10GHz_MediumRange': {
         'mode': 'TRADITIONAL',
@@ -852,6 +886,14 @@ class AIRadar_Comm_Dataset_G2(Dataset):
         if mod_order == 4:
             # QPSK
             pts = np.array([1+1j, 1-1j, -1+1j, -1-1j]) / np.sqrt(2)
+        elif mod_order == 8:
+            # 8-QAM (Cross/Star constellation)
+            # Uses rectangular 8-QAM: inner 4 points + outer 4 points
+            # Inner: (+/-1, +/-1), Outer: (+/-3, 0), (0, +/-3)
+            pts = np.array([
+                1+1j, 1-1j, -1+1j, -1-1j,  # Inner 4 points
+                3+0j, -3+0j, 0+3j, 0-3j     # Outer 4 points  
+            ]) / np.sqrt(6)  # Normalize to unit average power
         elif mod_order == 16:
             # 16-QAM
             x = np.arange(-3, 4, 2)
