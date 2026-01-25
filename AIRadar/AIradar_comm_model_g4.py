@@ -2070,7 +2070,7 @@ def main():
     ], default='eval_comprehensive')
     parser.add_argument('--train_samples', type=int, default=300)
     parser.add_argument('--val_samples', type=int, default=50)
-    parser.add_argument('--data_root', type=str, default='data/AIradar_comm_model_g3b')
+    parser.add_argument('--data_root', type=str, default='data/AIradar_comm_model_g4')
     parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--epochs', type=int, default=30)
     parser.add_argument('--lr', type=float, default=0.005)
@@ -2078,7 +2078,7 @@ def main():
                         default='cuda' if torch.cuda.is_available() else 'cpu')
     parser.add_argument('--radar_ckpt', type=str, default=None)
     parser.add_argument('--comm_ckpt', type=str, default=None)
-    parser.add_argument('--out_dir', type=str, default='data/AIradar_comm_model_g3')
+    parser.add_argument('--out_dir', type=str, default='data/AIradar_comm_model_g4')
     parser.add_argument('--channel_mode', choices=['awgn', 'realistic'], default='realistic',
                         help="Channel mode: 'awgn' (clean AWGN) or 'realistic' (multipath + clutter + CSI error)")
     parser.add_argument('--model_version', choices=['v1', 'v2', 'v3'], default='v3',

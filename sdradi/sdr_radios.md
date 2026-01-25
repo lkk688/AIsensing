@@ -85,6 +85,25 @@ https://wiki.analog.com/university/tools/pluto
 # reboot
 ```
 
+Default Adalm-pluto IP is 192.168.2.1
+```bash
+iio_attr -a -C fw_version
+ssh-keygen -R 192.168.2.1
+ssh root@192.168.2.1 #password: analog
+ssh root@pluto.local #same to above,password: analog
+$ ls /media/lkk/PlutoSDR/
+config.txt  img  info.html  LICENSE.html
+```
+Change second device ip to 192.168.2.2 via the config.txt file
+```bash
+ssh root@192.168.2.2
+ssh root@pluto.local #another way, password: analog
+v0.39
+#second device
+ssh root@192.168.3.2
+ssh root@pluto2.local #another way, password: analog
+```
+
 Upgrade the firmware: https://wiki.analog.com/university/tools/pluto/users/firmware
 
 

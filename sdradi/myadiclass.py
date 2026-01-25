@@ -120,6 +120,8 @@ class SDR:
         elif device_name.lower()=='adrv9009':
             #sdr = adi.adrv9009(self.SDR_IP)
             sdr = adrv9009(uri=self.SDR_IP, jesd_monitor=False, jesd=None)
+        elif device_name.lower()=='pluto':
+            sdr = adi.Pluto(uri=self.SDR_IP)
         
         # Configure the sample rate for both TX and RX
         sdr.sample_rate = fs
@@ -132,6 +134,10 @@ class SDR:
         # sdr.rx_buffer_size = num_samps
 
         # Configuration data channels
+        if device_name.lower() == 'pluto':
+            Rx_CHANNEL = 1
+            Tx_CHANNEL = 1
+
         if Rx_CHANNEL==2:
             sdr.rx_enabled_channels = [0,1] #enable two rx channel, # enable Rx1 (voltage0) and Rx2 (voltage1)
         elif Rx_CHANNEL==1:
