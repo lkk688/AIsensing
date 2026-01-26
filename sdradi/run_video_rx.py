@@ -46,6 +46,9 @@ def main():
             rx_bits_coded, metrics = link.receive()
             
             if metrics.get('sync_success') and len(rx_bits_coded) > 0:
+                # Debug CFO
+                print(f"[RX] Locked. SNR: {metrics.get('snr_est', 0):.1f}dB, CFO: {metrics.get('cfo_est', 0)/1000:.1f}kHz")
+                
                 try:
                     rx_bits = fec_codec.decode(rx_bits_coded)
                     rx_bytes = video_codec.bits_to_bytes(rx_bits)

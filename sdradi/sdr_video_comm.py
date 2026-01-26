@@ -1198,8 +1198,8 @@ class OTFSTransceiver:
         tx_signal = np.concatenate(all_tx_signal)
         
         # Scale to avoid clipping (Pluto DAC range)
-        # 0.1 factor ensures (6.0 * 0.1 = 0.6) < 1.0
-        tx_signal = tx_signal / (np.sqrt(np.mean(np.abs(tx_signal)**2)) + 1e-10) * 0.1
+        # 0.5 factor allows some soft clipping but guarantees better SNR for QPSK
+        tx_signal = tx_signal / (np.sqrt(np.mean(np.abs(tx_signal)**2)) + 1e-10) * 0.5
         
         return tx_signal
     
