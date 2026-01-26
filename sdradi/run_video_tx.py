@@ -62,6 +62,8 @@ def main():
             
             print(f"Frame {frame_idx}: {len(packets)} packets")
             
+            start_t = time.time()
+            
             # Send each packet individually
             for pkt_data, pkt_idx in packets:
                 # 2. FEC
