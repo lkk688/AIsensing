@@ -60,7 +60,8 @@ def main():
             # Returns list of (header+payload, packet_idx)
             packets = video_codec.encode_frame(frame, quality=args.quality)
             
-            print(f"Frame {frame_idx}: {len(packets)} packets")
+            if frame_idx % 30 == 0:
+                print(f"Frame {frame_idx}: {len(packets)} packets")
             
             start_t = time.time()
             
@@ -78,7 +79,8 @@ def main():
                 # time.sleep(0.01) 
             
             dur = time.time() - start_t
-            print(f"  -> TX: {dur*1000:.1f}ms")
+            if frame_idx % 30 == 0:
+                print(f"  -> TX: {dur*1000:.1f}ms")
             
             frame_idx += 1
             # throttle slightly 

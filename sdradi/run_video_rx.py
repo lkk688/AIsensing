@@ -23,6 +23,7 @@ def main():
     
     # Init Link
     link = SDRVideoLink(sdr_config=sdr_cfg)
+    link.ofdm_config.sync_threshold = 15.0 # Lowered for real-world test
     if not link.connect_sdr():
         print("Failed to connect to SDR")
         return
@@ -111,8 +112,8 @@ def main():
             else:
                 # Debug: Show peak
                 peak = metrics.get('peak_val', 0)
-                if peak > 15: 
-                    print(f"[RX Scanning] Peak: {peak:.1f}")
+                # if peak > 15: 
+                #    print(f"[RX Scanning] Peak: {peak:.1f}")
                 pass
 
     except KeyboardInterrupt:

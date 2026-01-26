@@ -6,6 +6,6 @@
     "fs": 2000000.0,
     "bandwidth": 2000000,
     "tx_gain": -30,
-    "rx_gain": 0,
+    "rx_gain": 30,
     "rx_buffer_size": 262144
 }
