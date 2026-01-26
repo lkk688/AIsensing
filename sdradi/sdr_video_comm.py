@@ -2292,13 +2292,18 @@ def main():
         tx_bits = np.random.randint(0, 2, args.num_bits)
         
         try:
+            # Cyclic Mode Strategy: Send ONCE, let hardware repeat.
+            # This is much more stable than Python loops for continuous transmission.
+            print("Uploading Cyclic Buffer (Hardware Repeat)...")
+            link.sdr.sdr.tx_cyclic_buffer = True # Enable Cyclic
+            link.transmit(tx_bits) # Send one frame
+            print("TX Buffer Uploaded. Creating continuous stream...")
+            
             while True:
-                link.transmit(tx_bits)
-                # print(".", end="", flush=True)
-                # Small sleep to avoid buffer underflow logic on PC side, though SDR handles it
-                # time.sleep(0.01) 
+                time.sleep(1) # Keep script alive
         except KeyboardInterrupt:
             print("\nStopped.")
+            link.sdr.sdr.tx_destroy_buffer() # Stop TX
 
     elif args.mode == 'rx':
         print(f"\n{'='*60}")
