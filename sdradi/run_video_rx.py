@@ -37,44 +37,66 @@ def main():
 
     cv2.namedWindow("SDR Video Feed", cv2.WINDOW_NORMAL)
 
+    frame_buffer = {} # {frame_id: {pkts: {idx: bytes}, total: N, ts: time}}
+    
     try:
         while True:
             # Receive (Blocking-ish)
-            # receive() returns raw decoded bits from the demodulator
             rx_bits_coded, metrics = link.receive()
             
             if metrics.get('sync_success') and len(rx_bits_coded) > 0:
-                # We have a candidate frame!
-                print(f"[RX] Preamble Locked. SNR: {metrics.get('snr_est', 0):.1f} dB. Bits: {len(rx_bits_coded)}")
-                
-                # 1. FEC Decode
-                # We don't know exact length, so we decode what we have
-                # FECCodec usually expects exact block sizes?
-                # Convolutional code can decode stream.
                 try:
                     rx_bits = fec_codec.decode(rx_bits_coded)
-                    
-                    # 2. Bytes
                     rx_bytes = video_codec.bits_to_bytes(rx_bits)
                     
-                    # 3. Accumulate and Decode
-                    # We don't know sequence yet, just try to decode the chunk as a packet
-                    # decode_packets wants a list of bytes
-                    frame = video_codec.decode_packets([rx_bytes])
+                    # Parse Header
+                    info = video_codec.parse_packet_header(rx_bytes)
+                    if info:
+                        fid = info['frame_id']
+                        tot = info['total_pkts']
+                        idx = info['pkt_idx']
+                        
+                        # Initialize buffer for this frame
+                        if fid not in frame_buffer:
+                            frame_buffer[fid] = {'pkts': {}, 'total': tot, 'ts': time.time()}
+                        
+                        # Store packet
+                        frame_buffer[fid]['pkts'][idx] = rx_bytes
+                        frame_buffer[fid]['ts'] = time.time() # Update timestamp
+                        
+                        # Check complete
+                        current_frame = frame_buffer[fid]
+                        if len(current_frame['pkts']) == current_frame['total']:
+                            print(f"[RX] Frame {fid} Complete ({tot} pkts)! Decoding...")
+                            
+                            # Compile list
+                            pkt_list = list(current_frame['pkts'].values())
+                            frame = video_codec.decode_packets(pkt_list)
+                            
+                            if frame is not None:
+                                cv2.imshow("SDR Video Feed", frame)
+                                cv2.waitKey(1)
+                            else:
+                                print("  -> JPEG Decode Failed (Corrupt data)")
+                            
+                            # Remove processed frame
+                            del frame_buffer[fid]
+                            
+                        else:
+                            print(f"[RX] Frame {fid} Part {idx+1}/{tot} Received")
                     
-                    if frame is not None:
-                        cv2.imshow("SDR Video Feed", frame)
-                        if cv2.waitKey(1) & 0xFF == ord('q'):
-                            break
-                        print("  -> Frame Displayed!")
+                    # Cleanup old frames (> 2 seconds)
+                    now = time.time()
+                    expired = [k for k, v in frame_buffer.items() if now - v['ts'] > 2.0]
+                    for k in expired:
+                        del frame_buffer[k]
                         
                 except Exception as e:
-                    # It's normal to have partial packets fail
                     print(f"  -> Decode Error: {e}")
             else:
-                # Debug: Show peak so we know if we are seeing the burst
+                # Debug: Show peak
                 peak = metrics.get('peak_val', 0)
-                if peak > 15: # Filter pure noise (~10-50 depends on gain, usually noise < 20)
+                if peak > 15: 
                     print(f"[RX Scanning] Peak: {peak:.1f}")
                 pass
 

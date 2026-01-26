@@ -1359,6 +1359,30 @@ class VideoCodec:
         self.frame_counter += 1
         return packets
     
+    def parse_packet_header(self, packet: bytes) -> Optional[Dict[str, Any]]:
+        """Extract header info from a packet bytes."""
+        if len(packet) < self.HEADER_SIZE:
+            return None
+            
+        header = packet[:self.HEADER_SIZE]
+        try:
+            # Struct: frame_id, w, h, quality, pkt_idx, total_pkts, crc
+            frame_id, w, h, quality, pkt_idx, total_pkts, crc = struct.unpack(
+                self.HEADER_FORMAT, header
+            )
+            return {
+                'frame_id': frame_id,
+                'width': w,
+                'height': h,
+                'quality': quality,
+                'pkt_idx': pkt_idx,
+                'total_pkts': total_pkts,
+                'crc': crc,
+                'payload': packet[self.HEADER_SIZE:]
+            }
+        except struct.error:
+            return None
+
     def decode_packets(self, packets: List[bytes]) -> Optional[np.ndarray]:
         """
         Decode packets to video frame.
@@ -1380,22 +1404,18 @@ class VideoCodec:
         for pkt in packets:
             if len(pkt) < self.HEADER_SIZE:
                 continue
-            
-            header = pkt[:self.HEADER_SIZE]
-            payload = pkt[self.HEADER_SIZE:]
-            
-            try:
-                frame_id, w, h, quality, pkt_idx, total_pkts, crc = struct.unpack(
-                    self.HEADER_FORMAT, header
-                )
-            except struct.error:
+                
+            info = self.parse_packet_header(pkt)
+            if not info:
                 continue
             
+            payload = info['payload']
+            
             # Verify CRC
-            if zlib.crc32(payload) & 0xFFFFFFFF != crc:
+            if zlib.crc32(payload) & 0xFFFFFFFF != info['crc']:
                 continue  # Skip corrupted packet
             
-            parsed.append((pkt_idx, payload))
+            parsed.append((info['pkt_idx'], payload))
         
         if not parsed:
             return None
