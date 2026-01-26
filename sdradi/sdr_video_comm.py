@@ -1621,6 +1621,16 @@ class SDRVideoLink:
         tx_signal = np.concatenate([preamble, tx_signal])
         
         # Transmit via SDR (or simulate)
+        
+        # DEBUG: Check signal stats
+        max_amp = np.max(np.abs(tx_signal))
+        mean_amp = np.mean(np.abs(tx_signal))
+        dtype = tx_signal.dtype
+        print(f"[DEBUG] TX Signal: MaxAmp={max_amp:.4f}, MeanAmp={mean_amp:.4f}, Dtype={dtype}", flush=True)
+        
+        # Force complex64 (PyADI-IIO prefers this)
+        tx_signal = tx_signal.astype(np.complex64)
+        
         if self.sdr is not None:
             # Check if we are in cyclic mode (hacky check of the underlying sdr property or just default to False?)
             # Actually, the main loop sets the property. We should respect it or pass it.
