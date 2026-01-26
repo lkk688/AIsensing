@@ -1266,10 +1266,31 @@ class OTFSTransceiver:
         bits = np.concatenate(all_bits) if all_bits else np.array([], dtype=int)
         
         # Compute metrics
+        # Estimate SNR from Pilots EVM
+        # We did channel est H_est at pilots.
+        # Residual error?
+        # Simple SNR estimate: Mean / Var of constellation points (if we knew them)
+        # Or Carrier Power / Noise Power (from LS est)
+        
+        # Calculate Pilot SNR
+        # Rx Pilot Power / Error Power
+        # But we corrected it perfectly to 1+0j? No, H_eq compensates.
+        # Let's use the H_est magnitude as approx signal power and variance as noise?
+        # Actually, simpler: Use the constellation spread of the DATA symbols.
+        # But we don't know transmitted data.
+        # Use Decision Directed SNR:
+        hard_decisions = np.sign(all_symbols.real) + 1j*np.sign(all_symbols.imag) # QPSK assumption
+        noise_vec = all_symbols - hard_decisions
+        sig_pwr = np.mean(np.abs(hard_decisions)**2)
+        noise_pwr = np.mean(np.abs(noise_vec)**2)
+        
+        snr_est_val = 10 * np.log10(sig_pwr / (noise_pwr + 1e-10))
+        
         metrics = {
             'num_symbols': num_frames * frame_size,
             'num_frames': num_frames,
             'power_db': 10 * np.log10(np.mean(np.abs(signal)**2) + 1e-10),
+            'snr_est': snr_est_val,
             'constellation': np.array(all_symbols)[:256],  # For plotting
         }
         
@@ -1941,6 +1962,7 @@ class SDRVideoLink:
                 # Let's simple-update:
                 
                 payload_start += int_shift
+                # print(f"[Debug] Shifting payload start by {int_shift}. New Start: {payload_start}")
                 if payload_start < 0: payload_start = 0
                 
                 remaining_signal = signal[payload_start:]
