@@ -134,7 +134,7 @@ class SDR:
         # sdr.rx_buffer_size = num_samps
 
         # Configuration data channels
-        if device_name.lower() == 'pluto':
+        if device_name.lower() == 'pluto' or device_name.lower() == 'antsdr':
             Rx_CHANNEL = 1
             Tx_CHANNEL = 1
 

@@ -4,8 +4,9 @@
     "device": "pluto_dual",
     "fc": 2400000000.0,
     "fs": 2000000.0,
-    "bandwidth": 2000000.0,
-    "tx_gain": -80,
-    "rx_gain": 20,
+    "bandwidth": 8000000.0,
+    "tx_gain": 0,
+    "rx_gain": 40,
+    "rx_buffer_size": 65536,
     "timestamp": 1769317784.8089366
 }

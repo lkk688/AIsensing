@@ -111,8 +111,8 @@ class SDRConfig:
     fc: float = 2.4e9         # Center frequency (2.4 GHz ISM)
     fs: float = 10e6          # Sample rate (10 MSPS)
     bandwidth: float = 8e6
-    tx_gain: int = -10
-    rx_gain: int = 20
+    tx_gain: int = 0
+    rx_gain: int = 40
     rx_buffer_size: int = 65536
     
     @staticmethod
@@ -1617,10 +1617,11 @@ class SDRVideoLink:
             return np.array([]), {'error': 'SDR not connected'}
         
         # Find preamble and sync
-        rx_signal = self._synchronize(rx_signal)
+        rx_signal, sync_metrics = self._synchronize(rx_signal)
         
         # Demodulate
         bits, metrics = self.transceiver.demodulate(rx_signal)
+        metrics.update(sync_metrics) # Merge sync metrics (peak, cfo)
         
         return bits, metrics
     
@@ -1753,9 +1754,9 @@ class SDRVideoLink:
             
         if max_val < 3 * noise:
             # No signal found
-            return signal # Return as is, will likely fail demod
+            return signal, {'peak_val': max_val} # Return as is, will likely fail demod
             
-        print(f"[Sync] Peak detected at {peak_idx} (Val: {max_val:.1f})")
+        # print(f"[Sync] Peak detected at {peak_idx} (Val: {max_val:.1f})") # Disabled verbose
         
         # Extract the captured preamble from signal for CFO est
         # Preamble starts at peak_idx (roughly, correlation peak is at end of alignment usually? No, numpy correlate 'valid' shifts)
@@ -1767,8 +1768,10 @@ class SDRVideoLink:
         captured_preamble = signal[peak_idx : peak_idx + len(preamble)]
         
         if len(captured_preamble) < len(preamble):
-             print("[Sync] Incomplete preamble captured.")
-             return signal[peak_idx:] # Best effort
+             # print("[Sync] Incomplete preamble captured.")
+             return signal[peak_idx:], {'peak_val': max_val, 'incomplete': True}
+        
+        sync_meta = {'peak_val': max_val}
         
         # 3. CFO Estimation (Schmidl-Cox method on repetitions)
         # Compare 1st half of repetitions with 2nd half?
@@ -1797,7 +1800,8 @@ class SDRVideoLink:
         cfo_est_rad = angle / L
         
         cfo_hz = cfo_est_rad * (self.sdr_config.fs) / (2 * np.pi)
-        print(f"[Sync] Est CFO: {cfo_hz/1000:.2f} kHz")
+        # print(f"[Sync] Est CFO: {cfo_hz/1000:.2f} kHz")
+        sync_meta['cfo_est'] = cfo_hz
         
         # 4. Correction
         # Apply exp(-j * cfo_est * n) to the REST of the signal (payload)
@@ -1820,14 +1824,14 @@ class SDRVideoLink:
                 
                 # Check convergence
                 if abs(est_delay) < 0.1:
-                    print(f"[Sync] Loop {iteration}: Converged (Offset {est_delay:.2f})")
+                    # print(f"[Sync] Loop {iteration}: Converged (Offset {est_delay:.2f})")
                     break
                     
                 if abs(est_delay) > 20.0:
-                    print(f"[Sync] Loop {iteration}: Diverged/Invalid (Offset {est_delay:.2f})")
+                    # print(f"[Sync] Loop {iteration}: Diverged/Invalid (Offset {est_delay:.2f})")
                     break
                 
-                print(f"[Sync] Loop {iteration}: Offset {est_delay:.2f} -> Shifting")
+                # print(f"[Sync] Loop {iteration}: Offset {est_delay:.2f} -> Shifting")
                 
                 int_shift = int(np.round(est_delay))
                 if int_shift == 0: break
@@ -1863,7 +1867,7 @@ class SDRVideoLink:
                 print(f"[Sync] Loop failed: {e}")
                 break
                 
-        return corrected_payload
+        return corrected_payload, sync_meta
     
     def simulate_channel(self, signal: np.ndarray, snr_db: float = 20.0, 
                          channel_type: str = 'awgn', doppler_hz: float = 0.0) -> np.ndarray:
@@ -2310,18 +2314,19 @@ def main():
                 # Check for sync (if metrics has expected keys or rx_bits not empty)
                 if len(rx_bits) > 0:
                     # Calculate BER against expected
-                    # Note: We need to find alignment if packet size differs, but link.receive() does sync.
-                    # It returns the payload.
                     min_len = min(len(rx_bits), len(expected_bits))
                     if min_len > 0:
                         errors = np.sum(rx_bits[:min_len] != expected_bits[:min_len])
                         ber = errors / min_len
-                        print(f"BER: {ber:.2e} | SNR: {metrics.get('snr_estimated', 0):.1f} dB | CFO: {metrics.get('cfo_est', 0):.0f} Hz")
+                        # Only print if BER is decent or periodically? No, just print every time but sleep.
+                        print(f"BER: {ber:.2e} | SNR: {metrics.get('snr_est', metrics.get('snr_db', 0)):.1f} dB | CFO: {metrics.get('cfo_est', 0)/1000:.1f} kHz | Peak: {metrics.get('peak_val', 0):.1f}")
                     else:
                         print(f"Sync found, but payload empty.")
                 else:
                     # No sync found
                     pass
+                
+                time.sleep(0.1) # Slow down prints
                     
         except KeyboardInterrupt:
             print("\nStopped.")
