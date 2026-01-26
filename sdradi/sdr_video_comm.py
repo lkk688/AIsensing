@@ -60,18 +60,17 @@ except Exception as e:
 
 @dataclass
 class OFDMConfig:
-    """OFDM waveform configuration."""
-    fft_size: int = 256
-    cp_length: int = 64
-    num_data_carriers: int = 200
-    num_pilot_carriers: int = 16
-    mod_order: int = 16  # 16-QAM
-    num_symbols: int = 14
+    """OFDM Waveform Configuration."""
+    fft_size: int = 64
+    cp_len: int = 16
+    num_subcarriers: int = 48  # Data subcarriers
+    pilot_carriers: tuple = (-21, -7, 7, 21)
+    pilot_values: tuple = (1+1j, 1-1j, 1+1j, 1-1j)
+    sync_threshold: float = 30.0 # Lowered from 100 to catch weaker signals4
     pilot_pattern: str = 'block'  # 'block' or 'comb'
     
     @property
     def bits_per_symbol(self) -> int:
-        return int(np.log2(self.mod_order))
     
     @property
     def bits_per_frame(self) -> int:
@@ -1813,12 +1812,6 @@ class SDRVideoLink:
         peak_idx = np.argmax(corr)
         max_val = corr[peak_idx]
         
-        # Simple noise floor est
-        if len(corr) > 100:
-            noise = np.mean(corr[:100])
-        else:
-            noise = 0.001
-            
         # Threshold: Signal should be at least 10x noise or absolute value > 50
         # Peak ~20 is typical noise floor for random data correlation
         if max_val < 100 or max_val < 5 * noise:
