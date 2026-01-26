@@ -2238,7 +2238,6 @@ def main():
         print("PERFORMANCE BENCHMARK")
         print(f"{'='*60}\n")
         
-        import time
         
         for wf in [WaveformType.OFDM, WaveformType.OTFS]:
             link.waveform = wf
