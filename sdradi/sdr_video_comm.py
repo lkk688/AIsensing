@@ -2088,7 +2088,7 @@ class SDRVideoLink:
                 correction = np.exp(-1j * cfo_est_rad * t)
                 corrected_payload = remaining_signal * correction
                 
-        except Exception as e:
+            except Exception as e:
                 print(f"[Sync] Loop failed: {e}")
                 break
                 
