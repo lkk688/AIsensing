@@ -2070,30 +2070,23 @@ class SDRVideoLink:
                 if int_shift == 0: break
                 
                 # Apply Cumulative Shift
-                # Note: We are reslicing from ORIGINAL signal each time to avoid accumulation errors/boundary issues?
-                # Or just updating current view? Updating view is easier but must track total shift.
-                # Let's simple-update:
-                
                 payload_start += int_shift
-                # print(f"[Debug] Shifting payload start by {int_shift}. New Start: {payload_start}")
                 if payload_start < 0: payload_start = 0
                 
+                # Boundary Check
+                if payload_start >= len(signal):
+                    print("[Sync] Shift out of bounds")
+                    break
+                    
+                # CRITICAL FIX: Re-slice the signal with new alignment
                 remaining_signal = signal[payload_start:]
-            
-            # Boundary Check
-            if payload_start >= len(signal):
-                print("[Sync] Shift out of bounds")
-                break
+                if len(remaining_signal) == 0: break
                 
-            # CRITICAL FIX: Re-slice the signal with new alignment
-            remaining_signal = signal[payload_start:]
-            if len(remaining_signal) == 0: break
-            
-            # Recalculate correction with new time basis
-            t0 = payload_start - peak_idx
-            t = np.arange(len(remaining_signal)) + t0
-            correction = np.exp(-1j * cfo_est_rad * t)
-            corrected_payload = remaining_signal * correction
+                # Recalculate correction with new time basis
+                t0 = payload_start - peak_idx
+                t = np.arange(len(remaining_signal)) + t0
+                correction = np.exp(-1j * cfo_est_rad * t)
+                corrected_payload = remaining_signal * correction
                 
         except Exception as e:
                 print(f"[Sync] Loop failed: {e}")
