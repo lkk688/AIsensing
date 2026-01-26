@@ -10,9 +10,9 @@ def main():
     parser.add_argument('--ip', default='ip:192.168.3.2', help='SDR IP address')
     args = parser.parse_args()
 
-    # Load Configs
     sdr_cfg = SDRConfig.load_from_json()
     sdr_cfg.sdr_ip = args.ip
+    sdr_cfg.rx_uri = None # DISABLE Dual-Device Mode - We only control local RX
     sdr_cfg.device = "pluto"
     
     # Init Link

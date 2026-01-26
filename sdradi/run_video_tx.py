@@ -16,6 +16,7 @@ def main():
     # Load Configs
     sdr_cfg = SDRConfig.load_from_json()
     sdr_cfg.sdr_ip = args.ip
+    sdr_cfg.rx_uri = None # DISABLE Dual-Device Mode - We only control local TX
     sdr_cfg.device = "pluto" # Force pluto for consistency
     # Ensure buffer is large enough for a frame if we were receiving, 
     # but for TX, we just need to send big buffers.
