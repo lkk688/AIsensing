@@ -1205,6 +1205,56 @@ class OTFSTransceiver:
     
     def demodulate(self, signal: np.ndarray, channel_est: np.ndarray = None) -> Tuple[np.ndarray, Dict[str, Any]]:
         """
+        Demodulate OTFS signal to bits.
+        Supports multi-frame transmission.
+        
+        Args:
+            signal: Received complex baseband signal
+            channel_est: Optional channel estimate (freq domain)
+            
+        Returns:
+            Tuple of (recovered bits, metrics dict)
+        """
+        cfg = self.config
+        Ns = cfg.N_delay
+        Nc = cfg.N_doppler
+        
+        frame_size = Ns * Nc
+        num_frames = len(signal) // frame_size
+        if num_frames == 0:
+            # Pad for single frame
+            signal = np.pad(signal, (0, frame_size - len(signal)))
+            num_frames = 1
+        
+        all_bits = []
+        all_symbols = []
+        
+        for frame_idx in range(num_frames):
+            frame_signal = signal[frame_idx * frame_size:(frame_idx + 1) * frame_size]
+            
+            # Reshape received signal
+            rx_time_grid = frame_signal.reshape((Ns, Nc), order='F')
+            
+            # SFFT: Time -> TF -> DD
+            # Step 1: FFT to time-frequency
+            rx_tf_grid = np.fft.fft(rx_time_grid, axis=0)
+            
+            # Step 2: Channel equalization (if available)
+            if channel_est is not None:
+                H_freq = channel_est
+                if len(H_freq) < Ns:
+                    H_freq = np.pad(H_freq, (0, Ns - len(H_freq)), mode='edge')
+                H_freq = H_freq[:Ns]
+                
+                # MMSE equalization
+                snr_est = 20.0
+                noise_var = 1.0 / (10 ** (snr_est / 10))
+                H_eq = np.conj(H_freq) / (np.abs(H_freq)**2 + noise_var + 1e-10)
+                rx_tf_grid = rx_tf_grid * H_eq[:, None]
+            
+            # Step 3: TF -> DD
+            rx_dd_grid = np.fft.fft(rx_tf_grid, axis=1)
+            rx_dd_grid = np.fft.ifft(rx_dd_grid, axis=0)
             
             # Flatten and demodulate
             rx_symbols = rx_dd_grid.flatten()
@@ -1217,18 +1267,8 @@ class OTFSTransceiver:
         
         # Compute metrics
         # Estimate SNR from Pilots EVM
-        # We did channel est H_est at pilots.
-        # Residual error?
-        # Simple SNR estimate: Mean / Var of constellation points (if we knew them)
-        # Or Carrier Power / Noise Power (from LS est)
-        
-        # Calculate Pilot SNR
-        # Rx Pilot Power / Error Power
-        # But we corrected it perfectly to 1+0j? No, H_eq compensates.
-        # Let's use the H_est magnitude as approx signal power and variance as noise?
-        # Actually, simpler: Use the constellation spread of the DATA symbols.
-        # But we don't know transmitted data.
         # Use Decision Directed SNR:
+        all_symbols = np.array(all_symbols)
         hard_decisions = np.sign(all_symbols.real) + 1j*np.sign(all_symbols.imag) # QPSK assumption
         noise_vec = all_symbols - hard_decisions
         sig_pwr = np.mean(np.abs(hard_decisions)**2)
@@ -1241,7 +1281,7 @@ class OTFSTransceiver:
             'num_frames': num_frames,
             'power_db': 10 * np.log10(np.mean(np.abs(signal)**2) + 1e-10),
             'snr_est': snr_est_val,
-            'constellation': np.array(all_symbols)[:256],  # For plotting
+            'constellation': all_symbols[:256],  # For plotting
         }
         
         return bits, metrics
@@ -1988,7 +2028,7 @@ class SDRVideoLink:
         """
         Simulate transmission of a single video frame through the full pipeline.
         
-        Pipeline: Frame → JPEG → Bits → Modulate → Channel → Demodulate → Bits → JPEG → Frame
+        Pipeline: Frame -> JPEG -> Bits -> Modulate -> Channel -> Demodulate -> Bits -> JPEG -> Frame
         
         Args:
             frame: Input video frame (numpy array, BGR or RGB)
