@@ -1053,7 +1053,7 @@ class OFDMTransceiver:
                 # Simple linear regression on pilot phases
                 slope, intercept = np.polyfit(self.pilot_indices, h_phase_unwrapped, 1)
                 est_delay = -slope * cfg.fft_size / (2 * np.pi)
-                print(f"[Sync] Est Delay: {est_delay:.2f} samples (Phase Slope: {slope:.3f})")
+                # print(f"[Sync] Est Delay: {est_delay:.2f} samples (Phase Slope: {slope:.3f})")
             
             channel_estimates.append(h_interp)
             
@@ -2327,9 +2327,6 @@ def main():
         expected_bits = np.random.randint(0, 2, args.num_bits)
         
         try:
-            while True:
-                rx_bits, metrics = link.receive()
-                
             while True:
                 print("[DEBUG] Calling receive()...", flush=True)
                 rx_bits, metrics = link.receive()
