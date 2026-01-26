@@ -2219,6 +2219,9 @@ def main():
         waveform=waveform,
     )
     
+    print(f"[Startup] FC: {sdr_cfg.fc/1e6} MHz, FS: {sdr_cfg.fs/1e6} MHz")
+    print(f"[Startup] Device: {sdr_cfg.device} @ {sdr_cfg.sdr_ip}")
+    
     if args.mode == 'loopback':
         print(f"\n{'='*60}")
         print(f"LOOPBACK TEST - {args.waveform.upper()}")
@@ -2344,7 +2347,9 @@ def main():
                 rx_bits, metrics = link.receive()
                 
             while True:
+                print("[DEBUG] Calling receive()...")
                 rx_bits, metrics = link.receive()
+                print(f"[DEBUG] Receive returned. Sync={metrics.get('sync_success')}, Peak={metrics.get('peak_val')}")
                 
                 # Check for sync success
                 if metrics.get('sync_success', False):
