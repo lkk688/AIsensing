@@ -141,29 +141,55 @@ We performed extensive stress testing to identify the source of the "50% BER" is
 
 ---
 
-## 6. Solution: Distributed SDR Architecture (True Distributed Processing)
+## 6. Solution: Distributed SDR Architecture (The "Golden" Verification Setup)
 
-Our tests proved that connecting to a Remote Pluto via IIO Context (`ip:192.168.5.206`) **STILL CRASHES** the Main PC with a Bus Error. This is because the Main PC still has to process the incoming buffer.
+This setup bypasses all USB buffer contention on the main host.
 
-**The ONLY robust solution is to run the Software separately:**
+### Step 1: Receiver (Jetson/Pi) Setup
+**Goal**: Run `sdr_video_comm.py` in `rx` mode locally on the Jetson.
 
-### Topology
-*   **Computer A (TX Node)**: Run the Transmitter Code.
-*   **Computer B (RX Node)**: Run the Receiver Code.
-
-### Instructions
-1.  **Computer A (RTX5090)**:
+1.  **Dependencies**: The Jetson needs `scipy` and SDR drivers.
     ```bash
-    # Transmit Infinite Video/Data
-    python sdr_video_comm.py --mode tx --device antsdr --ip ip:192.168.1.10
-    ```
-2.  **Computer B (Jetson)**:
-    ```bash
-    # Receive Video/Data
-    python sdr_video_comm.py --mode rx --device pluto --ip ip:192.168.5.206
+    # Activate your venv (e.g., py310)
+    conda activate py310
+    
+    # Install missing packages
+    pip install scipy matplotlib pyadi-iio pylibiio "numpy<2.0"
     ```
 
-This completely decouples the memory management. The Main PC never touches the RX buffer, avoiding the crash.
+2.  **Run Receiver**:
+    Use the helper script `run_rx_jetson.sh` (copy it to Jetson) or run manually:
+    ```bash
+    # Check if Pluto is visible
+    ping 192.168.2.2
+    iio_info -s
+    
+    # Run RX
+    python sdr_video_comm.py --mode rx --device pluto --ip ip:192.168.2.2 --num_bits 50000
+    ```
+
+### Step 2: Transmitter (RTX5090) Setup
+**Goal**: Run `sdr_video_comm.py` in `tx` mode on the Main PC.
+
+1.  **Fix GLIBCXX Error**: Use `LD_PRELOAD`.
+2.  **Run Transmitter**: Use the helper script `run_tx.sh`:
+    ```bash
+    chmod +x run_tx.sh
+    ./run_tx.sh
+    ```
+    *Manual Command*:
+    ```bash
+    export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
+    python sdr_video_comm.py --mode tx --device antsdr --ip ip:192.168.1.10 --num_bits 50000
+    ```
+
+### Expected Result
+*   **Sender**: Prints "Transmitting continuous stream...".
+*   **Receiver**: Prints "Receiving..." and BER/SNR metrics.
+*   **Success Criteria**: BER < 1e-3 (0.1%), SNR > 15 dB.
+*   **Note**: If BER is ~50%, ensure the AntSDR and Pluto are on the same center frequency (`--fc 2.4e9`) and sampling rate (`--fs 1e6` is safer than 10e6 for initial tests).
+
+---
 
 ---
 

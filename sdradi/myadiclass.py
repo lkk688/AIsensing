@@ -120,7 +120,7 @@ class SDR:
         elif device_name.lower()=='adrv9009':
             #sdr = adi.adrv9009(self.SDR_IP)
             sdr = adrv9009(uri=self.SDR_IP, jesd_monitor=False, jesd=None)
-        elif device_name.lower()=='pluto':
+        elif device_name.lower()=='pluto' or device_name.lower()=='antsdr':
             sdr = adi.Pluto(uri=self.SDR_IP)
         
         # Configure the sample rate for both TX and RX
