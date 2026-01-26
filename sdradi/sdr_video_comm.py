@@ -67,7 +67,7 @@ class OFDMConfig:
     num_data_carriers: int = 48  # Data subcarriers
     pilot_carriers: tuple = (-21, -7, 7, 21)
     pilot_values: tuple = (1+1j, 1-1j, 1+1j, 1-1j)
-    sync_threshold: float = 30.0 # Lowered to catch weaker signals
+    sync_threshold: float = 40.0 # Increased to reject noise (Noise ~20, Signal > 80)
     pilot_pattern: str = 'block'  # 'block' or 'comb'
     mod_order: int = 4  # QPSK
     num_symbols: int = 14 # Standard frame length
@@ -1197,8 +1197,9 @@ class OTFSTransceiver:
         
         tx_signal = np.concatenate(all_tx_signal)
         
-        # Normalize power
-        tx_signal = tx_signal / (np.sqrt(np.mean(np.abs(tx_signal)**2)) + 1e-10)
+        # Scale to avoid clipping (Pluto DAC range)
+        # 0.1 factor ensures (6.0 * 0.1 = 0.6) < 1.0
+        tx_signal = tx_signal / (np.sqrt(np.mean(np.abs(tx_signal)**2)) + 1e-10) * 0.1
         
         return tx_signal
     

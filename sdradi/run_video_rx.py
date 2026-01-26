@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import argparse
 import os
+import zlib  # Added for CRC check
 
 # Fix Qt Wayland issue
 os.environ["QT_QPA_PLATFORM"] = "xcb"
@@ -52,9 +53,20 @@ def main():
                     # Parse Header
                     info = video_codec.parse_packet_header(rx_bytes)
                     if info:
+                        # CRITICAL: Verify CRC before processing!
+                        payload = info['payload']
+                        expected_crc = info['crc']
+                        if zlib.crc32(payload) & 0xFFFFFFFF != expected_crc:
+                            print(f"  -> CRC Failed for Frame {info['frame_id']} (Pk {info['pkt_idx']})")
+                            continue
+                            
                         fid = info['frame_id']
                         tot = info['total_pkts']
                         idx = info['pkt_idx']
+                        
+                        # Validate sanity
+                        if tot == 0 or tot > 200: 
+                             continue
                         
                         # Initialize buffer for this frame
                         if fid not in frame_buffer:
