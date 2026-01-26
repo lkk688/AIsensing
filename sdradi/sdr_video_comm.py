@@ -2079,23 +2079,21 @@ class SDRVideoLink:
                 if payload_start < 0: payload_start = 0
                 
                 remaining_signal = signal[payload_start:]
-                t = np.arange(len(remaining_signal)) + len(preamble) # Use consistent time base? Or new base?
-                # If we shifted start forward, t should increase?
-                # Actually, t represents physical time.
-                # If we start later, t[0] is later.
-                # Since we assume preamble ends at t_preamble, 
-                # payload starts at t_preamble + delta.
-                # So t = arange + len(preamble) + total_shift?
-                # Since payload_start includes shift, we calculate offset from peak_idx?
-                # peak_idx is fixed.
-                # payload_start = peak_idx + len(preamble) + total_shift.
-                # t[0] should be len(preamble) + total_shift.
-                # So: t = np.arange() + (payload_start - peak_idx).
+            
+            # Boundary Check
+            if payload_start >= len(signal):
+                print("[Sync] Shift out of bounds")
+                break
                 
-                t0 = payload_start - peak_idx
-                t = np.arange(len(remaining_signal)) + t0
-                correction = np.exp(-1j * cfo_est_rad * t)
-                corrected_payload = remaining_signal * correction
+            # CRITICAL FIX: Re-slice the signal with new alignment
+            remaining_signal = signal[payload_start:]
+            if len(remaining_signal) == 0: break
+            
+            # Recalculate correction with new time basis
+            t0 = payload_start - peak_idx
+            t = np.arange(len(remaining_signal)) + t0
+            correction = np.exp(-1j * cfo_est_rad * t)
+            corrected_payload = remaining_signal * correction
                 
             except Exception as e:
                 print(f"[Sync] Loop failed: {e}")
