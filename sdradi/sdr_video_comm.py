@@ -1622,7 +1622,17 @@ class SDRVideoLink:
         
         # Transmit via SDR (or simulate)
         if self.sdr is not None:
-            self.sdr.SDR_TX_send(tx_signal, leadingzeros=100)
+            # Check if we are in cyclic mode (hacky check of the underlying sdr property or just default to False?)
+            # Actually, the main loop sets the property. We should respect it or pass it.
+            # Ideally, SDR_TX_send should take an argument.
+            # Let's detect if we want cyclic.
+            is_cyclic = False
+            try:
+                is_cyclic = self.sdr.sdr.tx_cyclic_buffer
+            except:
+                pass
+                
+            self.sdr.SDR_TX_send(tx_signal, leadingzeros=100, cyclic=is_cyclic)
         
         return tx_signal
     
@@ -2299,11 +2309,16 @@ def main():
         
         try:
             # Cyclic Mode Strategy: Send ONCE, let hardware repeat.
-            # This is much more stable than Python loops for continuous transmission.
             print("Uploading Cyclic Buffer (Hardware Repeat)...")
-            link.sdr.sdr.tx_cyclic_buffer = True # Enable Cyclic
-            link.transmit(tx_bits) # Send one frame
-            print("TX Buffer Uploaded. Creating continuous stream...")
+            # Set cyclic property first (though SDR_TX_send will override, so we rely on the fix above)
+            link.sdr.sdr.tx_cyclic_buffer = True 
+            link.transmit(tx_bits) # Send one frame (fix above ensures cyclic=True is passed)
+            
+            # Double check
+            if link.sdr.sdr.tx_cyclic_buffer:
+                 print("TX Buffer Uploaded in CYCLIC mode. Creating continuous stream...")
+            else:
+                 print("[WARNING] TX Cyclic Buffer disabled! Transmission will stop.")
             
             while True:
                 time.sleep(1) # Keep script alive
