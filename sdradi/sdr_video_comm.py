@@ -59,11 +59,12 @@ except Exception as e:
 # ==============================================================================
 
 @dataclass
+@dataclass
 class OFDMConfig:
     """OFDM Waveform Configuration."""
     fft_size: int = 64
-    cp_len: int = 16
-    num_data_carriers: int = 48  # Data subcarriers (was num_subcarriers)
+    cp_length: int = 16 # Renamed from cp_len to match Transceiver logic
+    num_data_carriers: int = 48  # Data subcarriers
     pilot_carriers: tuple = (-21, -7, 7, 21)
     pilot_values: tuple = (1+1j, 1-1j, 1+1j, 1-1j)
     sync_threshold: float = 30.0 # Lowered to catch weaker signals
@@ -85,7 +86,7 @@ class OFDMConfig:
     
     @property
     def samples_per_frame(self) -> int:
-        return self.num_symbols * (self.fft_size + self.cp_len)
+        return self.num_symbols * (self.fft_size + self.cp_length)
 
 
 @dataclass
