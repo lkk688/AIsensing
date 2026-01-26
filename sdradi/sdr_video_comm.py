@@ -1619,9 +1619,15 @@ class SDRVideoLink:
         # Find preamble and sync
         rx_signal, sync_metrics = self._synchronize(rx_signal)
         
+        # Check if sync failed
+        if not sync_metrics.get('sync_success', True):
+             # Return empty bits but include metrics for debugging (e.g. noise peak)
+             return np.array([]), sync_metrics
+        
         # Demodulate
         bits, metrics = self.transceiver.demodulate(rx_signal)
         metrics.update(sync_metrics) # Merge sync metrics (peak, cfo)
+        metrics['sync_success'] = True
         
         return bits, metrics
     
@@ -1752,9 +1758,11 @@ class SDRVideoLink:
         else:
             noise = 0.001
             
-        if max_val < 3 * noise:
-            # No signal found
-            return signal, {'peak_val': max_val} # Return as is, will likely fail demod
+        # Threshold: Signal should be at least 10x noise or absolute value > 50
+        # Peak ~20 is typical noise floor for random data correlation
+        if max_val < 100 or max_val < 5 * noise:
+            # No valid signal found
+            return signal, {'peak_val': max_val, 'sync_success': False} 
             
         # print(f"[Sync] Peak detected at {peak_idx} (Val: {max_val:.1f})") # Disabled verbose
         
@@ -2310,20 +2318,33 @@ def main():
             while True:
                 rx_bits, metrics = link.receive()
                 
-                # Check for sync (if metrics has expected keys or rx_bits not empty)
-                if len(rx_bits) > 0:
-                    # Calculate BER against expected
-                    min_len = min(len(rx_bits), len(expected_bits))
-                    if min_len > 0:
-                        errors = np.sum(rx_bits[:min_len] != expected_bits[:min_len])
-                        ber = errors / min_len
-                        # Only print if BER is decent or periodically? No, just print every time but sleep.
-                        print(f"BER: {ber:.2e} | SNR: {metrics.get('snr_est', metrics.get('snr_db', 0)):.1f} dB | CFO: {metrics.get('cfo_est', 0)/1000:.1f} kHz | Peak: {metrics.get('peak_val', 0):.1f}")
-                    else:
-                        print(f"Sync found, but payload empty.")
+            while True:
+                rx_bits, metrics = link.receive()
+                
+                # Check for sync success
+                if metrics.get('sync_success', False):
+                    # We have a locked signal
+                    # Check payload
+                    if len(rx_bits) > 0:
+                        min_len = min(len(rx_bits), len(expected_bits))
+                        if min_len > 0:
+                            errors = np.sum(rx_bits[:min_len] != expected_bits[:min_len])
+                            ber = errors / min_len
+                            start_marker = "LOCKED" if ber < 0.01 else "SYNCED"
+                            print(f"[{start_marker}] Peak: {metrics.get('peak_val', 0):.0f} | BER: {ber:.2e} | SNR: {metrics.get('snr_est', metrics.get('snr_db', 0)):.1f} dB | CFO: {metrics.get('cfo_est', 0)/1000:.1f} kHz")
+                        else:
+                            print(f"[SYNCED] Payload Empty. Peak: {metrics.get('peak_val', 0):.0f}")
                 else:
-                    # No sync found
-                    pass
+                    # No sync
+                    # Print status line (overwrite same line to reduce spam?)
+                    # Or just print periodically.
+                    # For now, printing "Waiting..." every line is spammy if sleep is 0.1s.
+                    # Let's print only if peak > 30 (interesting noise) or every 2 seconds.
+                    peak = metrics.get('peak_val', 0)
+                    if peak > 40:
+                        print(f"[WAITING] Weak Signal? Peak: {peak:.1f}")
+                    # else:
+                    #     pass # Complete silence for straight noise
                 
                 time.sleep(0.1) # Slow down prints
                     
