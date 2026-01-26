@@ -201,22 +201,10 @@ try:
     LDPC_AVAILABLE = True
     LDPC_BACKEND = "torch"
 except ImportError:
-    # Fallback to TensorFlow/Sionna if available (legacy)
-    try:
-        import sys
-        import os
-        dl_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../deeplearning')
-        if dl_path not in sys.path:
-            sys.path.append(dl_path)
-            
-        from ldpc.encoding import LDPC5GEncoder
-        from ldpc.decoding import LDPC5GDecoder
-        LDPC_AVAILABLE = True
-        LDPC_BACKEND = "tensorflow"
-    except ImportError as e:
-        print(f"[Warning] LDPC import failed: {e}")
-        LDPC_AVAILABLE = False
-        LDPC_BACKEND = None
+    # TensorFlow Fallback removed by request
+    print(f"[Warning] PyTorch LDPC not found. Install sdr_ldpc.")
+    LDPC_AVAILABLE = False
+    LDPC_BACKEND = None
 
 
 class LDPC5GCoder:
@@ -2141,7 +2129,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description='SDR Video Communication with OFDM/OTFS')
-    parser.add_argument('--mode', choices=['loopback', 'ber_test', 'video_demo', 'benchmark'],
+    parser.add_argument('--mode', choices=['loopback', 'ber_test', 'video_demo', 'benchmark', 'tx', 'rx'],
                         default='loopback', help='Operation mode')
     parser.add_argument('--waveform', choices=['ofdm', 'otfs'], default='ofdm',
                         help='Waveform type')
@@ -2277,6 +2265,66 @@ def main():
         print("VIDEO DEMO")
         print("Run: python sdr_video_ui.py")
         print(f"{'='*60}\n")
+        
+    elif args.mode == 'tx':
+        print(f"\n{'='*60}")
+        print(f"TRANSMITTER MODE ({args.device} @ {args.ip})")
+        print(f"{'='*60}")
+        
+        if not link.connect_sdr():
+            print("Error: Could not connect to SDR.")
+            return
+
+        print("Transmitting continuous stream...")
+        # Fixed payload for verification
+        np.random.seed(42)
+        tx_bits = np.random.randint(0, 2, args.num_bits)
+        
+        try:
+            while True:
+                link.transmit(tx_bits)
+                # print(".", end="", flush=True)
+                # Small sleep to avoid buffer underflow logic on PC side, though SDR handles it
+                # time.sleep(0.01) 
+        except KeyboardInterrupt:
+            print("\nStopped.")
+
+    elif args.mode == 'rx':
+        print(f"\n{'='*60}")
+        print(f"RECEIVER MODE ({args.device} @ {args.ip})")
+        print(f"{'='*60}")
+        
+        if not link.connect_sdr():
+            print("Error: Could not connect to SDR.")
+            return
+
+        print("Receiving continuous stream...")
+        # Expected payload
+        np.random.seed(42)
+        expected_bits = np.random.randint(0, 2, args.num_bits)
+        
+        try:
+            while True:
+                rx_bits, metrics = link.receive()
+                
+                # Check for sync (if metrics has expected keys or rx_bits not empty)
+                if len(rx_bits) > 0:
+                    # Calculate BER against expected
+                    # Note: We need to find alignment if packet size differs, but link.receive() does sync.
+                    # It returns the payload.
+                    min_len = min(len(rx_bits), len(expected_bits))
+                    if min_len > 0:
+                        errors = np.sum(rx_bits[:min_len] != expected_bits[:min_len])
+                        ber = errors / min_len
+                        print(f"BER: {ber:.2e} | SNR: {metrics.get('snr_estimated', 0):.1f} dB | CFO: {metrics.get('cfo_est', 0):.0f} Hz")
+                    else:
+                        print(f"Sync found, but payload empty.")
+                else:
+                    # No sync found
+                    pass
+                    
+        except KeyboardInterrupt:
+            print("\nStopped.")
 
 
 if __name__ == '__main__':

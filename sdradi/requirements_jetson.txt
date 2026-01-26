@@ -1,0 +1,13 @@
+# Core SDR & DSP
+numpy<2.0
+pyadi-iio
+pylibiio
+scipy
+
+# PyTorch (CPU or CUDA) for LDPC
+torch
+torchvision
+
+# Optional Video/Plotting
+opencv-python
+matplotlib
