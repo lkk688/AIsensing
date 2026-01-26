@@ -74,7 +74,10 @@ def main():
                 except Exception as e:
                     print(f"  -> Processing Error: {e}")
             else:
-                # print(".", end="", flush=True)
+                # Debug: Show peak so we know if we are seeing the burst
+                peak = metrics.get('peak_val', 0)
+                if peak > 15: # Filter pure noise (~10-50 depends on gain, usually noise < 20)
+                    print(f"[RX Scanning] Peak: {peak:.1f}")
                 pass
 
     except KeyboardInterrupt:

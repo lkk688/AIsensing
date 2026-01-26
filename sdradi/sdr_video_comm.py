@@ -1612,6 +1612,12 @@ class SDRVideoLink:
                     adi_dev.gain_control_mode_chan0 = "manual"
                 if hasattr(adi_dev, 'rx_hardwaregain_chan0'):
                     adi_dev.rx_hardwaregain_chan0 = int(self.sdr_config.rx_gain)
+                
+                # Force only Channel 0 (Tx1) to avoid splitting power or using the wrong port
+                if hasattr(adi_dev, 'tx_enabled_channels'):
+                    adi_dev.tx_enabled_channels = [0]
+                if hasattr(adi_dev, 'rx_enabled_channels'):
+                    adi_dev.rx_enabled_channels = [0]
                     
             except Exception as e:
                 print(f"[SDR] Warning: Failed to set gain: {e}")
