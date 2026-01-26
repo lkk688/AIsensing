@@ -66,10 +66,14 @@ class OFDMConfig:
     num_data_carriers: int = 48  # Data subcarriers (was num_subcarriers)
     pilot_carriers: tuple = (-21, -7, 7, 21)
     pilot_values: tuple = (1+1j, 1-1j, 1+1j, 1-1j)
-    sync_threshold: float = 30.0 # Lowered from 100 to catch weaker signals
+    sync_threshold: float = 30.0 # Lowered to catch weaker signals
     pilot_pattern: str = 'block'  # 'block' or 'comb'
     mod_order: int = 4  # QPSK
     num_symbols: int = 14 # Standard frame length
+
+    @property
+    def num_pilot_carriers(self) -> int:
+        return len(self.pilot_carriers)
 
     @property
     def bits_per_symbol(self) -> int:
