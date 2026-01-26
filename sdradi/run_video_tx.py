@@ -57,28 +57,30 @@ def main():
 
             # Encode
             # 1. JPEG
+            # Returns list of (header+payload, packet_idx)
             packets = video_codec.encode_frame(frame, quality=args.quality)
-            all_bytes = b''.join([p[0] for p in packets])
-            data_bits = video_codec.bytes_to_bits(all_bytes)
             
-            # 2. FEC
-            tx_bits = fec_codec.encode(data_bits)
+            print(f"Frame {frame_idx}: {len(packets)} packets")
             
-            # 3. Transmit
-            # transmit() adds the preamble and sends via SDR_TX_send
-            # Check length - if too big, warn
-            if len(tx_bits) > 100000: # Arbitrary warning threshold
-                 print(f"Warning: Large Frame ({len(tx_bits)} bits)")
+            # Send each packet individually
+            for pkt_data, pkt_idx in packets:
+                # 2. FEC
+                data_bits = video_codec.bytes_to_bits(pkt_data)
+                tx_bits = fec_codec.encode(data_bits)
+                
+                # 3. Transmit
+                # transmit() adds the preamble and sends via SDR_TX_send
+                link.transmit(tx_bits)
+                
+                # Small gap to let RX process?
+                # time.sleep(0.01) 
             
-            start_t = time.time()
-            link.transmit(tx_bits)
             dur = time.time() - start_t
-            
-            print(f"Frame {frame_idx}: {len(data_bits)/8/1024:.1f} KB -> TX: {dur*1000:.1f}ms")
+            print(f"  -> TX: {dur*1000:.1f}ms")
             
             frame_idx += 1
-            # throttle slightly to allow RX to process?
-            time.sleep(0.1)
+            # throttle slightly 
+            time.sleep(0.05)
 
     except KeyboardInterrupt:
         print("\nStopping...")

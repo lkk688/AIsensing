@@ -57,22 +57,20 @@ def main():
                     # 2. Bytes
                     rx_bytes = video_codec.bits_to_bytes(rx_bits)
                     
-                    # 3. JPEG Decode
-                    # scan for JPEG SOI/EOI markers? 
-                    # Simple approach: Try to decode whole buffer
-                    nparr = np.frombuffer(rx_bytes, np.uint8)
-                    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                    # 3. Accumulate and Decode
+                    # We don't know sequence yet, just try to decode the chunk as a packet
+                    # decode_packets wants a list of bytes
+                    frame = video_codec.decode_packets([rx_bytes])
                     
                     if frame is not None:
                         cv2.imshow("SDR Video Feed", frame)
                         if cv2.waitKey(1) & 0xFF == ord('q'):
                             break
-                        print("  -> Frame Decoded Successfully!")
-                    else:
-                        print("  -> JPEG Decode Failed (Corrupt data)")
+                        print("  -> Frame Displayed!")
                         
                 except Exception as e:
-                    print(f"  -> Processing Error: {e}")
+                    # It's normal to have partial packets fail
+                    pass
             else:
                 # Debug: Show peak so we know if we are seeing the burst
                 peak = metrics.get('peak_val', 0)

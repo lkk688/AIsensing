@@ -1820,11 +1820,19 @@ class SDRVideoLink:
         peak_idx = np.argmax(corr)
         max_val = corr[peak_idx]
         
-        # Threshold: Signal should be at least 10x noise or absolute value > 50
-        # Peak ~20 is typical noise floor for random data correlation
-        if max_val < 100 or max_val < 5 * noise:
-            # No valid signal found
-            return signal, {'peak_val': max_val, 'sync_success': False} 
+        # Dynamic threshold from config
+        threshold = self.ofdm_config.sync_threshold if self.waveform == WaveformType.OFDM else 30.0
+        
+        # Check against threshold
+        if max_val < threshold:
+            # No sync found
+             metrics = {
+                'sync_success': False,
+                'peak_val': max_val,
+                'snr_est': 0.0,
+                'cfo_est': 0.0
+             }
+             return signal, metrics
             
         # print(f"[Sync] Peak detected at {peak_idx} (Val: {max_val:.1f})") # Disabled verbose
         
