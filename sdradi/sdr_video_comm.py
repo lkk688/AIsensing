@@ -2165,48 +2165,31 @@ def main():
                         default='loopback', help='Operation mode')
     parser.add_argument('--waveform', choices=['ofdm', 'otfs'], default='ofdm',
                         help='Waveform type')
-    parser.add_argument('--device', default='adrv9009', help='SDR device type')
+    parser.add_argument('--device', default='adrv9009', help='SDR device type') # Keep default ensuring string
     parser.add_argument('--ip', default='ip:192.168.86.40', help='SDR IP address')
-    parser.add_argument('--fc', type=float, default=2.4e9, help='Center frequency (Hz)')
-    parser.add_argument('--fs', type=float, default=10e6, help='Sample rate (Hz)')
-    parser.add_argument('--mod_order', type=int, default=16, help='Modulation order (4/16/64)')
-    parser.add_argument('--num_bits', type=int, default=10000, help='Number of bits for test')
+    parser.add_argument('--fc', type=float, default=None, help='Center frequency (Hz)')
+    parser.add_argument('--fs', type=float, default=None, help='Sample rate (Hz)')
+    parser.add_argument('--mod_order', type=int, default=16, help='Modulation order')
+    parser.add_argument('--num_bits', type=int, default=10000, help='Number of bits')
     parser.add_argument('--plot', action='store_true', help='Show plots')
     
     args = parser.parse_args()
     
-    # Configure
+    # Version Tag for Debugging
+    print(f"[STARTUP] v2.1 (Debug Flush) - Time: {time.time()}", flush=True)
+    
     # Configure
     # Try loading from file first
     base_cfg = SDRConfig.load_from_json()
     
-    # Override with CLI args if they differ from default
-    # Note: Simple approach - just use CLI values if provided, otherwise fallback to loaded/default
-    # But argparse sets defaults.
-    # Logic: Let's use CLI args to construct, but if CLI args are defaults, maybe respect file?
-    # Simpler: Just rely on CLI args, but if user wants tuned config, they might need to pass it or we change default.
-    # Actually, let's just use the file as the source of truth if it exists, and update it with explicit CLI args?
-    # For now, let's stick to explicit creation for CLI (to avoid confusion) but print a hint.
-    
-    sdr_cfg = base_cfg # Start with tuned or default
-    
-    # Update with CLI args if explicitly set (hard to detect with argparse defaults without complex logic)
-    # So for CLI, we might just overwrite:
-    if args.ip != 'ip:192.168.86.40': sdr_cfg.sdr_ip = args.ip
-    if args.device != 'adrv9009': sdr_cfg.device = args.device
-    
-    # Or just overwrite always since CLI defaults are safe?
-    # No, CLI defaults (adrv9009) might overwrite tuned Pluto config.
-    # Let's trust the user CLI args heavily, OR if the file exists, assume it's for the connected device.
-    
-    # Re-instantiate to be safe
+    # Override with CLI args ONLY if provided (not None)
     sdr_cfg = SDRConfig(
         sdr_ip=args.ip if args.ip != 'ip:192.168.86.40' else base_cfg.sdr_ip,
         device=args.device if args.device != 'adrv9009' else base_cfg.device,
-        fc=args.fc,
-        fs=args.fs,
-        tx_gain=base_cfg.tx_gain, # Respect Tuning
-        rx_gain=base_cfg.rx_gain  # Respect Tuning
+        fc=args.fc if args.fc is not None else base_cfg.fc,
+        fs=args.fs if args.fs is not None else base_cfg.fs,
+        tx_gain=base_cfg.tx_gain,
+        rx_gain=base_cfg.rx_gain
     )
     ofdm_cfg = OFDMConfig(mod_order=args.mod_order)
     otfs_cfg = OTFSConfig()
@@ -2347,9 +2330,9 @@ def main():
                 rx_bits, metrics = link.receive()
                 
             while True:
-                print("[DEBUG] Calling receive()...")
+                print("[DEBUG] Calling receive()...", flush=True)
                 rx_bits, metrics = link.receive()
-                print(f"[DEBUG] Receive returned. Sync={metrics.get('sync_success')}, Peak={metrics.get('peak_val')}")
+                print(f"[DEBUG] Receive returned. Sync={metrics.get('sync_success')}, Peak={metrics.get('peak_val')}", flush=True)
                 
                 # Check for sync success
                 if metrics.get('sync_success', False):
