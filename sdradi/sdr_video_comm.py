@@ -1454,7 +1454,7 @@ class DualSDR:
         self.rx_dev.sample_rate = int(fs)
         self.rx_dev.rx_lo = int(fc)
         self.rx_dev.rx_rf_bandwidth = int(bw)
-        self.rx_dev.rx_buffer_size = 65536
+        self.rx_dev.rx_buffer_size = 1048576 # Increased to 1M samples (~0.5s) to capture full packets
         
         # Internal reference for direct access if needed
         self.sdr = self # Mock compatibility

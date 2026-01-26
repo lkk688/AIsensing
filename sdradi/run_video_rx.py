@@ -70,7 +70,7 @@ def main():
                         
                 except Exception as e:
                     # It's normal to have partial packets fail
-                    pass
+                    print(f"  -> Decode Error: {e}")
             else:
                 # Debug: Show peak so we know if we are seeing the burst
                 peak = metrics.get('peak_val', 0)
