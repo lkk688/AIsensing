@@ -179,3 +179,8 @@ AIRadar/unused
 AIRadar/writing
 AIRadar/data
 sdradi/test_video.mp4
+sdradi/sim_async_out.avi
+sdradi/sim_output.avi
+sdradi/sim_enhanced_out.avi
+sdradi/loopback_out.avi
+sdradi/tdd_loopback_out.avi

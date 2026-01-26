@@ -1458,6 +1458,21 @@ class VideoCodec:
         self.frame_counter += 1
         return packets
     
+    def create_packet_header(self, payload: bytes, frame_id: int, pkt_idx: int, total_pkts: int, quality: int = 50) -> bytes:
+        """Create binary header for a packet."""
+        crc = zlib.crc32(payload) & 0xFFFFFFFF
+        header = struct.pack(
+            self.HEADER_FORMAT,
+            frame_id,
+            self.config.resolution[0],
+            self.config.resolution[1],
+            quality,
+            pkt_idx,
+            total_pkts,
+            crc
+        )
+        return header + payload
+
     def parse_packet_header(self, packet: bytes) -> Optional[Dict[str, Any]]:
         """Extract header info from a packet bytes."""
         if len(packet) < self.HEADER_SIZE:
@@ -1772,7 +1787,7 @@ class SDRVideoLink:
         max_amp = np.max(np.abs(tx_signal))
         mean_amp = np.mean(np.abs(tx_signal))
         dtype = tx_signal.dtype
-        print(f"[DEBUG] TX Signal: MaxAmp={max_amp:.4f}, MeanAmp={mean_amp:.4f}, Dtype={dtype}", flush=True)
+        # print(f"[DEBUG] TX Signal: MaxAmp={max_amp:.4f}, MeanAmp={mean_amp:.4f}, Dtype={dtype}", flush=True)
         
         # Force complex64 (PyADI-IIO prefers this)
         tx_signal = tx_signal.astype(np.complex64)
@@ -1794,6 +1809,22 @@ class SDRVideoLink:
         
         return tx_signal
     
+    
+    def transmit_packet(self, pkt_bytes: bytes, frame_id: int, pkt_idx: int, total_pkts: int):
+        """
+        Helper: Encode, Modulate, and Transmit a single packet.
+        """
+        # 1. Add Header
+        payload_with_header = self.video_codec.create_packet_header(pkt_bytes, frame_id, pkt_idx, total_pkts)
+        
+        # 2. Encode FEC
+        pkt_arr = np.frombuffer(payload_with_header, dtype=np.uint8)
+        bits = np.unpackbits(pkt_arr)
+        fec_bits = self.fec_codec.encode(bits)
+        
+        # 3. Transmit
+        self.transmit(fec_bits)
+
     def receive(self, expected_bits: int = None) -> Tuple[np.ndarray, Dict[str, Any]]:
         """Receive and demodulate signal."""
         if self.sdr is not None:
@@ -1816,6 +1847,10 @@ class SDRVideoLink:
         bits, metrics = self.transceiver.demodulate(rx_signal)
         metrics.update(sync_metrics) # Merge sync metrics (peak, cfo)
         metrics['sync_success'] = True
+        if len(rx_signal) > 0:
+            metrics['rx_max'] = np.max(np.abs(rx_signal))
+        else:
+            metrics['rx_max'] = 0.0
         
         return bits, metrics
     
@@ -1999,6 +2034,7 @@ class SDRVideoLink:
         cfo_hz = cfo_est_rad * (self.sdr_config.fs) / (2 * np.pi)
         # print(f"[Sync] Est CFO: {cfo_hz/1000:.2f} kHz")
         sync_meta['cfo_est'] = cfo_hz
+        sync_meta['sync_success'] = True
         
         # 4. Correction
         # Apply exp(-j * cfo_est * n) to the REST of the signal (payload)
