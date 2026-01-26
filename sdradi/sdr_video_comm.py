@@ -1617,7 +1617,8 @@ class SDRVideoLink:
         tx_signal = self.transceiver.modulate(bits)
         
         # Add preamble for synchronization
-        preamble = self._generate_preamble()
+        # MUST MATCH RX (L=16, R=20)
+        preamble = self._generate_preamble(block_len=16, repetitions=20)
         tx_signal = np.concatenate([preamble, tx_signal])
         
         # Transmit via SDR (or simulate)
@@ -1750,14 +1751,17 @@ class SDRVideoLink:
         
         return results
     
-    def _generate_preamble(self, block_len: int = 32, repetitions: int = 10) -> np.ndarray:
+    def _generate_preamble(self, block_len: int = 16, repetitions: int = 20) -> np.ndarray:
         """
         Generate Schmidl-Cox style preamble for robust Synchronization & CFO estimation.
         Structure: [A, A, A, A...] (Repetitive pattern)
+        Uses Fixed Seed (12345) to ensure TX and RX are always identical.
         """
         # Generate a random QPSK sequence for the block
-        np.random.seed(42) # Fixed seed for receiver to know
-        block = (np.random.choice([-1, 1], block_len) + 1j * np.random.choice([-1, 1], block_len)) / np.sqrt(2)
+        # Use isolated State to avoid pollution from other system components
+        rng = np.random.RandomState(12345) 
+        
+        block = (rng.choice([-1, 1], block_len) + 1j * rng.choice([-1, 1], block_len)) / np.sqrt(2)
         
         # Repetitions
         preamble = np.tile(block, repetitions)
@@ -1781,7 +1785,7 @@ class SDRVideoLink:
         # Pluto PPM is ~20ppm at 2.4G = 48kHz.
         # 32 might be too long. Let's use L=16. 
         # Fs=2e6, L=16. f_max = 2e6 / 32 = 62.5 kHz. Covers 48kHz.
-        # Let's use L=16, Reps=20 (320 samples total).
+        # Let's use Defaults (L=16, R=20).
         L = 16
         R = 20
         preamble = self._generate_preamble(block_len=L, repetitions=R)
