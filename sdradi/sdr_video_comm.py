@@ -1274,7 +1274,13 @@ class OTFSTransceiver:
         sig_pwr = np.mean(np.abs(hard_decisions)**2)
         noise_pwr = np.mean(np.abs(noise_vec)**2)
         
-        snr_est_val = 10 * np.log10(sig_pwr / (noise_pwr + 1e-10))
+        if sig_pwr > 0 and noise_pwr > 0:
+            snr_est_val = 10 * np.log10(sig_pwr / noise_pwr)
+        else:
+            snr_est_val = 0.0
+            
+        # Debug Print
+        # print(f"[Debug] Demod: SigPwr={sig_pwr:.4f}, NoisePwr={noise_pwr:.4f}, SNR={snr_est_val:.2f}dB, Frames={num_frames}")
         
         metrics = {
             'num_symbols': num_frames * frame_size,
