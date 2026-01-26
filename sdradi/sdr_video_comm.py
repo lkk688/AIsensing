@@ -1642,7 +1642,9 @@ class SDRVideoLink:
             except:
                 pass
                 
-            self.sdr.SDR_TX_send(tx_signal, leadingzeros=100, cyclic=is_cyclic)
+            # Normalize=True is CRITICAL for OFDM (High PAPR)
+            # Otherwise Peak(17) * 16384 overflows 16-bit DAC limits
+            self.sdr.SDR_TX_send(tx_signal, leadingzeros=100, cyclic=is_cyclic, normalize=True)
         
         return tx_signal
     
@@ -2346,16 +2348,13 @@ def main():
             return
 
         print("Receiving continuous stream...", flush=True)
-        print("[DEBUG] Trace 0", flush=True)
         # Expected payload
         np.random.seed(42)
         expected_bits = np.random.randint(0, 2, args.num_bits)
         
         try:
             while True:
-                print("[DEBUG] Calling receive()...", flush=True)
                 rx_bits, metrics = link.receive()
-                print(f"[DEBUG] Receive returned. Sync={metrics.get('sync_success')}, Peak={metrics.get('peak_val')}", flush=True)
                 
                 # Check for sync success
                 if metrics.get('sync_success', False):
