@@ -1825,18 +1825,99 @@ class SDRVideoLink:
         # 3. Transmit
         self.transmit(fec_bits)
 
+    def update_gain_control(self, rx_samples: np.ndarray):
+        """
+        Software Automatic Gain Control (AGC) Loop.
+        
+        Adapts RX Hardware Gain based on digital saturation or low signal level.
+        Range: 0 dB to 60 dB.
+        """
+        if self.sdr is None: return
+        
+        try:
+            adi_dev = self.sdr.sdr
+            if not hasattr(adi_dev, 'rx_hardwaregain_chan0'):
+                return
+            
+            current_gain = int(adi_dev.rx_hardwaregain_chan0)
+            new_gain = current_gain
+            
+            # Metric: Peak Amplitude
+            peak_amp = np.max(np.abs(rx_samples))
+            
+            # DEBUG: Print data type and peak once to confirm scale
+            if not hasattr(self, '_debug_dtype_printed'):
+                print(f"[DEBUG] RX Dtype: {rx_samples.dtype}, Peak: {peak_amp}")
+                self._debug_dtype_printed = True
+                
+            SATURATION_THRESH = 1800 # ~90% of 2048 (if int12/16)
+            LOW_SIGNAL_THRESH = 300  # ~15%
+            
+            # Check for "Max Gain but Weak Signal" -> Likely Antenna/Connection issue
+            if current_gain >= 60 and peak_amp < LOW_SIGNAL_THRESH:
+                 if np.random.rand() < 0.05: # Throttle warning
+                     print(f"[AGC WARNING] Max Gain (60dB) reached but Signal Weak (Peak {peak_amp:.0f}). Check TX Power or Antennas.")
+            
+            if peak_amp > SATURATION_THRESH:
+                # Saturated: Decrease gain fast
+                change = -5
+                new_gain = max(0, current_gain + change)
+                print(f"[AGC] Saturation (Peak {peak_amp:.0f}). Gain {current_gain} -> {new_gain} dB")
+                
+            elif peak_amp < LOW_SIGNAL_THRESH:
+                # Weak: Increase gain slowly
+                change = 2
+                new_gain = min(60, current_gain + change)
+                
+                # Limit print rate
+                if np.random.rand() < 0.1:
+                    print(f"[AGC] Boosting Gain {current_gain} -> {new_gain} dB (Peak {peak_amp:.0f})")
+
+            # Apply
+            if new_gain != current_gain:
+                adi_dev.rx_hardwaregain_chan0 = new_gain
+                
+        except Exception as e:
+            pass
+
     def receive(self, expected_bits: int = None) -> Tuple[np.ndarray, Dict[str, Any]]:
         """Receive and demodulate signal."""
         if self.sdr is not None:
             # Real SDR receive
-            rx_signal = self.sdr.SDR_RX_receive()
+            # CRITICAL: normalize=False to see true signal levels for AGC
+            if hasattr(self.sdr, 'SDR_RX_receive'):
+                # myadiclass signature: SDR_RX_receive(self, combinerule='drop', normalize=True)
+                rx_signal = self.sdr.SDR_RX_receive(normalize=False)
+            else:
+                 rx_signal = self.sdr.sdr.rx()
+            
             if isinstance(rx_signal, tuple):
                 rx_signal = rx_signal[0]
+                
+            # Run AGC
+            self.update_gain_control(rx_signal)
+            
+            # Normalize manually for processing (the rest of the pipeline expects unit power?)
+            # Actually, _synchronize removes mean. 
+            # OFDM demodulator expects normalized constellation? 
+            # myofdm.demodulate uses internal equalization H = Rx/Tx. It handles magnitude.
+            # But Sync correlation threshold might depend on magnitude?
+            # "correlation = np.correlate(signal, preamble)"
+            # If signal is 2000, correlation is huge.
+            # Logic: sync_threshold = 40.0. This assumes normalized signal ~1.0?
+            # Yes. so we MUST normalize for processing.
+            
+            max_val = np.max(np.abs(rx_signal))
+            if max_val > 0:
+                rx_signal_norm = rx_signal / max_val
+            else:
+                rx_signal_norm = rx_signal
+                
         else:
             return np.array([]), {'error': 'SDR not connected'}
         
-        # Find preamble and sync
-        rx_signal, sync_metrics = self._synchronize(rx_signal)
+        # Find preamble and sync (using Normalized Signal)
+        rx_signal_sync, sync_metrics = self._synchronize(rx_signal_norm)
         
         # Check if sync failed
         if not sync_metrics.get('sync_success', True):
@@ -1844,13 +1925,10 @@ class SDRVideoLink:
              return np.array([]), sync_metrics
         
         # Demodulate
-        bits, metrics = self.transceiver.demodulate(rx_signal)
+        bits, metrics = self.transceiver.demodulate(rx_signal_sync)
         metrics.update(sync_metrics) # Merge sync metrics (peak, cfo)
         metrics['sync_success'] = True
-        if len(rx_signal) > 0:
-            metrics['rx_max'] = np.max(np.abs(rx_signal))
-        else:
-            metrics['rx_max'] = 0.0
+        metrics['rx_max'] = max_val # Log the raw peak
         
         return bits, metrics
     
