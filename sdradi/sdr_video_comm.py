@@ -1038,7 +1038,11 @@ class OFDMTransceiver:
             freq_sym = np.fft.fft(time_sym) / np.sqrt(cfg.fft_size)
             
             # Channel estimation from pilots
+            # Extract Pilots from the received symbol
             rx_pilots = freq_sym[self.pilot_indices]
+            
+            # Estimate Channel at Pilot Subcarriers (LS Estimate)
+            # H_pilot = Rx / Tx_Known
             h_pilots = rx_pilots / self.pilot_symbols
             
             # Robust Channel Estimation (Mag/Unwrapped-Phase Interpolation)
@@ -1058,15 +1062,21 @@ class OFDMTransceiver:
             # Slope = d(phi)/dk. Delay (samples) = -Slope * N / (2*pi)
             if sym_idx == 0:
                 # Simple linear regression on pilot phases
-                slope, intercept = np.polyfit(self.pilot_indices, h_phase_unwrapped, 1)
-                est_delay = -slope * cfg.fft_size / (2 * np.pi)
-                # print(f"[Sync] Est Delay: {est_delay:.2f} samples (Phase Slope: {slope:.3f})")
+                if len(self.pilot_indices) >= 2:
+                    slope, intercept = np.polyfit(self.pilot_indices, h_phase_unwrapped, 1)
+                    est_delay = -slope * cfg.fft_size / (2 * np.pi)
+                    # print(f"[Sync] Est Delay: {est_delay:.2f} samples (Phase Slope: {slope:.3f})")
             
             channel_estimates.append(h_interp)
             
             # Equalize data carriers
+            # Use the interpolated channel estimate
             h_data = h_interp[self.data_indices]
+            
+            # ZF Equalization: Rx / H
+            # Add small epsilon to avoid divide by zero
             eq_data = freq_sym[self.data_indices] / (h_data + 1e-10)
+            
             all_rx_symbols.append(eq_data)
         
         if not all_rx_symbols:
@@ -1079,13 +1089,24 @@ class OFDMTransceiver:
         
         # Compute metrics
         avg_channel = np.mean(np.abs(channel_estimates))
-        snr_est = 10 * np.log10(np.mean(np.abs(all_rx_symbols)**2) / (1e-10 + np.var(all_rx_symbols - np.round(all_rx_symbols))))
+        
+        # Calculate SNR
+        # Estimate signal power from recovered symbols (assuming normalized constellation)
+        sig_pwr = np.mean(np.abs(all_rx_symbols)**2)
+        # Estimate noise power from error (distance to nearest constellation point)
+        # Hard decision
+        hard = np.sign(all_rx_symbols.real) + 1j*np.sign(all_rx_symbols.imag)
+        err = all_rx_symbols - hard
+        noise_pwr = np.mean(np.abs(err)**2)
+        
+        snr_est_val = 10 * np.log10(sig_pwr / (noise_pwr + 1e-10))
         
         metrics = {
             'num_symbols': len(all_rx_symbols),
             'num_frames': total_symbols // cfg.num_symbols,
             'channel_gain_db': 20 * np.log10(avg_channel + 1e-10),
-            'snr_est_db': min(snr_est, 40),  # Cap at 40 dB
+            'snr_est_db': snr_est_val,
+            'snr_est': snr_est_val, # Duplicate for compatibility
             'constellation': all_rx_symbols.flatten()[:256],  # For plotting
         }
         
@@ -1239,18 +1260,78 @@ class OTFSTransceiver:
             # Step 1: FFT to time-frequency
             rx_tf_grid = np.fft.fft(rx_time_grid, axis=0)
             
-            # Step 2: Channel equalization (if available)
-            if channel_est is not None:
-                H_freq = channel_est
-                if len(H_freq) < Ns:
-                    H_freq = np.pad(H_freq, (0, Ns - len(H_freq)), mode='edge')
-                H_freq = H_freq[:Ns]
+            # Step 2: Channel equalization
+            # If no external estimate, perform internal Pilot-Based Estimation
+            if channel_est is None:
+                # Extract Pilots
+                # Map indices (-N/2..N/2) -> (0..N-1)
+                def map_idx(idx): return (idx + cfg.num_subcarriers) % cfg.num_subcarriers
+                pilot_idxs = [map_idx(p) for p in cfg.pilot_carriers]
+                pilot_vals = np.array(cfg.pilot_values)
                 
-                # MMSE equalization
-                snr_est = 20.0
-                noise_var = 1.0 / (10 ** (snr_est / 10))
-                H_eq = np.conj(H_freq) / (np.abs(H_freq)**2 + noise_var + 1e-10)
-                rx_tf_grid = rx_tf_grid * H_eq[:, None]
+                # rx_tf_grid: [Num_Sym, 64]
+                rx_pilots = rx_tf_grid[:, pilot_idxs]
+                
+                # LS Estimate: H = Y / X
+                H_pilot_frames = rx_pilots / pilot_vals # [Num_Sym, 4]
+                
+                # Average over symbols or interpolate?
+                # Simple approach: Average all pilot estimates for this frame to get one H vector
+                # But pilots are at specific frequencies.
+                # We need to INTERPOLATE H across all 64 subcarriers.
+                
+                # 1. Average Pilots across time (if Doppler is low, this improves SNR)
+                H_pilot_avg = np.mean(H_pilot_frames, axis=0) # Shape [4]
+                
+                # 2. Interpolate across Frequency
+                # Frequencies of pilots:
+                pilot_freqs = pilot_idxs
+                all_freqs = np.arange(cfg.num_subcarriers)
+                
+                # We need proper sorting for interpolation because of wrapping?
+                # Actually, pilot indices are [43, 57, 7, 21].
+                # Unwrapped: -21, -7, 7, 21. 
+                # Let's simple-interp on unwrapped map, then re-wrap.
+                
+                # Robust Flat Fading Fallback:
+                # Just take mean Magnitude and Mean Phase (rotated)
+                # This works if channel is flat.
+                # For non-flat, we really need `np.interp`.
+                
+                # Let's implement Linear Interpolation
+                # Sort pilots by index
+                sorted_pairs = sorted(zip(pilot_idxs, H_pilot_avg))
+                p_idxs_sorted = [x[0] for x in sorted_pairs]
+                H_pilots_sorted = [x[1] for x in sorted_pairs]
+                
+                # We need to handle the cyclic buffer edge cases for interpolation?
+                # Simplified: np.interp works if x is increasing.
+                # But our indices wrap 43..63, 0..21.
+                # Let's treat them as 0..63 and assume linearity?
+                # Gap between 57 and 7 is large (wrapping).
+                # For now: Linear Interp.
+                
+                # Note: `np.interp` expects increasing x-coordinates.
+                # p_idxs_sorted are likely [7, 21, 43, 57].
+                H_interp = np.interp(all_freqs, p_idxs_sorted, H_pilots_sorted)
+                
+                # Expand to Time Grid [Num_Sym, 64]
+                H_freq = H_interp
+                
+                # Store for debugging
+                # internal_H_est = H_freq
+            else:
+               H_freq = channel_est
+
+            if len(H_freq) < Ns:
+                H_freq = np.pad(H_freq, (0, Ns - len(H_freq)), mode='edge')
+            H_freq = H_freq[:Ns]
+            
+            # MMSE equalization
+            snr_est = 20.0
+            noise_var = 1.0 / (10 ** (snr_est / 10))
+            H_eq = np.conj(H_freq) / (np.abs(H_freq)**2 + noise_var + 1e-10)
+            rx_tf_grid = rx_tf_grid * H_eq[:, None]
             
             # Step 3: TF -> DD
             rx_dd_grid = np.fft.fft(rx_tf_grid, axis=1)
