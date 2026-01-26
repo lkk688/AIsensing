@@ -1694,7 +1694,9 @@ class SDRVideoLink:
     
     def loopback_test(self, num_bits: int = 10000) -> Dict[str, float]:
         """
-        Run loopback test (TX → channel simulation → RX).
+        """
+    Run loopback test (TX -> channel simulation -> RX).
+    """
         
         Returns BER and other metrics.
         """
