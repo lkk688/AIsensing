@@ -1776,14 +1776,10 @@ class SDRVideoLink:
         4. Payload Extraction
         """
         # 1. Generate local reference
-        # Use short blocks (32 samples) repeated 10 times = 320 samples
-        # Short blocks allow detecting large CFO (up to +/- 31.25 kHz at 2MSPS) -> Wait, 2MSPS/32 = 62.5kHz range. 
-        # range = +/- FS / (2*BlockLen) = 1M / 32 = 31.25k? No. Period T = 32*Ts. Max freq = 1/2T? No, phase wraps at +/- pi.
-        # Delta_Phi = 2*pi*f*L*Ts. Max Delta_Phi = pi.
-        # f_max = 1 / (2*L*Ts) = Fs / (2*L).
-        # Fs=2e6, L=32. f_max = 2e6 / 64 = 31.25 kHz.
-        # Pluto PPM is ~20ppm at 2.4G = 48kHz.
-        # 32 might be too long. Let's use L=16. 
+        # Remove DC Offset (Critical for Zero-IF receivers like Pluto)
+        # This centers the constellation and removes the LO leakage spike.
+        signal = signal - np.mean(signal)
+
         # Fs=2e6, L=16. f_max = 2e6 / 32 = 62.5 kHz. Covers 48kHz.
         # Let's use Defaults (L=16, R=20).
         L = 16
@@ -2382,7 +2378,8 @@ def main():
                     peak = metrics.get('peak_val', 0)
                     # Always print status every 1s (approx 10 loops) to show life
                     # Or just print every time?
-                    print(f"[SCANNING] Peak: {peak:.1f} (Looking for > 100)")
+                    # print(f"[SCANNING] Peak: {peak:.1f} (Looking for > 100)")
+                    pass
                 
                 time.sleep(1.0) # Slow down prints to 1Hz
                     
