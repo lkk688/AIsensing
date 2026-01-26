@@ -1583,6 +1583,26 @@ class SDRVideoLink:
                     SDR_BANDWIDTH=self.sdr_config.bandwidth,
                     device_name=self.sdr_config.device
                 )
+                
+            # Apply Gain Settings (Critical for Signal Strength)
+            # Access internal adi object via self.sdr.sdr
+            try:
+                adi_dev = self.sdr.sdr
+                print(f"[SDR] Setting Manual Gain: TX={self.sdr_config.tx_gain}dB, RX={self.sdr_config.rx_gain}dB")
+                
+                # TX Gain
+                if hasattr(adi_dev, 'tx_hardwaregain_chan0'):
+                    adi_dev.tx_hardwaregain_chan0 = int(self.sdr_config.tx_gain)
+                    
+                # RX Gain
+                if hasattr(adi_dev, 'gain_control_mode_chan0'):
+                    adi_dev.gain_control_mode_chan0 = "manual"
+                if hasattr(adi_dev, 'rx_hardwaregain_chan0'):
+                    adi_dev.rx_hardwaregain_chan0 = int(self.sdr_config.rx_gain)
+                    
+            except Exception as e:
+                print(f"[SDR] Warning: Failed to set gain: {e}")
+                
             print(f"[SDR] Connected to {self.sdr_config.device}")
             return True
         except Exception as e:
