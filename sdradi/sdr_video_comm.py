@@ -2346,12 +2346,11 @@ def main():
                     # For now, printing "Waiting..." every line is spammy if sleep is 0.1s.
                     # Let's print only if peak > 30 (interesting noise) or every 2 seconds.
                     peak = metrics.get('peak_val', 0)
-                    if peak > 40:
-                        print(f"[WAITING] Weak Signal? Peak: {peak:.1f}")
-                    # else:
-                    #     pass # Complete silence for straight noise
+                    # Always print status every 1s (approx 10 loops) to show life
+                    # Or just print every time?
+                    print(f"[SCANNING] Peak: {peak:.1f} (Looking for > 100)")
                 
-                time.sleep(0.1) # Slow down prints
+                time.sleep(1.0) # Slow down prints to 1Hz
                     
         except KeyboardInterrupt:
             print("\nStopped.")

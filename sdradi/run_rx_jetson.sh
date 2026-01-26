@@ -24,4 +24,5 @@ python sdr_video_comm.py \
     --mode rx \
     --device pluto \
     --ip $TARGET_IP \
+    --fc 915e6 \
     --num_bits 50000

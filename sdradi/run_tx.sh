@@ -9,4 +9,5 @@ python sdr_video_comm.py \
     --mode tx \
     --device antsdr \
     --ip ip:192.168.1.10 \
+    --fc 915e6 \
     --num_bits 50000
