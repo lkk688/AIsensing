@@ -3,6 +3,11 @@ import time
 import cv2
 import numpy as np
 import argparse
+import os
+
+# Fix Qt Wayland issue
+os.environ["QT_QPA_PLATFORM"] = "xcb"
+
 from sdr_video_comm import SDRVideoLink, SDRConfig, VideoCodec, FECCodec, FECConfig
 
 def main():
