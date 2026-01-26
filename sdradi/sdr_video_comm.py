@@ -2320,7 +2320,8 @@ def main():
             print("Error: Could not connect to SDR.")
             return
 
-        print("Receiving continuous stream...")
+        print("Receiving continuous stream...", flush=True)
+        print("[DEBUG] Trace 0", flush=True)
         # Expected payload
         np.random.seed(42)
         expected_bits = np.random.randint(0, 2, args.num_bits)
