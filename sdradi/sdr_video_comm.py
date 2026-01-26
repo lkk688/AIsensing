@@ -1297,6 +1297,17 @@ class VideoCodec:
         Returns:
             List of (packet_bytes, packet_idx) tuples
         """
+    def encode_frame(self, frame: np.ndarray, quality: int = 50) -> List[Tuple[bytes, int]]:
+        """
+        Encode video frame to JPEG packets.
+        
+        Args:
+            frame: Input image (BGR)
+            quality: JPEG quality (1-100)
+            
+        Returns:
+            List of (packet_bytes, sequence_id)
+        """
         if not CV2_AVAILABLE:
             raise RuntimeError("OpenCV required for video encoding")
         
@@ -1306,7 +1317,9 @@ class VideoCodec:
             frame = cv2.resize(frame, target_res)
         
         # JPEG encode
-        encode_params = [cv2.IMWRITE_JPEG_QUALITY, self.config.quality]
+        # Use provided quality or config quality? 
+        # API override takes precedence
+        encode_params = [cv2.IMWRITE_JPEG_QUALITY, quality]
         _, jpeg_data = cv2.imencode('.jpg', frame, encode_params)
         jpeg_bytes = jpeg_data.tobytes()
         
@@ -1328,7 +1341,7 @@ class VideoCodec:
                 self.frame_counter,
                 self.config.resolution[0],
                 self.config.resolution[1],
-                self.config.quality,
+                quality, # Use the actual quality used
                 i,
                 num_packets,
                 crc
