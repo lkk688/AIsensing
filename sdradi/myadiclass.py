@@ -139,9 +139,11 @@ class SDR:
             Tx_CHANNEL = 1
 
         if Rx_CHANNEL==2:
-            sdr.rx_enabled_channels = [0,1] #enable two rx channel, # enable Rx1 (voltage0) and Rx2 (voltage1)
+            sdr.rx_enabled_channels = [0,1]
         elif Rx_CHANNEL==1:
-            sdr.rx_enabled_channels = [0] #enables Rx0
+            sdr.rx_enabled_channels = [0]
+        else:
+            sdr.rx_enabled_channels = [] # Explicitly DISABLE RX
         if Tx_CHANNEL==2:
             sdr.tx_enabled_channels = [0,1] #enables Tx0, tx1
         elif Tx_CHANNEL==1:
@@ -413,6 +415,7 @@ class SDR:
         # Set cyclic buffer mode if required
         self.sdr.tx_cyclic_buffer = cyclic
 
+        # Transmit the prepared samples
         # Transmit the prepared samples
         if self.Tx_CHANNEL ==1:
             self.sdr.tx(SAMPLES)

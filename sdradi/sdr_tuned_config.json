@@ -1,11 +1,12 @@
 {
-    "sdr_ip": "ip:192.168.3.2",
-    "rx_uri": "",
+    "sdr_ip": "ip:192.168.2.2",
+    "rx_uri": "ip:192.168.2.1",
     "device": "pluto",
-    "fc": 2400000000.0,
+    "fc": 915000000.0,
     "fs": 2000000.0,
     "bandwidth": 2000000,
     "tx_gain": -10,
-    "rx_gain": 50,
-    "rx_buffer_size": 262144
+    "rx_gain": 30,
+    "rx_buffer_size": 262144,
+    "rx_channels": 1
 }

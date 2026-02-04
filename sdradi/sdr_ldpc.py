@@ -1,4 +1,4 @@
-import torch
+import torch # Lazy import to avoid libiio conflict
 import numpy as np
 import scipy.sparse as sp
 import os
@@ -14,7 +14,9 @@ class LDPC5GEncoder:
     5G NR LDPC Encoder implemented in PyTorch.
     Follows 3GPP TS 38.212.
     """
-    def __init__(self, k, n, num_bits_per_symbol=None, device='cuda'):
+    def __init__(self, k, n, num_bits_per_symbol=None, device='cpu'):
+        import torch
+
         self.k = int(k)
         self.n = int(n)
         self.num_bits_per_symbol = num_bits_per_symbol
