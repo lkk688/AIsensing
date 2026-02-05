@@ -7,7 +7,7 @@ import pyqtgraph.opengl as gl
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QGridLayout, QLabel, QCheckBox, QComboBox, QSlider, QGroupBox, QPushButton,
-    QSplitter, QFrame, QLineEdit, QFormLayout, QSpinBox
+    QSplitter, QFrame, QLineEdit, QFormLayout, QSpinBox, QFileDialog
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QMutex, QRectF
 from PyQt6.QtGui import QColor, QFont
@@ -58,6 +58,25 @@ class RadarWorker(QThread):
         self.dataset = AIRadarDataset(num_samples=1,
                                       config_name=self.config_name)
 
+        # Playback
+        self.playback_data = None
+        self.playback_index = 0
+        self.playback_filename = ""
+
+    def load_data(self, filename):
+        try:
+            data = np.load(filename)
+            # Expecting [Frames, Rx, Nc, Ns] or [Frames, Nc, Ns]
+            # If complex data is saved, likely complex64 or complex128
+            self.playback_data = data
+            self.playback_index = 0
+            self.playback_filename = filename
+            self.status_update.emit(f"Loaded {filename}: {data.shape}")
+            return True
+        except Exception as e:
+            self.status_update.emit(f"Failed to load file: {e}")
+            return False
+
     def calibrate_background(self):
         self.trigger_cal = True
 
@@ -98,6 +117,12 @@ class RadarWorker(QThread):
                 self.status_update.emit(f"Engine start failed: {e}")
                 self.running = False
                 return
+        
+        if self.mode == 'playback' and self.playback_data is None:
+             self.status_update.emit("No playback data loaded!")
+             # Don't stop, just wait or return? 
+             # Let's just pause until data is loaded or mode changed
+             pass 
 
         timestep = 0
 
@@ -140,6 +165,18 @@ class RadarWorker(QThread):
                     current_Ns = beat.shape[-1]
                     if current_Ns != self.dataset.Ns:
                         self.dataset.Ns = current_Ns
+                    
+                    # Also check Nc (Number of chirps)
+                    current_Nc = beat.shape[0] if beat.ndim > 1 else 1
+                    if current_Nc != self.dataset.Nc:
+                         print(f"Updating Nc: {self.dataset.Nc} -> {current_Nc}")
+                         self.dataset.Nc = current_Nc
+                         try:
+                             # Force update of internal params if needed
+                             if hasattr(self.dataset, 'update_axis'):
+                                 self.dataset.update_axis()
+                         except:
+                             pass
 
                     rdm_db = self.dataset.compute_rdm(beat)
 
@@ -179,6 +216,63 @@ class RadarWorker(QThread):
                     rdm_db, detections, targets, diag, r_axis, v_axis = \
                         self.engine.get_frame()
                     self.diag_update.emit(diag)
+
+                elif self.mode == 'playback':
+                    # --- Playback Mode ---
+                    if self.playback_data is not None and len(self.playback_data) > 0:
+                        # Get current frame
+                        raw_frame = self.playback_data[self.playback_index]
+                        # Handle shapes:
+                        # [Rx, Nc, Ns] or [Nc, Ns]
+                        # dataset.compute_rdm expects [Nc, Ns] (single channel) usually, 
+                        # or we might need to select channel 0.
+                        
+                        # Check dim
+                        if raw_frame.ndim == 3: # [Rx, Nc, Ns]
+                            beat = raw_frame[0] # Take first channel
+                        else:
+                            beat = raw_frame
+                            
+                        # Update Dataset dimensions to match file
+                        current_Ns = beat.shape[-1]
+                        current_Nc = beat.shape[0]
+                        
+                        if current_Ns != self.dataset.Ns:
+                            self.dataset.Ns = current_Ns
+                        if current_Nc != self.dataset.Nc:
+                            self.dataset.Nc = current_Nc
+                            
+                        # Update config params for processing
+                        self.dataset.config['enable_compensation'] = self.enable_compensation
+                        self.dataset.config['enable_phase_noise_tracking'] = self.enable_phase_tracking
+                        self.dataset.config['cfar_type'] = 'OS' if self.enable_os_cfar else 'CA'
+                        self.dataset.cfar_params['threshold_offset'] = self.cfar_threshold
+                        self.dataset.cfar_params['min_range_m'] = self.min_range
+                        
+                        # We don't have ground truth for playback usually, unless side-loaded
+                        targets = [] 
+
+                        # RDM
+                        rdm_db = self.dataset.compute_rdm(beat)
+
+                        # Detect
+                        if self.detection_mode == 'DL' and hasattr(self.dataset, 'run_dl_detection'):
+                            detections = self.dataset.run_dl_detection(rdm_db)
+                        else:
+                            detections = self.dataset.cfar_detection(rdm_db)
+                            
+                        false_alarms = [] # Cannot know FA without GT
+
+                        # Advance index
+                        self.playback_index = (self.playback_index + 1) % len(self.playback_data)
+                        
+                        r_axis = self.dataset.range_axis
+                        v_axis = self.dataset.velocity_axis
+                        
+                        self.diag_update.emit({'frame_number': self.playback_index, 'mode': 'playback'})
+                    else:
+                        time.sleep(0.1)
+                        continue
 
                 self.data_ready.emit((rdm_db, detections, targets, false_alarms,
                                       r_axis, v_axis))
@@ -278,15 +372,31 @@ class MainWindow(QMainWindow):
         conn_group = QGroupBox("Device Connection")
         conn_layout = QFormLayout()
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["Simulation", "Digital Loopback", "CN0566 Hardware"])
+        self.mode_combo.addItems(["Simulation", "Digital Loopback", "CN0566 Hardware", "Playback"])
         self.mode_combo.currentTextChanged.connect(self.change_mode)
 
         self.txt_sdr_ip = QLineEdit("ip:192.168.2.1")
         self.txt_phaser_ip = QLineEdit("ip:phaser.local")
         
+        # File Loading for Playback
+        self.file_group = QWidget()
+        self.file_layout = QHBoxLayout(self.file_group)
+        self.file_layout.setContentsMargins(0,0,0,0)
+        self.txt_file = QLineEdit()
+        self.txt_file.setPlaceholderText("Select .npy file...")
+        self.txt_file.setReadOnly(True)
+        self.btn_browse = QPushButton("...")
+        self.btn_browse.setFixedWidth(30)
+        self.btn_browse.setStyleSheet("padding: 2px;")
+        self.btn_browse.clicked.connect(self.browse_file)
+        self.file_layout.addWidget(self.txt_file)
+        self.file_layout.addWidget(self.btn_browse)
+        self.file_group.setVisible(False)
+
         conn_layout.addRow("Mode:", self.mode_combo)
         conn_layout.addRow("SDR IP:", self.txt_sdr_ip)
         conn_layout.addRow("Phaser IP:", self.txt_phaser_ip)
+        conn_layout.addRow("File:", self.file_group)
         
         self.btn_run = QPushButton("START")
         self.btn_run.setCheckable(True)
@@ -522,13 +632,28 @@ class MainWindow(QMainWindow):
             self.slider_steer.setEnabled(False)
             self.txt_phaser_ip.setEnabled(False)
             self.lbl_info.setText("Mode: Digital Loopback (Pluto SDR)")
+        elif "Playback" in text:
+            self.worker.mode = 'playback'
+            self.chk_impairments.setEnabled(False) # Typically raw data already has effects
+            self.spin_targets.setEnabled(False)
+            self.slider_steer.setEnabled(False)
+            self.txt_phaser_ip.setEnabled(False)
+            self.file_group.setVisible(True)
+            self.lbl_info.setText("Mode: Playback (FromFile)")
         else:
             self.worker.mode = 'simulation'
             self.chk_impairments.setEnabled(True)
             self.spin_targets.setEnabled(True)
             self.slider_steer.setEnabled(False)
             self.txt_phaser_ip.setEnabled(True)
+            self.file_group.setVisible(False)
             self.lbl_info.setText("Mode: Simulation")
+
+    def browse_file(self):
+        fname, _ = QFileDialog.getOpenFileName(self, 'Open Radar Data', '.', "Numpy Files (*.npy)")
+        if fname:
+            self.txt_file.setText(os.path.basename(fname))
+            self.worker.load_data(fname)
             
     def update_steering(self):
         angle = self.slider_steer.value()
@@ -611,8 +736,21 @@ class MainWindow(QMainWindow):
         x_data = v_axis[::stride]
         y_data = r_axis[::stride]
         
-        # Color Map Calculation (Viridis Style)
-        # Normalize Z: -80 dB to 0 dB
+        # Ensure Validation of Shapes
+        # z_data shape: (N_vel, N_range)
+        # x_data shape: (N_vel,)
+        # y_data shape: (N_range,)
+        # GLSurfacePlotItem expects z shape (len(x), len(y)) corresponding to grid X[i], Y[j]
+        
+        if z_data.shape[0] != len(x_data) or z_data.shape[1] != len(y_data):
+            # Try to trim or re-slice
+            min_x = min(z_data.shape[0], len(x_data))
+            min_y = min(z_data.shape[1], len(y_data))
+            z_data = z_data[:min_x, :min_y]
+            x_data = x_data[:min_x]
+            y_data = y_data[:min_y]
+
+        # Normalization
         z_norm = (z_data + 80) / 80.0
         z_norm = np.clip(z_norm, 0, 1)
         
@@ -620,7 +758,10 @@ class MainWindow(QMainWindow):
         cmap = pg.colormap.get('viridis')
         colors = cmap.map(z_norm, mode='float') # Returns (Rows, Cols, 4)
         
-        self.surface.setData(x=x_data, y=y_data, z=z_data, colors=colors)
+        try:
+             self.surface.setData(x=x_data, y=y_data, z=z_data, colors=colors)
+        except Exception as e:
+             print(f"Plot3D Error: {e} | X:{x_data.shape} Y:{y_data.shape} Z:{z_data.shape}")
         
         # 3D Markers (x, y, z)
         z_offset = 2.0 
@@ -654,7 +795,21 @@ class MainWindow(QMainWindow):
             self.scatter_3d_fp.setData(pos=None)
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Radar Control App")
+    parser.add_argument('--load_file', type=str, help='Path to .npy file for playback', default=None)
+    args = parser.parse_args()
+
     app = QApplication(sys.argv)
     window = MainWindow()
+    
+    if args.load_file:
+        if os.path.exists(args.load_file):
+            window.mode_combo.setCurrentText("Playback")
+            window.txt_file.setText(args.load_file)
+            window.worker.load_data(args.load_file)
+        else:
+            print(f"File not found: {args.load_file}")
+
     window.show()
     sys.exit(app.exec())

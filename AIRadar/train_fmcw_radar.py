@@ -5,8 +5,6 @@ Training script for RadarEndToEnd model using FMCW radar dataset.
 This script trains the RadarEndToEnd model (RadarTimeNet + RadarNet) using the
 FMCWRadarDataset for realistic FMCW radar signal processing and target detection.
 
-Author: AI Assistant
-Date: 2024
 """
 
 import os

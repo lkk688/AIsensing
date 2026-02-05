@@ -190,3 +190,4 @@ newsdr
 sdradi/rx_debug.jsonl
 sdradi/pluto_test/test_video.mp4
 sdradi/output
+*.h5
