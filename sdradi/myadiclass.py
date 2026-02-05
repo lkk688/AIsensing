@@ -294,8 +294,12 @@ class SDR:
                 a = data0
             elif combinerule == 'plus':
                 a = data0+data1
+            else:
+                a = np.array(x)
         else:
             a=x
+            if combinerule == 'none' and len(a.shape) == 1:
+                a = a[np.newaxis, :]
 
         # Normalize the signal amplitude if required
         if normalize:

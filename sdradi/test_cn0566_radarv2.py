@@ -24,6 +24,8 @@ import os
 import argparse
 import time
 import numpy as np
+import gc
+import shutil
 
 try:
     import matplotlib
@@ -203,18 +205,30 @@ def setup_cn0566_radar(sdr_ip, phaser_ip):
         sdr._ctrl.debug_attrs["adi,frequency-division-duplex-mode-enable"].value = "1"
         sdr._ctrl.debug_attrs["adi,ensm-enable-txnrx-control-enable"].value = "0"  # Disable pin control
         sdr._ctrl.debug_attrs["initialize"].value = "1"
+        print("  [Setup] Initializing AD9361 (FDD mode)...")
         
-        print("  [Setup] Initializing AD9361 (FDD mode)... waiting 4s...")
-        _time.sleep(4)  # Wait for AD9361 re-initialization to complete
-        
-        # Destroy the old (broken) object
-        del sdr
     except Exception as e:
-        print(f"  [Setup] WARNING: Initial reset failed (might be already ready): {e}")
+        print(f"  [Setup] WARNING: Initial reset trigger captured (often expected): {e}")
+
+    # Always wait for the reset to complete, even if the command threw an error
+    print("  [Setup] Waiting 5s for re-initialization...")
+    _time.sleep(5)
+    
+    # Destroy the old (broken) object
+    try:
+        del sdr
+    except UnboundLocalError:
+        pass
+    gc.collect()
 
     # 1b. Re-connect to PlutoSDR with fresh context
     print(f"  [Setup] Re-connecting to PlutoSDR...")
-    sdr = adi.ad9361(sdr_ip)
+    try:
+        sdr = adi.ad9361(sdr_ip)
+    except Exception as e:
+        print(f"  [Setup] Connection failed: {e}. Retrying in 2s...")
+        _time.sleep(2)
+        sdr = adi.ad9361(sdr_ip)
 
     # 2. Connect to CN0566 Phaser
     cn0566 = CN0566(uri=phaser_ip, sdr=sdr)
@@ -817,9 +831,45 @@ def test_fmcw_radar(sdr_ip, phaser_ip, output_dir, num_frames=10):
 
     cn0566.enable = 1  # 1 = PLL OFF (powerdown) - cleanup
 
+    # -- Process and Save Frame Images --
+    if HAS_MATPLOTLIB and len(all_rdms) > 0:
+        print(f"\n[3d] Generating plots {num_frames} frames...")
+        frames_dir = os.path.join(output_dir, "frames")
+        os.makedirs(frames_dir, exist_ok=True)
+        
+        # Determine global min/max for consistent colormap across frames
+        # Use a robust range from all data
+        all_rdm_stack = np.array(all_rdms)
+        vmin_global = np.percentile(all_rdm_stack, 30)
+        vmax_global = all_rdm_stack.max()
+
+        for i, rdm_frame in enumerate(all_rdms):
+             fig_f, ax_f = plt.subplots(figsize=(10, 8))
+             im = ax_f.imshow(
+                rdm_frame, aspect='auto', origin='lower',
+                extent=[0, range_axis[-1], velocity_axis[0], velocity_axis[-1]],
+                cmap='jet', vmin=vmin_global, vmax=vmax_global
+             )
+             ax_f.set_xlabel('Range (m)')
+             ax_f.set_ylabel('Velocity (m/s)')
+             ax_f.set_title(f'Frame {i:03d}')
+             plt.colorbar(im, ax=ax_f, label='dB')
+             
+             # Overlay detections for this frame
+             current_dets = all_detections[i]
+             if current_dets:
+                 det_r = [d['range_m'] for d in current_dets]
+                 det_v = [d['velocity_mps'] for d in current_dets]
+                 ax_f.scatter(det_r, det_v, s=80, facecolors='none', 
+                              edgecolors='white', linewidths=2)
+            
+             frame_path = os.path.join(frames_dir, f"frame_{i:03d}.png")
+             plt.savefig(frame_path, dpi=100)
+             plt.close(fig_f)
+
     # -- Generate plots --
     if HAS_MATPLOTLIB and len(all_rdms) > 0:
-        print(f"\n[3d] Generating plots...")
+        print(f"[3e] Generating summary plots...")
 
         # Plot last frame's RDM
         rdm_plot = all_rdms[-1]
@@ -1053,13 +1103,16 @@ def main():
         if not ok and args.test == 'all':
             print("\nConnectivity test failed. Aborting remaining tests.")
             return
+        gc.collect()
 
     if args.test in ('basic_rx', 'all'):
         test_basic_rx(args.sdr_ip, args.phaser_ip, args.output_dir)
+        gc.collect()
 
     if args.test in ('spectral', 'all'):
         test_spectral(args.sdr_ip, args.phaser_ip, args.output_dir,
                        num_avg=args.avg)
+        gc.collect()
 
     if args.test in ('fmcw', 'all'):
         test_fmcw_radar(args.sdr_ip, args.phaser_ip, args.output_dir,

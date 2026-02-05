@@ -189,3 +189,4 @@ newsdr
 # local large/debug artifacts
 sdradi/rx_debug.jsonl
 sdradi/pluto_test/test_video.mp4
+sdradi/output

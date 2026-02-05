@@ -464,8 +464,8 @@ def plot_signal_time_and_spectrum(
 # Hardware imports (optional)
 try:
     import adi
-    import phaser.mycn0566 as mycn0566
-    from myadi.aditddn import tddn
+    # import phaser.mycn0566 as mycn0566
+    # from myadi.aditddn import tddn
     from myadiclass import SDR
     HARDWARE_AVAILABLE = True
 except ImportError:
@@ -1821,6 +1821,7 @@ class AIRadarDataset(Dataset):
         idxs = np.argwhere(detections)
         
         min_r = params.get('min_range_m', 0.0)
+        max_r = params.get('max_range_m', float('inf'))
         min_v = params.get('min_speed_mps', 0.0)
         notch_k = params.get('notch_doppler_bins', 0)
         center = len(v_axis) // 2
@@ -1832,7 +1833,7 @@ class AIRadarDataset(Dataset):
             range_m = r_axis[r_idx]
             vel_mps = v_axis[d_idx]
             # Filter artifacts and near-zero clutter
-            if range_m < min_r or abs(vel_mps) < min_v: continue
+            if range_m < min_r or range_m > max_r or abs(vel_mps) < min_v: continue
             if notch_k > 0 and abs(d_idx - center) <= notch_k: continue
             candidates.append({
                 'range_m': range_m,
@@ -2239,6 +2240,93 @@ class AIRadarDataset(Dataset):
 # Config, Hardware, Simulation, Processor, Main
 # ======================================================================
 
+
+# ======================================================================
+# New Visualization Helper
+# ======================================================================
+def _plot_rdm_heatmap_style(rdm_db, detections, r_axis, v_axis, save_path, frame_idx):
+    """
+    Plots RDM as a simple heatmap with detections overlay, similar to test_cn0566_radarv2.py
+    """
+    plt.figure(figsize=(10, 8))
+    
+    # Robust scaling
+    vmin = np.percentile(rdm_db, 30)
+    vmax = rdm_db.max()
+    
+    plt.imshow(
+        rdm_db, aspect='auto', origin='lower',
+        extent=[0, r_axis[-1], v_axis[0], v_axis[-1]],
+        cmap='jet', vmin=vmin, vmax=vmax
+    )
+    plt.xlabel('Range (m)')
+    plt.ylabel('Velocity (m/s)')
+    plt.title(f'Frame {frame_idx:03d} - RDM')
+    plt.colorbar(label='dB')
+    
+    # Overlay detections
+    if detections:
+        det_r = [d['range_m'] for d in detections]
+        det_v = [d['velocity_mps'] for d in detections]
+        plt.scatter(det_r, det_v, s=80, facecolors='none', 
+                    edgecolors='white', linewidths=2, label='Detections')
+        plt.legend()
+        
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=100)
+    plt.close()
+
+
+    plt.close()
+
+
+def _plot_rdm_roi(rdm_db, detections, r_axis, v_axis, save_path, frame_idx, min_r=0, max_r=10):
+    """
+    Plots RDM zoomed into the Region of Interest (ROI).
+    """
+    plt.figure(figsize=(10, 8))
+    
+    # Crop RDM to ROI for better contrast scaling
+    r_mask = (r_axis >= min_r) & (r_axis <= max_r)
+    if np.sum(r_mask) > 0:
+        # Find indices
+        r_start = np.argmax(r_mask)
+        r_end = len(r_mask) - 1 - np.argmax(r_mask[::-1])
+        # Crop
+        rdm_roi = rdm_db[:, r_start:r_end+1]
+        
+        vmin = np.percentile(rdm_roi, 10)
+        vmax = rdm_roi.max()
+    else:
+        vmin = np.percentile(rdm_db, 30)
+        vmax = rdm_db.max()
+
+    plt.imshow(
+        rdm_db, aspect='auto', origin='lower',
+        extent=[0, r_axis[-1], v_axis[0], v_axis[-1]],
+        cmap='jet', vmin=vmin, vmax=vmax
+    )
+    plt.xlabel('Range (m)')
+    plt.ylabel('Velocity (m/s)')
+    plt.title(f'Frame {frame_idx:03d} - Limit {min_r}-{max_r}m')
+    plt.colorbar(label='dB')
+    
+    # Zoom
+    plt.xlim(min_r, max_r)
+    
+    # Overlay detections
+    if detections:
+        det_r = [d['range_m'] for d in detections]
+        det_v = [d['velocity_mps'] for d in detections]
+        plt.scatter(det_r, det_v, s=80, facecolors='none', 
+                    edgecolors='white', linewidths=2, label='Detections')
+        plt.legend()
+        
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=100)
+    plt.close()
+
+
 class RadarConfig:
     def __init__(self, config_name='config_cn0566', mode='simulation',
                  sdr_ip="ip:192.168.86.40", phaser_ip="ip:phaser.local:50901"):
@@ -2260,8 +2348,10 @@ class RadarConfig:
             'rx_channels': [0, 1],
             'tx_channels': [0, 1],
             'buffer_size': 1024 * 16,
+            'buffer_size': 1024 * 16,
             'tdd_mode': False,
-            'ramp_mode': "continuous_triangular"
+            'ramp_mode': "continuous_triangular",
+            'if_freq_hz': 100e3  # Standard IF for CN0566
         }
 
     def update_hardware_params(self, **kwargs):
@@ -2289,9 +2379,9 @@ class RadarHardware:
         self.tdd = None
 
         self._setup_sdr()
+        
         self._setup_phaser()
-        if self.config.hardware_params['tdd_mode']:
-            self._setup_tdd()
+        # _setup_tdd deferred to connect() to avoid locking TX buffer creation
 
     def _setup_sdr(self):
         print(f"Initializing SDR at {self.config.hardware_params['sdr_ip']}...")
@@ -2305,26 +2395,49 @@ class RadarHardware:
         )
 
         # Enable FDD mode for simultaneous TX/RX (required for CN0566 FMCW)
+        # Reset TDD state to ensure clean start (prevents TimeoutError if TDD was left on)
+        # Reset TDD state to ensure clean start (prevents TimeoutError if TDD was left on)
         try:
-            self.sdr.sdr._ctrl.debug_attrs[
-                "adi,frequency-division-duplex-mode-enable"
-            ].value = "1"
-            self.sdr.sdr._ctrl.debug_attrs[
-                "adi,ensm-enable-txnrx-control-enable"
-            ].value = "0"
+            # Fix import reference
+            temp_tdd = adi.tddn(self.config.hardware_params['sdr_ip'])
+            temp_tdd.enable = False
+            print("  TDD Core disabled (clean start)")
+        except Exception as e:
+            print(f"  TDD Disable warning: {e}")
+
+        # Initial Configuration: ALWAYS initialize in FDD mode first (per ADI recommendations)
+        # This ensures the AD9361 is calibrated and LOs locked before we get fancy with TDD.
+        try:
+            self.sdr.sdr._ctrl.debug_attrs["adi,frequency-division-duplex-mode-enable"].value = "1" # FDD
+            self.sdr.sdr._ctrl.debug_attrs["adi,ensm-enable-txnrx-control-enable"].value = "0" # SPI Control
             self.sdr.sdr._ctrl.debug_attrs["initialize"].value = "1"
             import time as _time
-            _time.sleep(3)  # AD9361 needs 2-3s to re-initialize
-            print("  FDD mode enabled")
+            print("  SDR Initialized (FDD mode)... waiting 2s for cal...")
+            _time.sleep(2) 
         except Exception as e:
-            print(f"  FDD mode setup: {e}")
+            print(f"  Init warning: {e}")
+
+        if self.config.hardware_params.get('tdd_mode', False):
+             print("  TDD Mode: FDD Init done. ENSM Switch deferred to setup_tdd().")
+        else:
+             print("  Staying in FDD Mode.")
+
+        # Calculate required buffer size for one CPI (Nc * Ns)
+        Nc = self.config.params['N_chirps']
+        Ns = int(self.config.params['fs'] * self.config.params['T_chirp'])
+        required_buffer = Nc * Ns
+        print(f"  Configuring RX buffer: Nc={Nc}, Ns={Ns} -> {required_buffer} samples")
 
         self.sdr.SDR_RX_setup(
-            n_SAMPLES=self.config.hardware_params['buffer_size'],
+            n_SAMPLES=required_buffer,
             controlmode='manual',
             rx1_gain=self.config.hardware_params['rx_gain'],
             rx2_gain=self.config.hardware_params['rx_gain']
         )
+        # Critical: Override myadiclass restriction for Pluto. 
+        # CN0566/TDD requires both channels (or at least radar_cfar.py uses both).
+        self.sdr.sdr.rx_enabled_channels = [0, 1]
+        self.sdr.sdr.tx_enabled_channels = [0, 1]
 
         # Set kernel buffers to 1 and enable quadrature tracking
         try:
@@ -2352,7 +2465,8 @@ class RadarHardware:
             print("Phaser IP not provided. Skipping Phaser setup.")
             return
         print(f"Initializing Phaser at {self.config.hardware_params['phaser_ip']}...")
-        self.phaser = mycn0566.CN0566(
+        # Use standard adi class
+        self.phaser = adi.CN0566(
             uri=self.config.hardware_params['phaser_ip'],
             sdr=self.sdr.sdr
         )
@@ -2392,21 +2506,114 @@ class RadarHardware:
         self.phaser.delay_start_en = 0
         self.phaser.ramp_delay_en = 0
         self.phaser.trig_delay_en = 0
-        self.phaser.ramp_mode = self.config.hardware_params['ramp_mode']
-        self.phaser.sing_ful_tri = 0
-        self.phaser.tx_trig_en = 0
+        # Configure Ramp Mode and Trigger based on TDD setting
+        if self.config.hardware_params.get('tdd_mode', False):
+            self.phaser.ramp_mode = "single_sawtooth_burst"
+            self.phaser.tx_trig_en = 1
+            print("  Phaser configured for TDD: single_sawtooth_burst, tx_trig_en=1")
+        else:
+            self.phaser.ramp_mode = "continuous_triangular"
+            self.phaser.tx_trig_en = 0
+            print("  Phaser configured for Continuous: continuous_triangular, tx_trig_en=0")
+
         self.phaser.enable = 0  # 0 = PLL ON, write last to update all registers
 
-    def _setup_tdd(self):
+    def setup_tdd(self):
+        if not self.config.hardware_params.get('tdd_mode', False):
+            return
+            
         print("Configuring TDD mode...")
-        self.tdd = tddn(self.config.hardware_params['sdr_ip'])
+        # Check if already initialized
+        if self.tdd is not None:
+             # Just enable
+             self.tdd.enable = True
+             return
+
+        if self.tdd is None:
+             try:
+                 # Configure TDD Pins (Critical for Sync)
+                 self.sdr_pins = adi.one_bit_adc_dac(self.config.hardware_params['sdr_ip'])
+                 self.sdr_pins.gpio_tdd_ext_sync = True 
+                 self.sdr_pins.gpio_phaser_enable = True
+                 
+                 # Use standard adi class
+                 self.tdd = adi.tddn(self.config.hardware_params['sdr_ip'])
+                 
+                 # CRITICAL: Switch to TDD ENSM Control HERE, after all other inits occupy the bus/state.
+                 print("  Switching ENSM to TDD/Pin Control...")
+                 # Switch to TDD Mode and Enable Pin Control (CN0566 drive ENABLE/TXNRX)
+                 self.sdr.sdr._ctrl.debug_attrs["adi,frequency-division-duplex-mode-enable"].value = "0" # TDD
+                 self.sdr.sdr._ctrl.debug_attrs["adi,ensm-enable-txnrx-control-enable"].value = "1" # Pin Control
+                 print("  ENSM configured.")
+                 
+             except Exception as e:
+                 print(f"Error initializing TDD/Pins: {e}")
+                 return
+
         self.tdd.enable = False
-        self.tdd.sync_external = True
-        self.tdd.frame_length_ms = (self.config.params['T_chirp'] * 1000) + 1.0
+        self.tdd.sync_external = True # Revert to External (GPIO) sync as per reference
+        self.tdd.startup_delay_ms = 1
+        self.tdd.frame_length_ms = (self.config.params['T_chirp'] * 1000) + 1.2
         self.tdd.burst_count = self.config.params['N_chirps']
-        self.tdd.channel[0].enable = True
-        self.tdd.channel[1].enable = True
+        
+        # Configure channels like radar_cfar.py BUT ensure off_ms covers full chirp
+        # radar_cfar.py uses 0.1ms, which might cut off a 0.5ms chirp. 
+        # We use T_chirp + 0.1ms to be safe.
+        t_chirp_ms = self.config.params['T_chirp'] * 1000
+        off_ms = t_chirp_ms + 0.1
+        
+        for ch in [0, 1]:
+            self.tdd.channel[ch].enable = True
+            self.tdd.channel[ch].polarity = False
+            self.tdd.channel[ch].on_ms = 0.01
+            self.tdd.channel[ch].off_ms = off_ms
+        
         self.tdd.enable = True
+
+    def update_rx_buffer_for_tdd(self):
+        """Calculates and sets the correct RX buffer size for TDD mode.
+        Must be called after setup_tdd() and before receive().
+        """
+        if not self.config.hardware_params.get('tdd_mode', False) or not self.tdd:
+            return
+
+        fs = int(self.config.params['fs'])
+        # Samples per TDD frame (including dead time)
+        self.samples_per_frame = int(self.tdd.frame_length_ms / 1000.0 * fs)
+        # Total samples for the burst
+        raw_total = self.config.params['N_chirps'] * self.samples_per_frame
+        
+        # Round up to next power of 2 for driver stability (like radar_cfar.py)
+        power = 12
+        while (2**power) < raw_total:
+             power += 1
+             if power >= 23: break # Cap at 2^23 (8M samples)
+        
+        total_samples = 2**power
+        
+        print(f"  TDD Buffer: {self.config.params['N_chirps']} frames * {self.samples_per_frame} spls -> {raw_total} -> Pow2: {total_samples}")
+        
+        # Check current size
+        # self.sdr.rx_buffer_size = total_samples # This is not enough, property setter logic in myadi might differ
+        
+        # Directly updating the sdr object's buffer size
+        # Assuming DataProcessing expects Nc*Ns, we will slice later.
+        if hasattr(self.sdr, 'sdr'): # Using the wrapper
+            # self.sdr.sdr.rx_buffer_size = total_samples
+            # The 'myadi' wrapper's SDR_RX_setup sets rx_buffer_size. 
+            # We can update it here.
+            self.sdr.sdr.rx_buffer_size = total_samples
+            self.sdr.rx_buffer_size = total_samples # Update wrapper prop too
+            
+            # CRITICAL: Re-initialize RX channels to apply new buffer size (like radar_cfar.py)
+            try:
+                self.sdr.sdr._rx_init_channels()
+                print("  RX Channels Re-initialized for TDD.")
+            except Exception as e:
+                print(f"  Warning: _rx_init_channels failed: {e}")
+                
+        else:
+             print("Warning: Could not update RX buffer size (structure unknown)")
 
     def transmit(self):
         """Send CW IF tone via Pluto TX for CN0566 FMCW radar.
@@ -2414,7 +2621,9 @@ class RadarHardware:
         that gets upconverted to RF by the CN0566 mixer.
         """
         fs = int(self.config.params['fs'])
-        N = self.config.hardware_params['buffer_size']
+        # Use a smaller buffer for TX CW tone (it's cyclic). 
+        # No need to match RX buffer size (which can be huge for TDD).
+        N = 1024 * 4 
         signal_freq = 100e3  # 100 kHz IF tone (ADI reference)
         fc = int(signal_freq / (fs / N)) * (fs / N)  # Snap to FFT bin
         ts = 1 / float(fs)
@@ -2422,8 +2631,34 @@ class RadarHardware:
         i_sig = np.cos(2 * np.pi * t * fc) * 2 ** 14
         q_sig = np.sin(2 * np.pi * t * fc) * 2 ** 14
         iq = 1.0 * (i_sig + 1j * q_sig)
-        self.sdr.sdr._ctx.set_timeout(0)
-        self.sdr.sdr.tx([iq, iq * 0.5])  # TX1 (ch0) full, TX2 (ch1) half
+        self.sdr.sdr._ctx.set_timeout(30000)
+
+        # Critical: Set Cyclic Buffer for Continuous CW Tone
+        self.sdr.sdr.tx_cyclic_buffer = True
+
+        # TDD must be disabled to update TX buffer
+        was_tdd_enabled = False
+        if hasattr(self, 'tdd') and self.tdd:
+            # Check if enabled (reading property might be slow or fail if not initialized, but self.tdd usually implies initialized)
+            # adi.tddn has 'enable' property.
+            try:
+                if self.tdd.enable:
+                    self.tdd.enable = False
+                    was_tdd_enabled = True
+            except:
+                pass
+
+        try:
+            # Destroy any existing buffer to avoid busy error
+            try:
+                self.sdr.sdr.tx_destroy_buffer()
+            except:
+                pass
+                
+            self.sdr.sdr.tx([iq, iq * 0.5])  # TX1 (ch0) full, TX2 (ch1) half
+        finally:
+            if was_tdd_enabled:
+                self.tdd.enable = True
         print(f"  TX tone: {fc/1e3:.1f} kHz IF reference sent via TX1")
 
     def receive(self):
@@ -2432,6 +2667,15 @@ class RadarHardware:
         NOTE: This implementation assumes SDR_RX_receive returns [num_rx, total_samples].
         You may need to adapt based on your SDR wrapper.
         """
+        if self.config.hardware_params.get('tdd_mode', False) and self.phaser:
+            # Trigger the burst (toggle gpio_burst 0->1->0)
+            try:
+                self.phaser._gpios.gpio_burst = 0
+                self.phaser._gpios.gpio_burst = 1
+                self.phaser._gpios.gpio_burst = 0
+            except Exception as e:
+                print(f"Trigger error: {e}")
+
         raw = self.sdr.SDR_RX_receive(combinerule='none', normalize=False)
         # raw: [num_rx, total_samples]
         num_rx = raw.shape[0]
@@ -2439,6 +2683,38 @@ class RadarHardware:
         Nc = self.config.params['N_chirps']
         Ns = int(self.config.params['fs'] * self.config.params['T_chirp'])
 
+        # Handle TDD data parsing (stripping dead time)
+        if self.config.hardware_params.get('tdd_mode', False) and hasattr(self, 'samples_per_frame'):
+            # Expected TDD buffer size
+            expected_total = Nc * self.samples_per_frame
+            if total_samples_per_rx < expected_total:
+                 print(f"Warning: TDD buffer underflow. Got {total_samples_per_rx}, expected {expected_total}")
+            
+            # Reshape to [num_rx, Nc, samples_per_frame]
+            trunc_len = min(total_samples_per_rx, expected_total)
+            valid_frames = trunc_len // self.samples_per_frame
+            
+            # Reshape only the valid part
+            raw_reshaped = raw[:, :valid_frames * self.samples_per_frame].reshape(num_rx, valid_frames, self.samples_per_frame)
+            
+            # Extract the active chirp part
+            # Start logic: on_ms offset or slightly after (0.01ms)
+            start_offset_ms = 0.01 
+            start_idx = int(start_offset_ms / 1000.0 * self.config.params['fs'])
+            
+            if raw_reshaped.shape[2] < start_idx + Ns:
+                print("Error: TDD Frame too short for Ns extraction!")
+                
+            data = raw_reshaped[:, :, start_idx : start_idx + Ns]
+            
+            # If we lost frames (e.g. timeout returned partial), pad back to Nc
+            if valid_frames < Nc:
+                 print(f"Warning: Padding missing frames ({valid_frames}/{Nc})")
+                 pad = np.zeros((num_rx, Nc - valid_frames, Ns), dtype=data.dtype)
+                 data = np.concatenate([data, pad], axis=1)
+            
+            return data
+            
         if total_samples_per_rx != Nc * Ns:
             raise RuntimeError(f"Buffer mismatch: got {total_samples_per_rx}, expected {Nc * Ns}")
 
@@ -2450,6 +2726,8 @@ class RadarHardware:
             self.sdr.SDR_TX_stop()
         if self.tdd:
             self.tdd.enable = False
+            del self.tdd
+            self.tdd = None
 
 
 class RadarSimulation:
@@ -2501,6 +2779,34 @@ class RadarProcessor:
         returns rdm: [Nc, Nr] in dB
         """
         # delegated to AIRadarDataset.compute_rdm for consistency
+        # delegated to AIRadarDataset.compute_rdm for consistency, but first apply DDC if needed
+        
+        # 0. Digital Down-Conversion (DDC) to remove IF offset
+        # The hardware uses a 100 kHz IF tone. We need to shift the spectrum by -100 kHz
+        # so that the direct leakage (at 100 kHz) moves to DC (0 Hz), where MTI can remove it.
+        if_freq = self.config.hardware_params.get('if_freq_hz', 0.0)
+        
+        if if_freq != 0.0 and (self.config.mode == 'hardware' or self.config.mode == 'digital_loopback'):
+             # Create mixing signal: exp(-j * 2 * pi * if_freq * t)
+             # raw_data shape can be [Rx, Nc, Ns] or [Nc, Ns]
+             
+             fs = self.config.params['fs']
+             
+             # Handle shape
+             if raw_data.ndim == 3:
+                 Ns = raw_data.shape[2]
+             elif raw_data.ndim == 2:
+                 Ns = raw_data.shape[1]
+             else:
+                 Ns = raw_data.shape[-1]
+                 
+             t = np.arange(Ns) / fs
+             # Negative frequency shift to bring +100kHz down to 0Hz
+             ddc_signal = np.exp(-1j * 2 * np.pi * if_freq * t)
+             
+             # Apply DDC along the fast-time axis (last axis)
+             raw_data = raw_data * ddc_signal
+        
         return self.processor.compute_rdm(raw_data)
 
     def detect(self, rdm):
@@ -2638,7 +2944,7 @@ def main():
 class RealisticChannelSimulator:
     """
     Simulates the full CN0566 physical device chain:
-      TX antenna → free-space channel → targets → return path → RX antenna
+      TX antenna -> free-space channel -> targets -> return path -> RX antenna
     Including TX-RX leakage, multipath reflections, antenna coupling,
     and phase noise propagation through the FMCW chirp.
 
@@ -3195,7 +3501,7 @@ def evaluate_radar_performance(engine, num_frames=50, snr_db=25.0,
 
 class RadarLoopback:
     """
-    Digital loopback radar source using Pluto SDR's internal loopback.
+    Digital loopback radar source using Pluto SDRs internal loopback.
     Generates FMCW beat signal via AIRadarDataset, transmits through digital
     loopback, receives, and returns the raw data for processing.
     """
@@ -3443,7 +3749,7 @@ class RadarLoopback:
 class RadarHardwareV2:
     """
     Full CN0566 hardware mode (Pluto + Phaser).
-    Wraps v1's RadarHardware with uniform get_data() interface.
+    Wraps v1 RadarHardware with uniform get_data() interface.
     """
 
     def __init__(self, config: RadarConfig):
@@ -3454,6 +3760,10 @@ class RadarHardwareV2:
     def connect(self):
         """Start TX tone (already connected in __init__ via RadarHardware)."""
         self.hw.transmit()
+        # Setup TDD after transmit buffer is active
+        self.hw.setup_tdd()
+        # Update RX buffer size to account for TDD framing
+        self.hw.update_rx_buffer_for_tdd()
 
     def get_data(self):
         """
@@ -3642,6 +3952,9 @@ class RadarEngine:
 
         r_axis = self.processor.processor.range_axis
         v_axis = self.processor.processor.velocity_axis
+        
+        # Helper for recording: save the raw data we just processed
+        self.last_raw_data = raw_data
 
         return rdm_db, detections, targets_gt, diagnostics, r_axis, v_axis
 
@@ -3659,8 +3972,14 @@ class RadarEngine:
         if 'enable_phase_tracking' in kwargs:
             if hasattr(ds, 'config') and isinstance(ds.config, dict):
                 ds.config['enable_phase_noise_tracking'] = kwargs['enable_phase_tracking']
-        if 'min_range' in kwargs:
-            ds.cfar_params['min_range_m'] = kwargs['min_range']
+        if 'max_range' in kwargs:
+            ds.cfar_params['max_range_m'] = kwargs['max_range']
+        # Propagate config changes to hardware params if needed (e.g. gain) requires re-init usually, 
+        # but we can try to update runtime if supported. 
+        # For now, gain is set at init. 
+        # We also need to update CFAR threshold if provided
+        if 'cfar_threshold' in kwargs:
+             ds.cfar_params['threshold_offset'] = kwargs['cfar_threshold']
 
     def steer_beam(self, angle_deg):
         """Only valid in hardware mode."""
@@ -3689,13 +4008,13 @@ def main_v2():
                         help='Operation mode')
     parser.add_argument('--config', type=str, default='config_cn0566',
                         help='Radar configuration name')
-    parser.add_argument('--save_path', type=str, default='output/radar_v2',
+    parser.add_argument('--save_path', type=str, default='output/radar_v2i',
                         help='Path to save output')
-    parser.add_argument('--sdr_ip', type=str, default="ip:192.168.2.2",
+    parser.add_argument('--sdr_ip', type=str, default="ip:192.168.2.1",
                         help='SDR IP address')
     parser.add_argument('--phaser_ip', type=str, default="ip:phaser.local",
                         help='Phaser IP address')
-    parser.add_argument('--frames', type=int, default=5,
+    parser.add_argument('--frames', type=int, default=20,
                         help='Number of frames to capture/simulate')
     parser.add_argument('--snr', type=float, default=25.0,
                         help='SNR for simulation/loopback (dB)')
@@ -3715,6 +4034,22 @@ def main_v2():
                         help='Use DL-based detection instead of CFAR')
     parser.add_argument('--dl_threshold', type=float, default=0.3,
                         help='DL detection threshold (default 0.3)')
+    parser.add_argument('--record', action='store_true', default=False,
+                        help='Record raw IQ data to .npy file')
+    parser.add_argument('--min_range', type=float, default=0.5,
+                        help='Min detection range (meters)')
+    parser.add_argument('--max_range', type=float, default=10.0,
+                        help='Max detection range (meters)')
+    parser.add_argument('--rx_gain', type=int, default=30,
+                        help='RX Gain (dB), default 30')
+    parser.add_argument('--tx_gain', type=int, default=-10,
+                        help='TX Gain (dB), default -10')
+    parser.add_argument('--n_chirps', type=int, default=64,
+                        help='Number of chirps (Nc), default 64')
+    parser.add_argument('--cfar_threshold', type=float, default=15.0,
+                        help='CFAR threshold offset (dB), default 15')
+    parser.add_argument('--tdd', action='store_true', default=False,
+                        help='Enable TDD mode for coherent processing')
     args = parser.parse_args()
 
     # Optional offline evaluation (same as v1)
@@ -3742,6 +4077,23 @@ def main_v2():
         use_dl_detection=args.dl,
         dl_threshold=args.dl_threshold
     )
+    
+    # Configure detection range and parameters
+    engine.update_processor_params(
+        min_range=args.min_range,
+        max_range=args.max_range,
+        cfar_threshold=args.cfar_threshold
+    )
+    
+    # Override hardware config params (must be done before start if possible, but engine calls start internally)
+    # Actually engine instance is created with 'config'. We should update config BEFORE engine.start()
+    # But engine is already created at line 3745 using 'config'. 
+    # Let's update the config object held by engine.
+    engine.config.hardware_params['rx_gain'] = args.rx_gain
+    engine.config.hardware_params['tx_gain'] = args.tx_gain
+    # Updating N_chirps requires updating 'params' which affects buffer size calculation in RadarHardware
+    engine.config.params['N_chirps'] = args.n_chirps
+    engine.config.hardware_params['tdd_mode'] = args.tdd
 
     print(f"\nMyRadar V2")
     print(f"  Mode: {args.mode}")
@@ -3756,10 +4108,16 @@ def main_v2():
     print(f"  Robust processing: {args.robust}")
     print(f"  Frames: {args.frames}")
     print(f"  SNR: {args.snr} dB")
+    print(f"  Recording: {args.record}")
+    print(f"  ROI: {args.min_range}-{args.max_range} m")
+    print(f"  Gain: RX={args.rx_gain}dB, TX={args.tx_gain}dB")
+    print(f"  TDD Mode: {args.tdd}")
     print("-" * 60)
 
     engine.start()
     os.makedirs(args.save_path, exist_ok=True)
+    
+    recorded_data = []
 
     # Run evaluation mode if requested
     if args.eval:
@@ -3791,6 +4149,18 @@ def main_v2():
             rdm, detections, targets, diag, r_axis, v_axis = engine.get_frame(
                 snr_db=args.snr
             )
+            
+            # Use raw_data from engine (need to expose it or capture it separately)
+            # engine.get_frame() returns processed data. To record raw, we need to access what get_frame acquired.
+            # HACK: Retrieve the last raw data from the source if available, OR modify get_frame to return it.
+            # Easier: engine.last_raw_data (we need to add this property to RadarEngine)
+            if args.record and hasattr(engine, 'last_raw_data'):
+                recorded_frames = engine.last_raw_data
+                # If frame is [1, Nc, Ns], append as is
+                if len(recorded_frames.shape) == 3: # Rx, Nc, Ns
+                    recorded_data.append(recorded_frames)
+                else: 
+                     recorded_data.append(recorded_frames)
 
             proc_time = timer() - start_time
             print(f"  Mode: {diag.get('mode', '?')}")
@@ -3833,14 +4203,40 @@ def main_v2():
                     _plot_2d_rdm(engine.processor.processor, rdm, i, dummy_metrics,
                                  [], [], detections, save_path)
                 print(f"  Saved: {save_path}")
+                
+                # Also save the RDM heatmap style (visualize_raw_style)
+                save_path_heatmap = os.path.join(args.save_path, f"radar_v2_heatmap_{i}.png")
+                _plot_rdm_heatmap_style(rdm, detections, r_axis, v_axis, save_path_heatmap, i)
+                print(f"  Saved heatmap: {save_path_heatmap}")
+                
+                # Save Zoomed ROI plot
+                save_path_roi = os.path.join(args.save_path, f"radar_v2_roi_{i}.png")
+                _plot_rdm_roi(rdm, detections, r_axis, v_axis, save_path_roi, i, 
+                              min_r=args.min_range, max_r=args.max_range)
+                print(f"  Saved ROI plot: {save_path_roi}")
 
     except KeyboardInterrupt:
         print("\nStopping...")
     finally:
         engine.stop()
+        if args.record and len(recorded_data) > 0:
+            rec_path = os.path.join(args.save_path, "radar_raw_data.npy")
+            # Stack: [Frames, Rx, Nc, Ns]
+            np_data = np.stack(recorded_data, axis=0) 
+            np.save(rec_path, np_data)
+            print(f"Recorded data saved to {rec_path} shape={np_data.shape}")
 
     print(f"\nDone. Output saved to {args.save_path}/")
 
 
 if __name__ == "__main__":
     main_v2()
+
+"""
+ssh analog@phaser.local
+
+(py310) cmpe@cmpe-jetson:/Developer/AIsensing/sdradi$ python myradar_all_in_one_v2.py --mode 'hardware'     --sdr_ip 'ip:192.168.2.1'     --rx_gain 40     --n_chirps 128     --cfar_threshold 15     --min_range 0.2     --max_range 10.0 
+
+#TDD mode has problems
+python myradar_all_in_one_v2.py --mode 'hardware' --tdd --rx_gain 40 --n_chirps 128 --cfar_threshold 15 --min_range 0.2 --max_range 10.0
+"""
