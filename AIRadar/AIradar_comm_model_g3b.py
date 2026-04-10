@@ -2078,7 +2078,7 @@ def main():
                         default='cuda' if torch.cuda.is_available() else 'cpu')
     parser.add_argument('--radar_ckpt', type=str, default=None)
     parser.add_argument('--comm_ckpt', type=str, default=None)
-    parser.add_argument('--out_dir', type=str, default='data/AIradar_comm_model_g3')
+    parser.add_argument('--out_dir', type=str, default='data/AIradar_comm_model_g3b')
     parser.add_argument('--channel_mode', choices=['awgn', 'realistic'], default='realistic',
                         help="Channel mode: 'awgn' (clean AWGN) or 'realistic' (multipath + clutter + CSI error)")
     parser.add_argument('--model_version', choices=['v1', 'v2', 'v3'], default='v3',
@@ -2092,9 +2092,9 @@ def main():
     parser.add_argument('--label_smoothing', type=float, default=0.1,
                         help="Label smoothing for CrossEntropyLoss (0.0-0.2), helps prevent overconfident predictions")
     # New: Radar and Comm type selection for FMCW vs OTFS comparison
-    parser.add_argument('--radar_type', choices=['FMCW', 'OTFS', 'all'], default='FMCW',
+    parser.add_argument('--radar_type', choices=['FMCW', 'OTFS', 'all'], default='all',
                         help="Radar type: 'FMCW' (traditional), 'OTFS' (ISAC), or 'all'")
-    parser.add_argument('--comm_type', choices=['OFDM', 'OTFS', 'all'], default='OFDM',
+    parser.add_argument('--comm_type', choices=['OFDM', 'OTFS', 'all'], default='all',
                         help="Communication waveform: 'OFDM' (traditional), 'OTFS' (delay-doppler), or 'all'")
     args = parser.parse_args()
     

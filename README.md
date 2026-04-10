@@ -1,153 +1,352 @@
-# Deep Learning-Based AI Processing Framework for Wireless Communication and Radar Sensing
+# AIsensing: AI + SDR for Wireless Communication and Radar
 
-# Python Package Setup
-There is a standalone Python package `AIRadar` located inside a larger monorepo. This package lives inside this larger repository and only this subfolder of `AIRadar` is treated as a standalone package. It is built using [Flit](https://flit.pypa.io/) and supports local editable installation as well as optional publishing to PyPI.
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](#quick-start)
+[![Platform](https://img.shields.io/badge/Platform-Linux-lightgrey.svg)](#quick-start)
 
-## 🔧 Setup Instructions
+AIsensing is an open-source research and engineering monorepo for wireless communication, radar sensing, and integrated sensing-and-communication (ISAC).  
+It combines deep learning models, classical signal processing, and real SDR hardware workflows in one reproducible environment.
 
-Make sure you have `flit` installed:
+## Vision
+
+The project is designed to close the gap between:
+
+- simulation-first PHY research and deployable SDR pipelines,
+- model-centric AI workflows and device-centric RF engineering,
+- communication and radar stacks that are often developed separately.
+
+In practice, this repo supports both rapid algorithm iteration and realistic end-to-end validation with ADI-based radios.
+
+## What makes AIsensing different
+
+- **Simulation + Hardware in one flow**: develop in Python simulation, then validate with Pluto/AD9361/ADRV9009/CN0566 paths.
+- **Joint comm-radar focus**: includes OFDM/OTFS communication and FMCW/range-Doppler radar tooling under one roof.
+- **AI-ready architecture**: dataset generation, model training, and inference pipelines are first-class citizens.
+- **Lab-oriented tooling**: BER tests, sync diagnostics, loopback checks, device tuning scripts, and GUI apps.
+- **Student-friendly codebase**: readable Python structure with many standalone scripts to learn from and modify.
+
+## System Overview
+
+```mermaid
+flowchart LR
+    A[Simulation Datasets] --> B[AI Models & DSP]
+    B --> C[PHY Pipelines OFDM/OTFS/FMCW]
+    C --> D{Execution}
+    D --> E[Software Simulation]
+    D --> F[SDR Hardware]
+    F --> G[Diagnostics + UI + Logging]
+    E --> G
+```
+
+## Repository Structure
+
+### AIRadar — AI radar and ISAC research core
+
+Path: [AIRadar/](AIRadar/)
+
+AIRadar contains dataset engines, model training pipelines, and reusable library modules for radar/communication tasks.
+
+#### Key capabilities
+
+- **Dataset generation** for radar and communication variants, including ray-tracing flavored pipelines.
+- **Training pipelines** across multiple model generations.
+- **Joint communication-radar modeling** for multitask or shared-feature architectures.
+- **Reusable processing library** for radar DSP, waveform helpers, and model blocks.
+- **ISAC experiment framework** with method modules for OFDM, OTFS, and FMCW experimentation.
+
+#### Major AIRadar code
+
+| Area | Key Files | Description |
+|---|---|---|
+| Dataset generation | [AIradar_dataset.py](AIRadar/AIradar_dataset.py), [AIradar_datasetv8.py](AIRadar/AIradar_datasetv8.py), [AIradar_datasetraytracingv3.py](AIRadar/AIradar_datasetraytracingv3.py) | Synthetic and hybrid dataset construction for radar/comm tasks |
+| Training pipelines | [AIradar_train.py](AIRadar/AIradar_train.py), [AIradar_trainv8.py](AIRadar/AIradar_trainv8.py), [AIradar_transformer_train.py](AIRadar/AIradar_transformer_train.py) | End-to-end training entry points for detector and transformer variants |
+| Joint comm-radar | [AIradar_comm_models.py](AIRadar/AIradar_comm_models.py), [dl_joint_radar_comm.py](AIRadar/dl_joint_radar_comm.py), [Lidar2Radar_otfs_ofdm.py](AIRadar/Lidar2Radar_otfs_ofdm.py) | Shared architectures and multimodal comm-radar experimentation |
+| AIRadarLib core | [signal_processing.py](AIRadar/AIRadarLib/signal_processing.py), [radar_det.py](AIRadar/AIRadarLib/radar_det.py), [modeling_transformer.py](AIRadar/AIRadarLib/modeling_transformer.py) | Core DSP blocks, radar detection logic, and transformer internals |
+| ISAC experiments | [isac_experiment/main.py](AIRadar/isac_experiment/main.py), [isac_experiment/simulator.py](AIRadar/isac_experiment/simulator.py), [isac_experiment/methods/otfs.py](AIRadar/isac_experiment/methods/otfs.py) | Configurable ISAC research loops and simulation backends |
+
+### sdradi — SDR integration, PHY runtime, and radar/video apps
+
+Path: [sdradi/](sdradi/)
+
+sdradi provides practical SDR scripts and reusable modules for communication/radar over real hardware.
+
+#### Key capabilities
+
+- **SDR abstraction and device setup** for ADI transceivers.
+- **OFDM/OTFS PHY pipelines** with synchronization and equalization support.
+- **FEC + MAC layers** for robust packetized transport.
+- **Video-over-SDR implementations** including end-to-end lab scripts.
+- **Radar runtime and visualization apps** for device-backed sensing.
+- **Diagnostics and auto-tuning** utilities for faster bring-up.
+
+#### Major sdradi code
+
+| Area | Key Files | Description |
+|---|---|---|
+| SDR abstraction/config | [myad9361class.py](sdradi/myad9361class.py), [myadiclass.py](sdradi/myadiclass.py), [networkutils.py](sdradi/networkutils.py) | Device wrappers and connection helpers |
+| OFDM/OTFS PHY | [myofdm.py](sdradi/myofdm.py), [sdr_video_commv2.py](sdradi/sdr_video_commv2.py), [sdr_video_commv2_lab.py](sdradi/sdr_video_commv2_lab.py), [otfs_radar_test.py](sdradi/otfs_radar_test.py) | Modulation, sync, demodulation, and link experiments |
+| FEC/MAC | [sdr_ldpc.py](sdradi/sdr_ldpc.py), [sdr_mac.py](sdradi/sdr_mac.py), [benchmark_acc_fec.py](sdradi/benchmark_acc_fec.py) | Coding/recovery and performance benchmarking |
+| Video-over-SDR | [sim_video_e2e_asyncv2_lab.py](sdradi/sim_video_e2e_asyncv2_lab.py), [run_video_txv2.py](sdradi/run_video_txv2.py), [run_video_rxv2.py](sdradi/run_video_rxv2.py) | End-to-end packetized media streaming pipelines |
+| Radar hardware + UI | [myradar_all_in_one_v2.py](sdradi/myradar_all_in_one_v2.py), [radarappwdevice5.py](sdradi/radarappwdevice5.py), [test_cn0566_radarv2.py](sdradi/test_cn0566_radarv2.py) | Radar DSP + UI integrations for real device operation |
+| Bring-up/diagnostics | [sdr_auto_tune.py](sdradi/sdr_auto_tune.py), [sdr_diagnostics_ui.py](sdradi/sdr_diagnostics_ui.py), [pluto_test/](sdradi/pluto_test/) | Cable checks, loopback tests, and health diagnostics |
+
+### newsdr — latest lab branch and technical documents
+
+Path: [newsdr/](newsdr/)
+
+newsdr tracks the latest lab-focused evolutions of key SDR/radar modules plus companion technical documentation.
+
+#### Current focus code
+
+- [myradar_all_in_one_v2.py](newsdr/myradar_all_in_one_v2.py)
+- [sdr_video_commv2_lab.py](newsdr/sdr_video_commv2_lab.py)
+- [sim_video_e2e_asyncv2_lab.py](newsdr/sim_video_e2e_asyncv2_lab.py)
+- [sdr_auto_tune.py](newsdr/sdr_auto_tune.py)
+- [radarappwdevice5b.py](newsdr/radarappwdevice5b.py)
+
+#### Technique docs added
+
+- [myradar_all_in_one_v2_technique.md](newsdr/myradar_all_in_one_v2_technique.md)
+- [sdr_video_commv2_lab_technique.md](newsdr/sdr_video_commv2_lab_technique.md)
+- [sim_video_e2e_asyncv2_lab_technique.md](newsdr/sim_video_e2e_asyncv2_lab_technique.md)
+- [sdr_auto_tune_technique.md](newsdr/sdr_auto_tune_technique.md)
+- [radarappwdevice5b_technique.md](newsdr/radarappwdevice5b_technique.md)
+
+## Quick Start
+
+### 1) Clone repository
+
+```bash
+git clone https://github.com/lkk688/AIsensing.git
+cd AIsensing
+```
+
+### 2) Create Python environment
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -U pip setuptools wheel
+```
+
+### 3) Install AIRadar package in editable mode
+
 ```bash
 pip install flit
-```
-To install this package in editable/symlink mode:
-```bash
-cd AIRadar/
+cd AIRadar
 flit install --symlink
+cd ..
 ```
-This allows you to edit the code in-place and have changes reflected immediately without reinstalling.
 
-Project Metadata (pyproject.toml)
+### 4) Install workflow-specific dependencies
 
-Located at AIRadar/pyproject.toml, this file defines the package info
+- For SDR Jetson-like workflow, start with [sdradi/requirements_jetson.txt](sdradi/requirements_jetson.txt).
+- For notebook-driven research, install dependencies used in [deeplearning/](deeplearning/) notebooks/scripts.
 
-## 🚀 Build & Publish to PyPI
-Build the package:
+### 5) Example commands
+
+- Radar UI:
+
 ```bash
-cd AIRadar/
-flit build
+python sdradi/radarappwdevice5.py
 ```
-This creates a dist/ directory with .whl and .tar.gz files.
 
-Upload to PyPI: Make sure your credentials are set up (~/.pypirc) or use a token.
+- Video PHY loopback:
+
 ```bash
-flit publish
+python sdradi/sdr_video_commv2_lab.py --mode loopback
 ```
-To test first:
+
+- SDR auto tune/scanner:
+
 ```bash
-flit publish --repository testpypi
+python sdradi/sdr_auto_tune.py --mode rx
 ```
-## 📦 Package Structure
-- `AIRadar/`: The root directory of the package.
-  - `pyproject.toml`: The project metadata file.
-  - `src/`: The source code directory.
-    - `AIRadar/`: The main package.
-      - `__init__.py`: Initialization file.
-      - `AI_Channel.py`: Channel estimation model.
-      - `AI_Comm.py`: Communication model.
-      - `AI_Radar.py`: Radar model.
-      - `AI_Utils.py`: Utility functions.
-      - `AI_Comm_radar_models.py`: Transformer-based communication and radar models.
-      - `AI_Comm_radar_models.py`: Transformer-based communication and radar models.
 
-## Introduction
+## PlutoSDR Setup and Recovery
 
-Deep learning has revolutionized various application scenarios by significantly improving performance across domains. In the context of wireless communication, researchers have explored the potential of deep learning techniques to enhance system efficiency and reliability. In this work, we present our novel AI backend processing framework, designed to address critical challenges in wireless communication and radar sensing.
+This section mirrors key operational guidance from [docs/plutosdr_setup_guide.md](docs/plutosdr_setup_guide.md) for quick access.
 
-## Existing Solutions and Their Limitations
-One notable solution in this field is [NVIDIA SIONNA](https://developer.nvidia.com/sionna), which is open sourced at [sionna](https://github.com/NVlabs/sionna). SIONNA leverages the power of Tensorflow to accelerate AI physical-layer research. However, it has limitations:
+### Quick recovery scripts
 
-1. **Simulation-Only Approach:** SIONNA operates solely on simulation data, lacking a real radio interface. This restricts its applicability to practical scenarios.
+If you see errors such as device not found, driver symbol mismatch, or broken IIO contexts:
 
-2. **Tensorflow Dependency:** SIONNA relies exclusively on the Tensorflow framework, limiting flexibility for researchers who prefer other deep learning libraries. Sionna also does not support for Tensorflow versions `>2.14` due to the stopped support of the `complex` data type in Tensorflow Layers.
+```bash
+cd sdradi
+./reset_drivers.sh
+```
 
-3. **Basic Neural Networks:** While effective, SIONNA's neural network architecture remains basic, missing out on advanced transformer models.
+For dual-device setups, update the second Pluto as well:
 
-## Our Proposed AI Backend Processing Framework
+```bash
+cd sdradi
+./update_second_pluto.sh
+```
 
-Our new AI processing framework aims to overcome these limitations. It offers the following features:
+After firmware updates, unplug and replug all PlutoSDR devices.
 
+### Hardware verification checklist
 
-1. **Hybrid Data Sources: Real Hardware Radio and Simulation Data**
-   - Our framework interfaces seamlessly with both real hardware radio systems (support Linux Industry IO and Analog's tranceiver chips) and simulation data (e.g., 5G CDL Channel dataset and DeepMIMO dataset). Researchers can seamlessly interface our framework with physical software-defined radio (SDR) hardware. This dual approach ensures robustness and practical relevance. We also integrate with the DeepMIMO raytracing dataset, enabling comprehensive performance evaluation.
+1. Verify USB detection:
 
-2. **Flexible Libraries: Numpy, Pytorch, and Huggingface Transformers**
-   - We leverage Numpy for efficient data preprocessing and simulation data preparation.
-   - Pytorch serves as our primary deep learning framework, allowing researchers to build complex neural architectures.
-   - Huggingface Transformers enhance our capabilities with advanced transformer models.
+```bash
+lsusb
+```
 
-3. **Dual Capability: Communication and Radar Sensing**
-   - Our framework provides AI processing capabilities for both communication tasks (e.g., OFDM symbol detection, demodulation, channel estimation) and radar sensing (target detection and tracking).
-   - By combining these functionalities, we create a unified solution for diverse wireless applications.
+Look for `Analog Devices Inc. PlutoSDR`.
 
-4. **Empowering Students via Pythonic Architecture**
-   - Our backend processing framework is designed in Python, promoting readability, extensibility, and collaboration.
-   - It offers a clear modular distinction between domain-specific components (e.g., OFDM communication, signal processing) and general-purpose deep learning models.
-   - Our open environment encourages Computer Science and Software Engineering students to innovate. Students can develop software and deep learning models using a specified general-purpose dataset format, without requiring deep domain-specific knowledge in wireless communication. 
-   - Our AI processing framework bridges the gap between theory and practice, empowering researchers and students alike. As we refine our implementation, we anticipate further breakthroughs in wireless communication and radar sensing. By fostering collaboration and creativity, we build upon the solid foundation we've established.
+2. Verify IIO contexts:
 
-The overall system architecture is shown here:
+```bash
+iio_info -s
+```
 
-<img width="1066" alt="image" src="https://github.com/lkk688/AIsensing/assets/6676586/7817a076-66cd-49a3-aeba-c960fde4ef86">
+If this fails, run `./reset_drivers.sh`.
 
+### Recommended connection mode
 
-## Detailed Documents for AIsensing
+Use IP URIs for stability instead of changing USB URIs:
 
-1. [AIprocessing](deeplearning/AIprocessing.md) contains the setup and implementation details of the AI processing framework for Radar and Communication based on Numpy, Pytorch and Transformers.
-   - [AIsim_main2.py](deeplearning/AIsim_main2.py) is the created main code to perform complete OFDM transmission over CDL or DeepMIMO channel dataset.
-   - [deepMIMO5.py](deeplearning/deepMIMO5.py) contains the major code related to OFDM basic modules and DeepMIMO Channel dataset
-   - [ofdmtrain_pytorch2.py](deeplearning/ofdmtrain_pytorch2.py) contains the training code of Pytorch models for OFDM communication simulation
-   - [ofdmeval_pytorch.py](deeplearning/ofdmeval_pytorch.py) contains the inference and evaluation code of Pytorch models for OFDM communication simulation
-   - [wave2vec_ofdm.py](deeplearning/wave2vec_ofdm.py) contains the Wave2Vec transformer models for OFDM communication
+- TX/RX examples: `ip:192.168.2.2`, `ip:192.168.3.2`
+- Keep SDR settings in [sdr_tuned_config.json](sdradi/sdr_tuned_config.json)
 
-2. [MATLAB](matlab/matlabsim.md) contains the details of the MATLAB Interface to the SDR Device and Communication Simulation.
-   - [simpleQAM](matlab/simpleQAM.mlx): test the basic QAM modulation, draw the Constellation Diagram
-   - [simpleofdm](matlab/simpleofdm.mlx): simulates basic ofdm connection, test the BER
-   - [80211ofdm](matlab/ofdm_communication.mlx): simulate the IEEE802.11 OFDM communication
-   - [dfts_ofdm](matlab/dfts_ofdm.mlx): simulate the DFT-S OFDM to minimize PAPR in UL via DFT
-   - [DFT-spread-OFDM Radar](matlab/periodogram_radar_dfts_one.mlx): Periodogram-based OFDM Radar with DFT-spread Single Target
-   - [DFT-spread-OFDM Radar](matlab/periodogram_radar.mlx): DFT-spread-OFDM Radar simulation (two targets)
+Example:
 
+```json
+{
+  "sdr_ip": "ip:192.168.2.2",
+  "rx_uri": "ip:192.168.3.2",
+  "device": "pluto_dual"
+}
+```
 
-3. [SDR Radios](sdradi/sdr_radios.md) contains the details of the interface to SDR Radio Devices.
-   - [myad9361.py](sdradi/myad9361.py) Test and run the AD9361 transceiver
-   - [myad9361class.py](sdradi/myad9361class.py) Put all ADI transeiver related code into one class
-   - [myadiclass.py](sdradi/myadiclass.py) extends the `myad9361class.py`
-   - [myofdm.py](sdradi/myofdm.py) OFDM related code in one library (subset of `deepMIMO5.py`), used for radio device
-   - [myofdmwithsdr.py](sdradi/myofdmwithsdr.py) Integrated OFDM MIMO transmission with SDR radio
+### Known transport limitation on dual Pluto
 
-4. [Joint Communication and Radar Hardware Systems](sdradi/sdr.md) contains the implementation details and software framework to the software-defined radio devices for communication and radar sensing.
-   - [myradar3.py](sdradi/myradar3.py) Radar device control related code
-   - [radar_fmcw3.py](sdradi/radar_fmcw3.py) Implements FMCW Radar
-   - [radarappwdevice3.py](sdradi/radarappwdevice3.py) Latest main entrance file for Radar device
+On some high-performance hosts, dual Pluto TX/RX can show around 50% BER even when sync appears healthy.  
+This has been observed over both USB and IP transports and is considered a host/driver transport limitation.
 
+Recommended practical workflow:
 
-## Current work in progress
-### Radar Dataset and Training
+1. Develop data-path and model logic in simulation (for example `AIradar_comm_dataset_g2.py`).
+2. Use software loopback tests for PHY logic validation.
+3. Use hardware mainly for synchronization/channel demonstrations when dual-device payload decoding is unstable on the host.
 
-- [x] radar_dataset.py: create class RadarDataset, generate radar simulation data and use it for training. 
-   - [x] Update the RadarDataset class to generate time-domain data suitable for software-defined radio devices (new parameters for SDR configuration), and add functions to convert this time-domain data to the range-doppler domain.
-      - Generates FMCW chirp signals
-      - Simulates target reflections with appropriate time delays and Doppler shifts
-      - Handles multiple RX antennas with spatial diversity
-      - Stores I/Q data in the format [batch, num_rx, num_chirps, samples_per_chirp, 2]
-      - Range-Doppler processing: Converts time-domain data to range-Doppler maps using FFT; Provides both single-sample and batch processing functions
-      - Shows time-domain signals alongside range-Doppler maps for visualization, displays detailed target information, visualizes both I and Q components.
-   - [x] Update the RadarDataset class to generate range-Doppler data suitable for software-defined radio devices (new parameters for SDR configuration), and add functions to convert this range-Doppler data to the time-domain domain.
-      - Generates FMCW chirp signals
-      - Simulates target reflections with appropriate time delays and Doppler shifts
-      - Handles multiple RX antennas with spatial diversity
-      - Stores I/Q data in the format [batch, num_rx, num_chirps, samples_per_chirp, 2]
-      - Range-Doppler processing: Converts time-domain data to range-Doppler maps using FFT; Provides both single-sample and batch processing functions
-   - [x] Generate two new data types: 1) OFDM_FMCW : Combines OFDM modulation (within the AD9361's 56 MHz bandwidth limit) with the CN0566 phaser's 500 MHz frequency sweep at 10 GHz; 2) Sine_FMCW : Combines a sine wave carrier (from the AD9361) with the CN0566 phaser's 500 MHz frequency sweep.
-   - [ ] Generate more realistic radar data with moving targets: class RealisticRadarDataset
-- [x] create a training script for the radar target detection model: radar_train.py; create a script to test the trained radar model: radar_test.py
+### Useful diagnostics commands
 
-- [ ] Added class Transmiter() and class NNChannelEstimator based on Pytorch inside the AIsim_main2.py to support multiple transmitters
-- [ ] Add class TransformerChannelEstimator in AI_Channel.py and add more comprehensive simulation data-based training and evaluation
-- [ ] complete the trainmain function by implementing a neural network model for OFDM signal processing in AIsim_maindataset2.py
-- [ ] create a new OFDMNet class in AIsim_maindataset3.py that uses transformer architecture and provide better feature extraction and modeling of complex relationships in OFDM signals. Test the Range_doppler plot function.
-- [ ] add a flexible transformer model in AIcomm_radar_models.py that can handle both OFDM communication and radar signal processing: Standard self-attention for OFDM, Range and Doppler attention for radar processing, Learnable positional embeddings, Separate output activations for each mode: 1) Sigmoid for OFDM symbol detection; 2) Tanh for radar target detection. For OFDM communication: Initialize with mode='comm'. For Radar processing: Initialize with mode='radar'
+```bash
+python sdradi/scan_devices.py
+python sdradi/check_local_sdr.py
+python sdradi/check_remote_sdr.py
+```
 
-- [ ] AIsionna_radar.py: modify the radar reflection simulation code to use NumPy instead of TensorFlow and create a function that allows users to set up multiple targets with custom parameters.
-- [ ] train_multitask.py: a training script for the DualPurposeTransformer model that handles both OFDM communication and radar sensing tasks. The script will include training, evaluation, and visualization components.
-- [ ] AImodels_joint.py
+## SDR Radios at a Glance
+
+This project primarily targets ADI-compatible SDR workflows, with ADALM-PLUTO as a core development device.  
+Reference details are in [docs/sdr_radios.md](docs/sdr_radios.md).
+
+### ADALM-PLUTO quick profile
+
+- RF coverage: 325 MHz to 3.8 GHz
+- Instantaneous bandwidth: up to 20 MHz
+- Sampling rate: up to 61.44 MSPS
+- Default USB-network address: `192.168.2.1`
+- Typical software stack: `libiio`, `pylibiio`, `pyadi-iio`
+
+### Recommended SDR interface stack
+
+- Low-level IIO transport and context handling via `libiio`/`pylibiio`
+- High-level Python radio control via `pyadi-iio`
+- Device visibility and attributes check with:
+
+```bash
+iio_info -s
+iio_attr -a -C
+```
+
+### Common Pluto management notes
+
+- Pluto firmware version can be checked with:
+
+```bash
+iio_attr -a -C fw_version
+```
+
+- Access over SSH:
+
+```bash
+ssh root@192.168.2.1
+```
+
+- Mass-storage config files (`config.txt`, `info.html`) can be used to inspect or adjust network setup.
+- For dual-device workflows, static IP separation such as `192.168.2.2` and `192.168.3.2` keeps TX/RX roles stable.
+
+### Python environment packages often used in SDR/radar UI workflows
+
+```bash
+pip install pyadi-iio pylibiio scipy matplotlib pyqtgraph pyqt6 opencv-python-headless pyopengl
+```
+
+## Typical Workflows
+
+### Workflow A: AI model research
+
+1. Generate/prepare dataset in `AIRadar`.
+2. Train candidate models (`AIradar_train*`).
+3. Evaluate model behavior on comm/radar metrics.
+4. Export insights to SDR validation scripts in `sdradi`.
+
+### Workflow B: SDR communication validation
+
+1. Run device checks and loopback diagnostics.
+2. Launch PHY tests (OFDM/OTFS paths).
+3. Measure BER/SNR/throughput behavior.
+4. Iterate FEC/MAC and synchronization parameters.
+
+### Workflow C: Radar sensing experiments
+
+1. Start radar engine and UI app.
+2. Tune CFAR thresholds, minimum range, and compensation options.
+3. Compare simulation mode vs hardware mode behavior.
+4. Track detection quality and false-alarm characteristics.
+
+## Major Recent Efforts
+
+- Expanded lab-ready technical documentation in `newsdr/` for core radar/video/tuning scripts.
+- Strengthened end-to-end SDR video lab pipelines (`sdr_video_commv2_lab.py`, async e2e variants).
+- Added robust SDR bring-up and classification utilities (`sdr_auto_tune.py` and related tooling).
+- Continued radar all-in-one evolution and GUI integration for hardware/simulation modes.
+- Consolidated AIRadar and sdradi code paths to support both AI-centric and device-centric development.
+
+## Additional Modules
+
+- Deep learning baselines and communication experiments: [deeplearning/](deeplearning/)
+- MATLAB simulation scripts: [matlab/](matlab/)
+- Web visualization/API prototype: [WebApp/](WebApp/)
+- GPU Holoscan area: [GPUHoloscan/](GPUHoloscan/)
+
+## Documentation Index
+
+- SDR architecture and workflows: [sdradi/sdr.md](sdradi/sdr.md)
+- Waterfall visualization notes: [sdradi/otheradis/waterfall.md](sdradi/otheradis/waterfall.md)
+- Latest lab technical docs: [newsdr/](newsdr/)
+
+## Contribution Guide
+
+Contributions are welcome for:
+
+- OFDM/OTFS PHY enhancements
+- radar DSP and target detection improvements
+- SDR integration and diagnostics
+- experiment reproducibility and benchmarking
+- visualization/UI quality-of-life improvements
+
+When opening a pull request, include:
+
+- problem statement and scope,
+- exact run commands,
+- before/after metrics or screenshots where applicable,
+- note on hardware/simulation environment used.
+
+## License
+
+This project is released under the [MIT License](LICENSE).

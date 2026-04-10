@@ -272,6 +272,78 @@ RADAR_COMM_CONFIGS_G2 = {
             'weather_intensity': 0.04,
             'doppler_spread': 2.5
         }
+    },
+
+    # High-Bandwidth 5G ISAC (New Config)
+    '5G_ISAC_HighBandwidth': {
+        'mode': 'TRADITIONAL',
+        'fc': 28e9,
+        'mod_order': 64,  # High data rate
+        
+        'radar_B': 2.0e9,  # High range resolution
+        'radar_T': 20e-6,  # Fast chirp
+        'radar_fs': 100e6,
+        
+        'comm_B': 800e6,
+        'comm_fs': 1.0e9,
+        'comm_fft_size': 2048,
+        'comm_cp_len': 144,
+        'channel_model': 'multipath',
+        
+        'R_max': 60.0,
+        'num_rx': 1,
+        'cfar_params': {'num_train': 16, 'num_guard': 4, 'threshold_offset': 22, 'nms_kernel_size': 7},
+        
+        'adaptive_cfar': True,
+        'csi_error': 0.02,
+        'clutter_params': {
+            'ground_clutter': True,
+            'ground_intensity': 0.005,
+            'k_shape': 2.0,
+            'range_exponent': 2.0,
+            'weather_clutter': False,
+            'weather_intensity': 0.0,
+            'doppler_spread': 2.0
+        }
+    },
+
+    # High-Bandwidth OTFS ISAC (New Config)
+    'OTFS_HighMobility_Wideband': {
+        'mode': 'OTFS',
+        'fc': 39e9,  # High frequency mmWave
+        'mod_order': 16,
+        
+        'B': 2.0e9,  # Wideband
+        'fs': 100e6,
+        
+        'N_doppler': 128,
+        'N_delay': 1024,
+        'T_symbol': 10e-6,
+        'channel_model': 'multipath',
+        
+        'R_max': 80.0,
+        'num_rx': 1,
+        'cfar_params': {
+            'num_train': 16,
+            'num_guard': 8,
+            'threshold_offset': 25,
+            'nms_kernel_size': 9,
+            'min_range_m': 2.0,
+            'min_speed_mps': 0.0,
+            'notch_doppler_bins': 0
+        },
+        
+        'adaptive_cfar': True,
+        'csi_error': 0.08,
+        'clutter_params': {
+            'ground_clutter': True,
+            'ground_intensity': 0.02,
+            'k_shape': 1.5,
+            'range_exponent': 2.0,
+            'weather_clutter': True,
+            'weather_intensity': 0.05,
+            'doppler_spread': 8.0
+        }
     }
 }
 
