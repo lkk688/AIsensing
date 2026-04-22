@@ -1,0 +1,45 @@
+{
+  "sdr": {
+    "uri": "ip:192.168.2.2",
+    "fc_hz": 2300000000.0,
+    "fs_hz": 3000000.0,
+    "rx_gain_db": 30.0,
+    "rx_bw_hz": 3600000.0,
+    "rx_buffer_size": 65536,
+    "kernel_buffers": 4
+  },
+  "preamble": {
+    "stf_repeats": 6,
+    "ltf_symbols": 4
+  },
+  "demod": {
+    "repeat": 2,
+    "kp": 0.15,
+    "ki": 0.005,
+    "sync_peak_med_ratio_th": 6.0,
+    "sc_threshold": 0.2,
+    "search_len": 60000,
+    "probe_syms": 16,
+    "bit_slip_max": 7,
+    "max_payload_syms_cap": 260,
+    "bad_evm_th": 0.85,
+    "bad_evm_patience": 5
+  },
+  "runtime": {
+    "max_captures": 5000,
+    "max_frames": 3,
+    "frame_timeout_s": 60.0,
+    "max_inflight": 10,
+    "output_dir": "rf_link_step7_rx_runs",
+    "output_video": "received_video.avi",
+    "output_fps": 2.0,
+    "width": 320,
+    "height": 240,
+    "verbose": true,
+    "sparse_every": 200,
+    "save_csv": true,
+    "save_plots": true,
+    "plot_every_frame": 1,
+    "save_frames_dir": ""
+  }
+}
