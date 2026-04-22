@@ -115,34 +115,34 @@ def create_ltf_ref(N=64, num_symbols=4):
 
 def schmidl_cox_metric(rx, half_period=32, window_len=None):
     """
-    Compute Schmidl-Cox timing metric.
-
-    The STF has period N/2 = 32, so correlating rx[n:n+L] with rx[n+L:n+2L]
-    gives a high peak at the start of the STF, even in the presence of CFO.
+    Compute Schmidl-Cox timing metric (vectorized, O(N)).
 
     Returns:
         M: timing metric array |P|^2 / R^2
         P: complex autocorrelation array
+        R: energy array
     """
     L = half_period
     N = len(rx)
     if window_len is None:
         window_len = N - 2 * L
+    window_len = min(window_len, N - 2 * L)
+    if window_len <= 0:
+        return np.array([], dtype=np.float32), np.array([], dtype=np.complex64), np.array([], dtype=np.float32)
 
-    M = np.zeros(window_len, dtype=np.float32)
-    P_arr = np.zeros(window_len, dtype=np.complex64)
-    R_arr = np.zeros(window_len, dtype=np.float32)
+    # P[n] = sum_{m=0}^{L-1} rx[n+m] * conj(rx[n+L+m])  -- sliding dot product
+    c = rx[:window_len + L] * np.conj(rx[L:window_len + 2 * L])
+    cs = np.zeros(window_len + L + 1, dtype=np.complex64)
+    cs[1:] = np.cumsum(c)
+    P_arr = cs[L:L + window_len] - cs[:window_len]
 
-    for n in range(window_len):
-        if n + 2 * L > N:
-            break
-        seg1 = rx[n:n + L]
-        seg2 = rx[n + L:n + 2 * L]
-        P_arr[n] = np.sum(seg1 * np.conj(seg2))
-        R_arr[n] = np.sum(np.abs(seg2)**2)
+    # R[n] = sum_{m=0}^{L-1} |rx[n+L+m]|^2  -- sliding energy
+    pow2 = np.abs(rx[:window_len + 2 * L])**2
+    cr = np.zeros(window_len + 2 * L + 1, dtype=np.float32)
+    cr[1:] = np.cumsum(pow2)
+    R_arr = cr[2 * L:2 * L + window_len] - cr[L:L + window_len]
 
-    eps = 1e-10
-    M = np.abs(P_arr)**2 / (R_arr**2 + eps)
+    M = np.abs(P_arr)**2 / (R_arr**2 + 1e-10)
     return M, P_arr, R_arr
 
 
@@ -631,7 +631,9 @@ def demod_one_capture(
 
     Returns a dict with all results and diagnostics.
     """
-    rx = rx_raw.astype(np.complex64) / (2**14)
+    rx = rx_raw.astype(np.complex64)
+    if np.median(np.abs(rx)) > 100:   # pyadi-iio already returns ~[-1,1]; only scale if int14-like
+        rx = rx / (2**14)
     rx = rx - np.mean(rx)  # DC removal
 
     # ---- CFO from tone (robust: scan multiple segments, pick highest SNR) ----

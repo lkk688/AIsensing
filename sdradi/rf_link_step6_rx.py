@@ -110,23 +110,26 @@ def create_ltf_ref(N=64, num_symbols=4):
 # ============================================================================
 
 def schmidl_cox_metric(rx, half_period=32, window_len=None):
-    """Compute Schmidl-Cox timing metric."""
+    """Compute Schmidl-Cox timing metric (vectorized, O(N))."""
     L = half_period
     N = len(rx)
     if window_len is None:
         window_len = N - 2 * L
-    M = np.zeros(window_len, dtype=np.float32)
-    P_arr = np.zeros(window_len, dtype=np.complex64)
-    R_arr = np.zeros(window_len, dtype=np.float32)
-    for n in range(window_len):
-        if n + 2 * L > N:
-            break
-        seg1 = rx[n:n + L]
-        seg2 = rx[n + L:n + 2 * L]
-        P_arr[n] = np.sum(seg1 * np.conj(seg2))
-        R_arr[n] = np.sum(np.abs(seg2)**2)
-    eps = 1e-10
-    M = np.abs(P_arr)**2 / (R_arr**2 + eps)
+    window_len = min(window_len, N - 2 * L)
+    if window_len <= 0:
+        return np.array([], dtype=np.float32), np.array([], dtype=np.complex64), np.array([], dtype=np.float32)
+
+    c = rx[:window_len + L] * np.conj(rx[L:window_len + 2 * L])
+    cs = np.zeros(window_len + L + 1, dtype=np.complex64)
+    cs[1:] = np.cumsum(c)
+    P_arr = cs[L:L + window_len] - cs[:window_len]
+
+    pow2 = np.abs(rx[:window_len + 2 * L])**2
+    cr = np.zeros(window_len + 2 * L + 1, dtype=np.float32)
+    cr[1:] = np.cumsum(pow2)
+    R_arr = cr[2 * L:2 * L + window_len] - cr[L:L + window_len]
+
+    M = np.abs(P_arr)**2 / (R_arr**2 + 1e-10)
     return M, P_arr, R_arr
 
 
@@ -303,7 +306,9 @@ def demod_one_capture(
     Full demodulation pipeline for one RX capture.
     Returns raw demodulated bytes (packet parsing done by caller).
     """
-    rx = rx_raw.astype(np.complex64) / (2**14)
+    rx = rx_raw.astype(np.complex64)
+    if np.median(np.abs(rx)) > 100:   # pyadi-iio already returns ~[-1,1]; only scale if int14-like
+        rx = rx / (2**14)
     rx = rx - np.mean(rx)
 
     # ---- Multi-segment CFO estimation ----

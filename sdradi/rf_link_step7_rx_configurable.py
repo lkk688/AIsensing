@@ -82,7 +82,7 @@ class PreambleConfig:
 
 @dataclass
 class DemodConfig:
-    repeat: int = 2  # 1/2/4
+    repeat: int = 1  # 1/2/4  (must match TX --repeat, TX default is 1)
     kp: float = 0.15
     ki: float = 0.005
     sync_peak_med_ratio_th: float = 6.0
@@ -255,17 +255,22 @@ def create_ltf_ref(num_symbols: int) -> Tuple[np.ndarray, np.ndarray]:
 # Schmidl-Cox + CFO
 # ==============================
 def schmidl_cox_metric(rx: np.ndarray, L: int, search_len: int) -> Tuple[np.ndarray, np.ndarray]:
+    """Schmidl-Cox timing metric, vectorized O(N)."""
     N = len(rx)
     search_len = min(search_len, N - 2*L - 1)
     if search_len <= 2:
-        return np.array([]), np.array([])
-    P = np.zeros(search_len, dtype=np.complex64)
-    R = np.zeros(search_len, dtype=np.float32)
-    for n in range(search_len):
-        a = rx[n:n+L]
-        b = rx[n+L:n+2*L]
-        P[n] = np.sum(a * np.conj(b))
-        R[n] = np.sum(np.abs(b)**2)
+        return np.array([], dtype=np.float32), np.array([], dtype=np.complex64)
+
+    c = rx[:search_len + L] * np.conj(rx[L:search_len + 2 * L])
+    cs = np.zeros(search_len + L + 1, dtype=np.complex64)
+    cs[1:] = np.cumsum(c)
+    P = cs[L:L + search_len] - cs[:search_len]
+
+    pow2 = np.abs(rx[:search_len + 2 * L])**2
+    cr = np.zeros(search_len + 2 * L + 1, dtype=np.float32)
+    cr[1:] = np.cumsum(pow2)
+    R = cr[2 * L:2 * L + search_len] - cr[L:L + search_len]
+
     M = (np.abs(P)**2) / (R**2 + 1e-12)
     return M, P
 
