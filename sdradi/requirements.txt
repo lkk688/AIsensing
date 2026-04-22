@@ -1,0 +1,15 @@
+# Core numerical
+numpy>=1.26
+
+# Plotting (Agg backend is fine)
+matplotlib>=3.8
+
+# SDR: Pluto / AD9361 via IIO
+pyadi-iio>=0.0.16
+pylibiio>=0.25
+
+# Video/JPEG decode/encode
+opencv-python>=4.9
+
+# Optional but useful (logs, CLI utils, etc.)
+tqdm>=4.66
