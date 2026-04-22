@@ -10,13 +10,16 @@ import adi
 import sys
 
 # === Configuration ===
-CONFIG = {
-    "ip": "ip:192.168.3.2",  # Default Pluto IP
-    "fc": 2405e6,
-    "fs": 3e6,
-    "tx_gain": 0,
-    "rx_gain": 70
-}
+# CONFIG = {
+#     "ip": "ip:192.168.3.2",  # Default Pluto IP
+#     "fc": 2405e6,
+#     "fs": 3e6,
+#     "tx_gain": 0,
+#     "rx_gain": 70
+# }
+
+#jetson tx side
+CONFIG = {"ip": "usb:1.4.5", "fc": 2.3e9, "fs": 3e6, "tx_gain": -20, "rx_gain": 20}
 
 # Link test thresholds
 LINK_THRESHOLDS = {
@@ -1331,3 +1334,9 @@ Example:
         run_digital_loopback_test(args.ip)
     elif args.mode == 'restart':
         restart_device(args.ip)
+
+"""
+Run in the jetson tx side:
+python3 sdr_auto_tune.py --mode tx --ip usb:1.4.5 --channel 0
+
+"""
