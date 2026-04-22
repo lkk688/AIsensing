@@ -199,6 +199,13 @@ class RunConfig:
     unseen_eval_every: int = 1
     enable_controlled_otfs_emphasis: bool = False
     otfs_ramp_epochs: int = 10
+    radar_eval_prob_thresh: float = 0.5
+    radar_auto_threshold_tune: bool = True
+    radar_threshold_min: float = 0.15
+    radar_threshold_max: float = 0.65
+    radar_threshold_steps: int = 11
+    radar_threshold_tune_every: int = 1
+    radar_per_config_threshold: bool = True
 
 
 # =============================================================================
@@ -1325,7 +1332,452 @@ def train_comm_pipeline_debug(cfg: RunConfig, device: torch.device) -> Dict[str,
     return summary
 
 
+def _radar_eval_detection_with_threshold(
+    model: nn.Module,
+    loaders: Dict[str, DataLoader],
+    device: torch.device,
+    postprocess_radar_fn,
+    radar_metrics_fn,
+    prf1_from_counts_fn,
+    default_prob_thresh: float,
+    per_config_thresh: Optional[Dict[str, float]] = None,
+) -> Dict[str, Any]:
+    model.eval()
+    per_cfg = {}
+    global_counts = {"tp": 0.0, "fp": 0.0, "fn": 0.0}
+    per_config_thresh = per_config_thresh or {}
+    with torch.no_grad():
+        for cfg_name, loader in loaders.items():
+            counts = {"tp": 0.0, "fp": 0.0, "fn": 0.0}
+            prob_thresh = float(per_config_thresh.get(cfg_name, default_prob_thresh))
+            for batch in loader:
+                radar_in = batch["radar_in"].to(device)
+                config_tensor = batch["config_tensor"].to(device)
+                if hasattr(model, "forward_radar"):
+                    out = model.forward_radar(radar_in, config_tensor, batch["waveform_id"].to(device))
+                    logits = out["radar_logits"]
+                else:
+                    logits = model(radar_in, config_tensor)
+                probs = torch.sigmoid(logits).cpu().numpy()
+                for i in range(radar_in.shape[0]):
+                    detections = postprocess_radar_fn(
+                        probs[i, 0],
+                        batch["range_axis"][i],
+                        batch["velocity_axis"][i],
+                        prob_thresh=prob_thresh,
+                    )
+                    m = radar_metrics_fn(batch["targets"][i], detections)
+                    counts["tp"] += m["tp"]
+                    counts["fp"] += m["fp"]
+                    counts["fn"] += m["fn"]
+            per_cfg[cfg_name] = {**counts, **prf1_from_counts_fn(counts["tp"], counts["fp"], counts["fn"])}
+            global_counts["tp"] += counts["tp"]
+            global_counts["fp"] += counts["fp"]
+            global_counts["fn"] += counts["fn"]
+
+    return {
+        "global": {**global_counts, **prf1_from_counts_fn(global_counts["tp"], global_counts["fp"], global_counts["fn"])},
+        "per_config": per_cfg,
+    }
+
+
+def _calibrate_radar_thresholds(
+    model: nn.Module,
+    val_seen_loaders: Dict[str, DataLoader],
+    device: torch.device,
+    postprocess_radar_fn,
+    radar_metrics_fn,
+    prf1_from_counts_fn,
+    threshold_grid: List[float],
+    per_config: bool,
+) -> Tuple[float, Dict[str, float], Dict[str, Any]]:
+    if len(threshold_grid) == 0:
+        threshold_grid = [0.5]
+    candidates = sorted(float(x) for x in threshold_grid)
+    best_global_t = candidates[0]
+    best_global_f1 = -1.0
+    global_curve = []
+    for t in candidates:
+        stats = _radar_eval_detection_with_threshold(
+            model=model,
+            loaders=val_seen_loaders,
+            device=device,
+            postprocess_radar_fn=postprocess_radar_fn,
+            radar_metrics_fn=radar_metrics_fn,
+            prf1_from_counts_fn=prf1_from_counts_fn,
+            default_prob_thresh=t,
+            per_config_thresh=None,
+        )
+        f1 = float(stats["global"]["f1"])
+        global_curve.append({"threshold": float(t), "f1": f1})
+        if f1 > best_global_f1:
+            best_global_f1 = f1
+            best_global_t = float(t)
+
+    per_cfg_thresholds: Dict[str, float] = {}
+    if per_config:
+        for cfg_name, loader in val_seen_loaders.items():
+            best_t = best_global_t
+            best_f1 = -1.0
+            for t in candidates:
+                stats = _radar_eval_detection_with_threshold(
+                    model=model,
+                    loaders={cfg_name: loader},
+                    device=device,
+                    postprocess_radar_fn=postprocess_radar_fn,
+                    radar_metrics_fn=radar_metrics_fn,
+                    prf1_from_counts_fn=prf1_from_counts_fn,
+                    default_prob_thresh=float(t),
+                    per_config_thresh=None,
+                )
+                f1 = float(stats["global"]["f1"])
+                if f1 > best_f1:
+                    best_f1 = f1
+                    best_t = float(t)
+            per_cfg_thresholds[cfg_name] = best_t
+
+    return best_global_t, per_cfg_thresholds, {"global_curve": global_curve}
+
+
+def _evaluate_radar_sweep_with_threshold(
+    model: nn.Module,
+    config_name: str,
+    sweep_type: str,
+    sweep_values: List[int],
+    num_samples: int,
+    save_root: str,
+    device: torch.device,
+    prob_thresh: float,
+    RadarSampleDataset,
+    radar_collate_fn,
+    radar_metrics_fn,
+    cfar_metrics_from_g2_fn,
+    prf1_from_counts_fn,
+    postprocess_radar_fn,
+) -> Dict[str, Any]:
+    results = {
+        "x": list(sweep_values),
+        "dl_f1": [],
+        "dl_precision": [],
+        "dl_recall": [],
+        "cfar_f1": [],
+        "cfar_precision": [],
+        "cfar_recall": [],
+        "config": config_name,
+        "sweep_type": sweep_type,
+        "prob_thresh": float(prob_thresh),
+    }
+
+    for value in sweep_values:
+        if sweep_type == "snr":
+            ds = RadarSampleDataset(
+                config_name=config_name,
+                num_samples=num_samples,
+                save_root=save_root,
+                split=f"eval_snr_{value}",
+                fixed_snr=value,
+                enable_clutter=True,
+                enable_imperfect_csi=True,
+                enable_rf_impairments=True,
+            )
+        elif sweep_type == "cnr":
+            clutter_intensity = 0.05 * (10 ** (value / 10))
+            ds = RadarSampleDataset(
+                config_name=config_name,
+                num_samples=num_samples,
+                save_root=save_root,
+                split=f"eval_cnr_{value}",
+                clutter_intensity=clutter_intensity,
+                enable_clutter=True,
+                enable_imperfect_csi=True,
+                enable_rf_impairments=True,
+            )
+        elif sweep_type == "rcs":
+            ds = RadarSampleDataset(
+                config_name=config_name,
+                num_samples=num_samples,
+                save_root=save_root,
+                split=f"eval_rcs_{value}",
+                target_rcs_range=(value - 2, value + 2),
+                enable_clutter=True,
+                enable_imperfect_csi=True,
+                enable_rf_impairments=True,
+            )
+        else:
+            raise ValueError(f"Unknown sweep_type: {sweep_type}")
+
+        dl_counts = {"tp": 0.0, "fp": 0.0, "fn": 0.0}
+        cfar_counts = {"tp": 0.0, "fp": 0.0, "fn": 0.0}
+        loader = DataLoader(ds, batch_size=1, shuffle=False, collate_fn=radar_collate_fn)
+        with torch.no_grad():
+            for batch in loader:
+                radar_in = batch["radar_in"].to(device)
+                config_tensor = batch["config_tensor"].to(device)
+                if hasattr(model, "forward_radar"):
+                    out = model.forward_radar(radar_in, config_tensor, batch["waveform_id"].to(device))
+                    logits = out["radar_logits"]
+                else:
+                    logits = model(radar_in, config_tensor)
+                probs = torch.sigmoid(logits)[0, 0].cpu().numpy()
+                detections = postprocess_radar_fn(probs, batch["range_axis"][0], batch["velocity_axis"][0], prob_thresh=prob_thresh)
+                m_dl = radar_metrics_fn(batch["targets"][0], detections)
+                dl_counts["tp"] += m_dl["tp"]
+                dl_counts["fp"] += m_dl["fp"]
+                dl_counts["fn"] += m_dl["fn"]
+
+                m_cfar = cfar_metrics_from_g2_fn(batch["raw_sample"][0])
+                cfar_counts["tp"] += m_cfar["tp"]
+                cfar_counts["fp"] += m_cfar["fp"]
+                cfar_counts["fn"] += m_cfar["fn"]
+
+        dl_stats = prf1_from_counts_fn(dl_counts["tp"], dl_counts["fp"], dl_counts["fn"])
+        cfar_stats = prf1_from_counts_fn(cfar_counts["tp"], cfar_counts["fp"], cfar_counts["fn"])
+        results["dl_f1"].append(dl_stats["f1"])
+        results["dl_precision"].append(dl_stats["precision"])
+        results["dl_recall"].append(dl_stats["recall"])
+        results["cfar_f1"].append(cfar_stats["f1"])
+        results["cfar_precision"].append(cfar_stats["precision"])
+        results["cfar_recall"].append(cfar_stats["recall"])
+
+    return results
+
+
+def train_radar_pipeline_enhanced(cfg: RunConfig, device: torch.device, model_name: str = "isac") -> Dict[str, Any]:
+    from AIradar_comm_model_g6 import (
+        build_radar_datasets,
+        build_balanced_concat_loader,
+        build_eval_loaders,
+        radar_collate,
+        create_radar_model,
+        RadarTrainer,
+        plot_radar_sweep,
+        plot_radar_sweep_all,
+        postprocess_radar,
+        radar_metrics,
+        cfar_metrics_from_g2,
+        prf1_from_counts,
+        ensure_dir as g6_ensure_dir,
+        save_json as g6_save_json,
+        load_checkpoint_if_exists as g6_load_checkpoint_if_exists,
+        count_parameters as g6_count_parameters,
+        RunConfig as G6RunConfig,
+        RadarSampleDataset,
+    )
+
+    g6_keys = set(G6RunConfig.__dataclass_fields__.keys())
+    payload = {k: v for k, v in asdict(cfg).items() if k in g6_keys}
+    g6_cfg = G6RunConfig(**payload)
+
+    out_dir = g6_ensure_dir(os.path.join(cfg.out_dir, "radar"))
+    train_sets, val_seen_sets, test_unseen_sets, seen_configs, unseen_configs = build_radar_datasets(g6_cfg)
+    train_loader = build_balanced_concat_loader(train_sets, cfg.batch_size, radar_collate, cfg.num_workers, shuffle=True)
+    val_seen_loaders = build_eval_loaders(val_seen_sets, cfg.batch_size, radar_collate, cfg.num_workers)
+    test_unseen_loaders = build_eval_loaders(test_unseen_sets, cfg.batch_size, radar_collate, cfg.num_workers)
+
+    model = create_radar_model(model_name, device)
+    if cfg.radar_ckpt:
+        g6_load_checkpoint_if_exists(model, cfg.radar_ckpt, device)
+
+    trainer = RadarTrainer(model, device, pos_weight=cfg.radar_pos_weight, use_focal_loss=True)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.epochs)
+    threshold_grid = np.linspace(cfg.radar_threshold_min, cfg.radar_threshold_max, max(2, int(cfg.radar_threshold_steps))).tolist()
+
+    best = {"f1": -1.0, "epoch": -1}
+    best_path = os.path.join(out_dir, "radar_best.pt")
+    patience = 0
+    history = []
+    global_prob_thresh = float(cfg.radar_eval_prob_thresh)
+    per_config_thresh: Dict[str, float] = {}
+
+    for epoch in range(1, cfg.epochs + 1):
+        train_stats = trainer.train_one_epoch(train_loader, optimizer)
+        if cfg.radar_auto_threshold_tune and (epoch == 1 or (epoch % max(1, cfg.radar_threshold_tune_every) == 0)):
+            global_prob_thresh, per_config_thresh, tune_curve = _calibrate_radar_thresholds(
+                model=model,
+                val_seen_loaders=val_seen_loaders,
+                device=device,
+                postprocess_radar_fn=postprocess_radar,
+                radar_metrics_fn=radar_metrics,
+                prf1_from_counts_fn=prf1_from_counts,
+                threshold_grid=threshold_grid,
+                per_config=cfg.radar_per_config_threshold,
+            )
+        else:
+            tune_curve = {"global_curve": []}
+
+        val_seen = _radar_eval_detection_with_threshold(
+            model=model,
+            loaders=val_seen_loaders,
+            device=device,
+            postprocess_radar_fn=postprocess_radar,
+            radar_metrics_fn=radar_metrics,
+            prf1_from_counts_fn=prf1_from_counts,
+            default_prob_thresh=global_prob_thresh,
+            per_config_thresh=per_config_thresh if cfg.radar_per_config_threshold else None,
+        )
+        val_f1 = float(val_seen["global"]["f1"])
+        scheduler.step()
+
+        history.append(
+            {
+                "epoch": epoch,
+                "train_loss": train_stats["loss"],
+                "val_seen_f1": val_f1,
+                "val_seen_precision": val_seen["global"]["precision"],
+                "val_seen_recall": val_seen["global"]["recall"],
+                "radar_prob_thresh_global": float(global_prob_thresh),
+                "radar_prob_thresh_per_config": dict(per_config_thresh),
+                "threshold_tuning_curve": tune_curve["global_curve"],
+            }
+        )
+        print(
+            f"[RadarV2][Epoch {epoch:03d}] loss={train_stats['loss']:.4f} "
+            f"val_seen_f1={val_f1:.4f} thresh={global_prob_thresh:.3f}"
+        )
+
+        if val_f1 > best["f1"]:
+            best = {"f1": val_f1, "epoch": epoch}
+            torch.save(
+                {
+                    "model": model.state_dict(),
+                    "best": best,
+                    "seen_configs": seen_configs,
+                    "radar_prob_thresh_global": float(global_prob_thresh),
+                    "radar_prob_thresh_per_config": dict(per_config_thresh),
+                },
+                best_path,
+            )
+            patience = 0
+        else:
+            patience += 1
+            if patience >= cfg.early_stop_patience:
+                print(f"[RadarV2] Early stopping at epoch {epoch}")
+                break
+
+    g6_load_checkpoint_if_exists(model, best_path, device)
+    best_ckpt = torch.load(best_path, map_location=device, weights_only=False)
+    global_prob_thresh = float(best_ckpt.get("radar_prob_thresh_global", global_prob_thresh))
+    per_config_thresh = best_ckpt.get("radar_prob_thresh_per_config", per_config_thresh)
+
+    final_seen = _radar_eval_detection_with_threshold(
+        model=model,
+        loaders=val_seen_loaders,
+        device=device,
+        postprocess_radar_fn=postprocess_radar,
+        radar_metrics_fn=radar_metrics,
+        prf1_from_counts_fn=prf1_from_counts,
+        default_prob_thresh=global_prob_thresh,
+        per_config_thresh=per_config_thresh if cfg.radar_per_config_threshold else None,
+    )
+    final_unseen = (
+        _radar_eval_detection_with_threshold(
+            model=model,
+            loaders=test_unseen_loaders,
+            device=device,
+            postprocess_radar_fn=postprocess_radar,
+            radar_metrics_fn=radar_metrics,
+            prf1_from_counts_fn=prf1_from_counts,
+            default_prob_thresh=global_prob_thresh,
+            per_config_thresh=per_config_thresh if cfg.radar_per_config_threshold else None,
+        )
+        if test_unseen_loaders
+        else {"global": {}, "per_config": {}}
+    )
+
+    eval_dir = g6_ensure_dir(os.path.join(out_dir, "eval"))
+    snr_results_all = {}
+    cnr_results_all = {}
+    rcs_results_all = {}
+    for config_name in seen_configs:
+        cfg_eval_dir = g6_ensure_dir(os.path.join(eval_dir, config_name))
+        cfg_thresh = float(per_config_thresh.get(config_name, global_prob_thresh)) if cfg.radar_per_config_threshold else global_prob_thresh
+        print(f"[RadarV2] Evaluating sweeps for {config_name} with prob_thresh={cfg_thresh:.3f}")
+        snr_results = _evaluate_radar_sweep_with_threshold(
+            model=model,
+            config_name=config_name,
+            sweep_type="snr",
+            sweep_values=list(cfg.eval_snr_list),
+            num_samples=15,
+            save_root=cfg.data_root,
+            device=device,
+            prob_thresh=cfg_thresh,
+            RadarSampleDataset=RadarSampleDataset,
+            radar_collate_fn=radar_collate,
+            radar_metrics_fn=radar_metrics,
+            cfar_metrics_from_g2_fn=cfar_metrics_from_g2,
+            prf1_from_counts_fn=prf1_from_counts,
+            postprocess_radar_fn=postprocess_radar,
+        )
+        snr_results_all[config_name] = snr_results
+        plot_radar_sweep(snr_results, os.path.join(cfg_eval_dir, "radar_snr_vs_cfar.png"))
+
+        cnr_results = _evaluate_radar_sweep_with_threshold(
+            model=model,
+            config_name=config_name,
+            sweep_type="cnr",
+            sweep_values=list(cfg.eval_cnr_list),
+            num_samples=15,
+            save_root=cfg.data_root,
+            device=device,
+            prob_thresh=cfg_thresh,
+            RadarSampleDataset=RadarSampleDataset,
+            radar_collate_fn=radar_collate,
+            radar_metrics_fn=radar_metrics,
+            cfar_metrics_from_g2_fn=cfar_metrics_from_g2,
+            prf1_from_counts_fn=prf1_from_counts,
+            postprocess_radar_fn=postprocess_radar,
+        )
+        cnr_results_all[config_name] = cnr_results
+        plot_radar_sweep(cnr_results, os.path.join(cfg_eval_dir, "radar_cnr_vs_cfar.png"))
+
+        rcs_results = _evaluate_radar_sweep_with_threshold(
+            model=model,
+            config_name=config_name,
+            sweep_type="rcs",
+            sweep_values=list(cfg.eval_rcs_list),
+            num_samples=15,
+            save_root=cfg.data_root,
+            device=device,
+            prob_thresh=cfg_thresh,
+            RadarSampleDataset=RadarSampleDataset,
+            radar_collate_fn=radar_collate,
+            radar_metrics_fn=radar_metrics,
+            cfar_metrics_from_g2_fn=cfar_metrics_from_g2,
+            prf1_from_counts_fn=prf1_from_counts,
+            postprocess_radar_fn=postprocess_radar,
+        )
+        rcs_results_all[config_name] = rcs_results
+        plot_radar_sweep(rcs_results, os.path.join(cfg_eval_dir, "radar_rcs_vs_cfar.png"))
+
+    plot_radar_sweep_all(snr_results_all, "snr", os.path.join(eval_dir, "radar_snr_all_configs.png"))
+    plot_radar_sweep_all(cnr_results_all, "cnr", os.path.join(eval_dir, "radar_cnr_all_configs.png"))
+    plot_radar_sweep_all(rcs_results_all, "rcs", os.path.join(eval_dir, "radar_rcs_all_configs.png"))
+
+    summary = {
+        "checkpoint": best_path,
+        "param_count": g6_count_parameters(model),
+        "seen_configs": seen_configs,
+        "unseen_configs": unseen_configs,
+        "history": history,
+        "seen": final_seen,
+        "unseen": final_unseen,
+        "snr_sweeps": snr_results_all,
+        "cnr_sweeps": cnr_results_all,
+        "rcs_sweeps": rcs_results_all,
+        "radar_prob_thresh_global": float(global_prob_thresh),
+        "radar_prob_thresh_per_config": dict(per_config_thresh),
+        "radar_threshold_grid": [float(x) for x in threshold_grid],
+        "radar_auto_threshold_tune": bool(cfg.radar_auto_threshold_tune),
+        "radar_per_config_threshold": bool(cfg.radar_per_config_threshold),
+    }
+    g6_save_json(summary, os.path.join(out_dir, "summary.json"))
+    return summary
+
+
 def _run_with_radar_support(cfg: RunConfig, device: torch.device) -> Dict[str, Any]:
+    from AIradar_comm_model_g6 import RunConfig as G6RunConfig
+    from AIradar_comm_model_g6 import run_full_evaluation as g6_run_full_evaluation
     from AIradar_comm_model_g6 import RunConfig as G6RunConfig
     from AIradar_comm_model_g6 import train_radar_pipeline as g6_train_radar_pipeline
     from AIradar_comm_model_g6 import run_full_evaluation as g6_run_full_evaluation
@@ -1337,9 +1789,9 @@ def _run_with_radar_support(cfg: RunConfig, device: torch.device) -> Dict[str, A
     if cfg.mode in ["train_comm_debug", "train_comm"]:
         return {"comm": train_comm_pipeline_debug(cfg, device)}
     if cfg.mode == "train_radar":
-        return {"radar": g6_train_radar_pipeline(g6_cfg, device, model_name=cfg.radar_model)}
+        return {"radar": train_radar_pipeline_enhanced(cfg, device, model_name=cfg.radar_model)}
     if cfg.mode == "train_both":
-        radar_summary = g6_train_radar_pipeline(g6_cfg, device, model_name=cfg.radar_model)
+        radar_summary = train_radar_pipeline_enhanced(cfg, device, model_name=cfg.radar_model)
         comm_summary = train_comm_pipeline_debug(cfg, device)
         combo = {"radar": radar_summary, "comm": comm_summary}
         save_json(combo, os.path.join(cfg.out_dir, "summary_train_both.json"))
@@ -1402,6 +1854,13 @@ def parse_args() -> RunConfig:
     parser.add_argument("--unseen_eval_every", type=int, default=1)
     parser.add_argument("--enable_controlled_otfs_emphasis", action="store_true")
     parser.add_argument("--otfs_ramp_epochs", type=int, default=10)
+    parser.add_argument("--radar_eval_prob_thresh", type=float, default=0.5)
+    parser.add_argument("--radar_auto_threshold_tune", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--radar_threshold_min", type=float, default=0.15)
+    parser.add_argument("--radar_threshold_max", type=float, default=0.65)
+    parser.add_argument("--radar_threshold_steps", type=int, default=11)
+    parser.add_argument("--radar_threshold_tune_every", type=int, default=1)
+    parser.add_argument("--radar_per_config_threshold", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
     return RunConfig(**vars(args))
 
