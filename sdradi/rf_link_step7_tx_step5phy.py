@@ -354,7 +354,7 @@ def main():
 
                     # Pluto cyclic behavior:
                     # We use cyclic buffer per packet for robustness, and optionally destroy each packet.
-                    sdr.tx_cyclic_buffer = True
+                    #sdr.tx_cyclic_buffer = True
                     if args.destroy_each_packet:
                         try:
                             sdr.tx_destroy_buffer()
