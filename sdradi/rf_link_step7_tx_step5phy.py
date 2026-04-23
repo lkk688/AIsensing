@@ -363,18 +363,32 @@ def main():
                     if len(tx) != TX_LEN:
                         raise RuntimeError(f"BUG: tx length changed {len(tx)} != {TX_LEN}")
 
+                    # --- hard reset any previous TX buffer state (important!) ---
+                    try:
+                        sdr.tx_destroy_buffer()
+                    except Exception:
+                        pass
+
+                    # Set cyclic mode ONCE and never change it afterwards
+                    sdr.tx_cyclic_buffer = (args.mode == "cyclic_per_packet")
+
                     if args.mode == "burst":
-                        # non-cyclic, can tx() repeatedly
-                        sdr.tx_cyclic_buffer = False
+                        # non-cyclic, just push buffers; do NOT touch tx_cyclic_buffer here
                         sdr.tx(tx)
-                        time.sleep(float(args.dwell_time))
+                        time.sleep(args.dwell_time)
                     else:
-                        # cyclic per packet: destroy -> set cyclic -> tx -> sleep -> destroy
-                        safe_tx_destroy(sdr)
-                        sdr.tx_cyclic_buffer = True
+                        # cyclic_per_packet: must destroy/recreate buffer each packet
+                        try:
+                            sdr.tx_destroy_buffer()
+                        except Exception:
+                            pass
+                        # tx_cyclic_buffer already True (set once at init)
                         sdr.tx(tx)
-                        time.sleep(float(args.dwell_time))
-                        safe_tx_destroy(sdr)
+                        time.sleep(args.dwell_time)
+                        try:
+                            sdr.tx_destroy_buffer()
+                        except Exception:
+                            pass
 
                     pkt_sent += 1
                     if args.print_every_packet:
@@ -414,7 +428,7 @@ if __name__ == "__main__":
     main()
 
 """
-python3 rf_link_step7_tx_step5phy_fixed_v2.py \
+python3 rf_link_step7_tx_step5phy.py \
   --uri usb:1.4.5 \
   --fc 2.3e9 --fs 3e6 \
   --tx_gain -20 \
