@@ -79,6 +79,52 @@ def apply_cfo_correction(samples, cfo, fs):
     return samples * np.exp(-1j * 2 * np.pi * cfo * n / fs).astype(np.complex64)
 
 
+def resolve_sc_cfo_alias(rx, fs, sc_cfo_hz, tone_freq=100e3, L=N_FFT // 2, num_aliases=4):
+    """
+    Resolve the Schmidl-Cox CFO alias ambiguity using pilot tone power.
+
+    SC estimates CFO modulo fs/L (~93.75 kHz at 3 Msps, L=32).
+    When the hardware LO offset shifts the tone near DC the standard masked
+    FFT estimator fails.  This function sweeps ±num_aliases alias candidates,
+    applies each as a trial CFO correction, and picks whichever one places the
+    pilot tone at tone_freq with maximum spectral power.
+
+    Returns: (best_cfo_hz, tone_snr_at_best_alias)
+    """
+    alias_step = fs / L                     # 93 750 Hz at fs=3 MHz, L=32
+    seg_len = min(30000, len(rx))
+    n = np.arange(seg_len, dtype=np.float32)
+    seg = rx[:seg_len]
+    window = np.hanning(seg_len).astype(np.float32)
+
+    bin_hz = fs / seg_len
+    tone_bin = max(1, int(round(tone_freq / bin_hz)))
+    hw = max(5, int(8000 / bin_hz))        # ±8 kHz search window around tone
+
+    best_power = -1.0
+    best_cfo = float(sc_cfo_hz)
+    best_snr = 0.0
+
+    for k in range(-num_aliases, num_aliases + 1):
+        cfo_hyp = float(sc_cfo_hz) + k * alias_step
+        rot = np.exp(-1j * 2 * np.pi * cfo_hyp * n / fs).astype(np.complex64)
+        fft_mag = np.abs(np.fft.fft(seg * rot * window))
+        N2 = len(fft_mag) // 2
+
+        lo = max(1, tone_bin - hw)
+        hi = min(N2, tone_bin + hw + 1)
+        if lo >= hi:
+            continue
+        peak_power = float(np.max(fft_mag[lo:hi]))
+        noise_floor = float(np.median(fft_mag[:N2]) + 1e-10)
+        if peak_power > best_power:
+            best_power = peak_power
+            best_cfo = cfo_hyp
+            best_snr = peak_power / noise_floor
+
+    return best_cfo, best_snr
+
+
 # ============================================================================
 # Preamble Generation (must match TX exactly)
 # ============================================================================
@@ -636,32 +682,24 @@ def demod_one_capture(
         rx = rx / (2**14)
     rx = rx - np.mean(rx)  # DC removal
 
-    # ---- CFO from tone (robust: scan multiple segments, pick highest SNR) ----
-    # The tone may not be at the start of the buffer due to cyclic frame timing.
-    # Scan several overlapping segments, estimate CFO from each, pick the one
-    # with the best tone SNR (strongest narrowband peak).
-    seg_len = 20000  # Long enough for good freq resolution
-    best_cfo = 0.0
-    best_snr = 0.0
-    cfo_estimates = []
-    for seg_start in range(0, min(len(rx) - seg_len, 80000), 5000):
-        seg = rx[seg_start:seg_start + seg_len]
-        c, s = estimate_cfo_from_tone(seg, fs, 100e3)
-        cfo_estimates.append((c, s, seg_start))
-        if s > best_snr:
-            best_snr = s
-            best_cfo = c
-
-    cfo = best_cfo
-    tone_snr = best_snr
-    rx_cfo = apply_cfo_correction(rx, cfo, fs)
-
-    # ---- STF detection: Schmidl-Cox autocorrelation (robust to residual CFO) ----
+    # ---- Step 1: SC detection on raw rx (timing is CFO-robust) ----
+    # SC autocorrelation works without prior CFO correction.
+    # It also gives a coarse CFO estimate but aliased every fs/L Hz.
     sc_detected, sc_idx, sc_peak, sc_cfo_norm, sc_M = detect_stf_autocorr(
-        rx_cfo, half_period=N_FFT // 2, threshold=0.1
+        rx, half_period=N_FFT // 2, threshold=0.1
     )
 
-    # ---- STF detection: cross-correlation (backup) ----
+    # ---- Step 2: Resolve SC alias to get accurate CFO ----
+    # The Pluto hardware LO offset can be ±100+ kHz, which shifts the 100 kHz
+    # pilot tone near DC where the standard masked estimator zeroes it out.
+    # Sweeping aliases of the SC estimate and checking tone power at 100 kHz
+    # finds the correct offset regardless of the hardware drift.
+    cfo, tone_snr = resolve_sc_cfo_alias(rx, fs, sc_cfo_norm * fs, tone_freq=100e3)
+
+    # ---- Step 3: Apply CFO correction ----
+    rx_cfo = apply_cfo_correction(rx, cfo, fs)
+
+    # ---- STF detection: cross-correlation on CFO-corrected signal ----
     xc_idx, xc_peak, xc_corr = detect_stf_crosscorr(rx_cfo, stf_ref)
 
     # ---- Combined detection: energy envelope + cross-corr refinement ----
