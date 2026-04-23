@@ -174,6 +174,31 @@ def detect_stf_xcorr(rx: np.ndarray, stf_ref: np.ndarray, search_len: int = 6000
     idx = int(np.argmax(corr))
     return idx, float(corr[idx])
 
+def estimate_cfo_from_tone(rx_samples, fs, expected_freq=100e3):
+    N = len(rx_samples)
+    window = np.hanning(N).astype(np.float32)
+    fft = np.fft.fft(rx_samples * window)
+    fft_mag = np.abs(fft)
+    fft_mag[0] = 0
+    fft_mag[1:30] = 0
+    fft_mag[-30:] = 0
+    peak_idx = int(np.argmax(fft_mag))
+    freq_bins = np.fft.fftfreq(N, 1/fs)
+    if 1 < peak_idx < N - 1:
+        alpha = np.log(fft_mag[peak_idx - 1] + 1e-10)
+        beta = np.log(fft_mag[peak_idx] + 1e-10)
+        gamma = np.log(fft_mag[peak_idx + 1] + 1e-10)
+        denom = alpha - 2 * beta + gamma
+        if abs(denom) > 1e-12:
+            p = 0.5 * (alpha - gamma) / denom
+        else:
+            p = 0.0
+        detected_freq = freq_bins[peak_idx] + p * (freq_bins[1] - freq_bins[0])
+    else:
+        detected_freq = freq_bins[peak_idx]
+    tone_snr = fft_mag[peak_idx] / (np.median(fft_mag) + 1e-10)
+    return detected_freq - expected_freq, tone_snr
+
 def extract_ofdm_symbol(rx: np.ndarray, start_idx: int):
     """Step5 convention: fftshift(fft())"""
     if start_idx + SYMBOL_LEN > len(rx):
@@ -552,44 +577,74 @@ def demod_one_capture_step5phy(rx_raw: np.ndarray, cfg: RXArgs, stf_ref: np.ndar
 
     peak = float(np.max(np.abs(rx))) if rx.size else 0.0
 
-    # SC timing + CFO
-    ok_sc, sc_idx, sc_peak, cfo_hz, ratio, sc_M = detect_stf_sc(
-        rx, fs=cfg.fs,
+    # ---- Step 1: CFO from 100kHz tone (exactly like Step 5) ----
+    seg_len = 20000
+    best_tone_cfo = 0.0
+    best_tone_snr = 0.0
+    for seg_start in range(0, min(len(rx) - seg_len, 80000), 5000):
+        seg = rx[seg_start:seg_start + seg_len]
+        c, s = estimate_cfo_from_tone(seg, cfg.fs, 100e3)
+        if s > best_tone_snr:
+            best_tone_snr = s
+            best_tone_cfo = c
+
+    # Only apply tone CFO if tone is actually present (SNR > 10)
+    tone_valid = best_tone_snr > 10.0
+    if tone_valid:
+        cfo_hz = best_tone_cfo
+        rx_cfo = apply_cfo(rx, cfo_hz, cfg.fs)
+    else:
+        cfo_hz = 0.0
+        rx_cfo = rx
+
+    # ---- Step 2: SC timing ----
+    ok_sc, sc_idx, sc_peak, sc_cfo_fine, ratio, sc_M = detect_stf_sc(
+        rx_cfo, fs=cfg.fs,
         half_period=N_FFT//2,
         sc_threshold=cfg.sc_threshold,
         search_len=cfg.search_len,
         peak_med_ratio_th=cfg.sync_peak_med_ratio_th
     )
 
-    # If SC not ok, still try global xcorr as fallback
-    rx_cfo = apply_cfo(rx, cfo_hz, cfg.fs)
+    # Apply fine residual CFO from SC only if small and SC looks good
+    if ok_sc and abs(sc_cfo_fine) < 5000:
+        cfo_hz += sc_cfo_fine
+        rx_cfo = apply_cfo(rx, cfo_hz, cfg.fs)
 
     stf_idx = sc_idx
     stf_peak = sc_peak
-    method = "sc"
+    method = "tone+sc"
 
-    if cfg.xcorr_refine:
-        if ok_sc:
-            s0 = max(0, sc_idx - cfg.xcorr_window)
-            s1 = min(len(rx_cfo), sc_idx + cfg.xcorr_window + len(stf_ref))
-            seg = rx_cfo[s0:s1]
-            if len(seg) > len(stf_ref) + 10:
-                corr = np.abs(np.correlate(seg, stf_ref, mode="valid"))
-                corr /= (np.sqrt(np.sum(np.abs(stf_ref)**2)) + 1e-12)
-                loc = int(np.argmax(corr))
-                stf_idx = s0 + loc
-                stf_peak = float(corr[loc])
-                method = "sc+xc_refine"
-        else:
-            xi, xp = detect_stf_xcorr(rx_cfo, stf_ref, search_len=cfg.search_len)
-            stf_idx, stf_peak = xi, xp
-            method = "xc_fallback"
+    # ---- Step 3: Always use cross-correlation for precise timing ----
+    # SC plateau detection gives poor timing estimates for burst-mode signals.
+    # Use global xcorr for timing (like Step 5 effectively does).
+    xi, xp = detect_stf_xcorr(rx_cfo, stf_ref, search_len=cfg.search_len)
+    if xp > 0.02:
+        stf_idx = xi
+        stf_peak = xp
+        method = "tone+xc"
 
-    # gate: require SC ratio if SC says ok; otherwise require reasonable xcorr peak
-    if ok_sc and ratio < cfg.sync_peak_med_ratio_th:
-        return {"status": "no_signal", "reason": "ratio_gate", "ratio": ratio, "cfo_hz": cfo_hz, "peak": peak, "method": method}
-    if (not ok_sc) and (stf_peak < 0.02):
+    # gate: require signal detected
+    if stf_peak < 0.02 and (not ok_sc):
         return {"status": "no_signal", "reason": "xcorr_low", "ratio": ratio, "cfo_hz": cfo_hz, "peak": peak, "method": method}
+    if stf_peak < 0.02 and ok_sc and ratio < cfg.sync_peak_med_ratio_th:
+        return {"status": "no_signal", "reason": "ratio_gate", "ratio": ratio, "cfo_hz": cfo_hz, "peak": peak, "method": method}
+
+    # Fine-tune with ±4 sample LTF quality sweep
+    best_fine = 0
+    best_q = -1.0
+    for off in range(-4, 5):
+        s_off = stf_idx + off
+        ltf_start_off = s_off + len(stf_ref)
+        H_test, _ = channel_estimate_from_ltf(rx_cfo, ltf_start_off, ltf_freq_ref, num_symbols=cfg.ltf_symbols)
+        if H_test is not None:
+            H_m = np.abs(H_test[np.abs(H_test) > 1e-6])
+            if len(H_m) > 0:
+                q = float(np.mean(H_m)**2 / (np.var(H_m) + 1e-10))
+                if q > best_q:
+                    best_q = q
+                    best_fine = off
+    stf_idx += best_fine
 
     # channel estimate
     ltf_start = stf_idx + len(stf_ref)
@@ -619,7 +674,7 @@ def demod_one_capture_step5phy(rx_raw: np.ndarray, cfg: RXArgs, stf_ref: np.ndar
     for slip in range(int(cfg.bit_slip_max)+1):
         bb = packbits_with_slip(bits, slip)
         ok, fid, seq, total, payload, need, why = parse_vid7_packet(bb)
-        if ok:
+        if ok or why in ["need_more", "crc_mismatch"]:
             found = (fid, seq, total, payload)
             found_slip = slip
             found_need = need
