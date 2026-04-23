@@ -320,6 +320,43 @@ def detect_stf_crosscorr(rx: np.ndarray, stf_ref: np.ndarray, search_len: int) -
     return idx, pk
 
 
+def resolve_sc_cfo_alias(rx: np.ndarray, fs: float, sc_cfo_hz: float,
+                         tone_freq: float = 100e3, L: int = N_FFT // 2,
+                         num_aliases: int = 4) -> Tuple[float, float]:
+    """Resolve SC CFO alias using pilot tone power sweep (±40 kHz window)."""
+    alias_step = fs / L
+    seg_len = min(80000, len(rx))
+    n = np.arange(seg_len, dtype=np.float32)
+    seg = rx[:seg_len]
+    window = np.hanning(seg_len).astype(np.float32)
+
+    bin_hz = fs / seg_len
+    tone_bin = max(1, int(round(tone_freq / bin_hz)))
+    hw = max(5, int(40000 / bin_hz))
+
+    best_power = -1.0
+    best_cfo = float(sc_cfo_hz)
+    best_snr = 0.0
+
+    for k in range(-num_aliases, num_aliases + 1):
+        cfo_hyp = float(sc_cfo_hz) + k * alias_step
+        rot = np.exp(-1j * 2 * np.pi * cfo_hyp * n / fs).astype(np.complex64)
+        fft_mag = np.abs(np.fft.fft(seg * rot * window))
+        N2 = len(fft_mag) // 2
+        lo = max(1, tone_bin - hw)
+        hi = min(N2, tone_bin + hw + 1)
+        if lo >= hi:
+            continue
+        peak_power = float(np.max(fft_mag[lo:hi]))
+        noise_floor = float(np.median(fft_mag[:N2]) + 1e-10)
+        if peak_power > best_power:
+            best_power = peak_power
+            best_cfo = cfo_hyp
+            best_snr = peak_power / noise_floor
+
+    return best_cfo, best_snr
+
+
 # ==============================
 # OFDM symbol extraction / channel estimate
 # ==============================
@@ -462,6 +499,8 @@ def demod_one_capture(rx_raw_iq: np.ndarray,
         search_len=min(dcfg.search_len, len(rx)-1),
         ratio_th=dcfg.sync_peak_med_ratio_th
     )
+
+    cfo_hz, _ = resolve_sc_cfo_alias(rx, fs, cfo_hz, tone_freq=100e3, L=N_FFT//2)
 
     rx_cfo = apply_cfo(rx, cfo_hz, fs)
 

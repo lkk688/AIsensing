@@ -89,14 +89,14 @@ def resolve_sc_cfo_alias(rx, fs, sc_cfo_hz, tone_freq=100e3, L=N_FFT // 2, num_a
     Returns: (best_cfo_hz, tone_snr_at_best_alias)
     """
     alias_step = fs / L                     # 93 750 Hz at fs=3 MHz, L=32
-    seg_len = min(30000, len(rx))           # use up to 10 ms of signal
+    seg_len = min(80000, len(rx))           # use up to ~27 ms; longer = finer bins
     n = np.arange(seg_len, dtype=np.float32)
     seg = rx[:seg_len]
     window = np.hanning(seg_len).astype(np.float32)
 
     bin_hz = fs / seg_len
     tone_bin = max(1, int(round(tone_freq / bin_hz)))
-    hw = max(5, int(8000 / bin_hz))        # ±8 kHz search window around tone
+    hw = max(5, int(40000 / bin_hz))        # ±40 kHz window; LO offset can drift that far
 
     best_power = -1.0
     best_cfo = float(sc_cfo_hz)
