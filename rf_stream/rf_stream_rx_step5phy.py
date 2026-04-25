@@ -376,7 +376,8 @@ def dsp_thread(stop_ev: threading.Event, q: "queue.Queue[np.ndarray]", cfg: RxCo
         fcsv,
         fieldnames=[
             "cap","status","reason","peak",
-            "p10","eg_th","xc_best_peak","xc_best_idx",
+            "p10","eg_th","maxe",   # <-- add
+            "xc_best_peak","xc_best_idx",
             "stf_idx","ltf_start","payload_start",
             "probe_evm","seq","payload_len"
         ]
@@ -517,11 +518,14 @@ def dsp_thread(stop_ev: threading.Event, q: "queue.Queue[np.ndarray]", cfg: RxCo
             if e.size == 0:
                 continue
             p10 = float(np.percentile(e, 10))
+            maxe = float(np.max(e))
             eg_th = float(p10 * cfg.energy_mult)
-            if np.max(e) < eg_th:
+
+            if maxe < eg_th:
                 writer.writerow({
                     "cap": cap, "status": "skip", "reason": "energy_low", "peak": peak,
-                    "p10": p10, "eg_th": eg_th, "xc_best_peak": 0.0, "xc_best_idx": -1,
+                    "p10": p10, "eg_th": eg_th, "maxe": maxe,
+                    "xc_best_peak": 0.0, "xc_best_idx": -1,
                     "stf_idx": -1, "ltf_start": -1, "payload_start": -1,
                     "probe_evm": "", "seq": "", "payload_len": ""
                 })
@@ -589,6 +593,7 @@ def dsp_thread(stop_ev: threading.Event, q: "queue.Queue[np.ndarray]", cfg: RxCo
             writer.writerow({
                 "cap": cap, "status": status, "reason": best_reason, "peak": peak,
                 "p10": p10, "eg_th": eg_th,
+                "maxe": maxe,
                 "xc_best_peak": best_xc_peak, "xc_best_idx": int(top_idx[0]),
                 "stf_idx": best_stf,
                 "ltf_start": int(best_diag.get("ltf_start", -1)),
@@ -758,7 +763,8 @@ python3 rf_stream_rx_step5phy.py \
   --proc_window 262144 \
   --proc_hop 65536 \
   --xcorr_topk 8 \
-  --xcorr_min_peak 1.0 \
+  --xcorr_min_peak 0.2 \
+  --energy_mult 2.5 \
   --probe_syms 16 \
   --save_npz
 """

@@ -95,9 +95,12 @@ def create_ofdm_symbol(data_syms: np.ndarray, pilot_vals: np.ndarray, sym_idx: i
     X = np.zeros(N_FFT, dtype=np.complex64)
     nfill = min(len(data_syms), len(DATA_BINS))
     X[DATA_BINS[:nfill]] = data_syms[:nfill]
+
     pilot_sign = 1 if (sym_idx % 2 == 0) else -1
     X[PILOT_BINS] = pilot_sign * pilot_vals
-    x = np.fft.ifft(X) * np.sqrt(N_FFT)   # NOTE: no fftshift here; Step5 RX uses fftshift(fft())
+
+    # IMPORTANT: match RX fftshift(fft()) convention
+    x = np.fft.ifft(np.fft.ifftshift(X)) * np.sqrt(N_FFT)
     td = np.concatenate([x[-N_CP:], x]).astype(np.complex64)
     return td
 
@@ -173,6 +176,7 @@ class TxConfig:
     tx_scale: float
     idle_amp: float              # idle amplitude (0 -> strict zeros)
     send_interval_s: float       # pacing per buffer
+    beacon_period_s: float   # e.g. 0.2
 
 
 def make_idle_buffer(cfg: TxConfig) -> np.ndarray:
@@ -193,7 +197,7 @@ def tx_worker(stop_ev: threading.Event, q: "queue.Queue[np.ndarray]", cfg: TxCon
     sdr.tx_rf_bandwidth = int(cfg.tx_bw)
     sdr.tx_hardwaregain_chan0 = float(cfg.tx_gain)
     sdr.tx_enabled_channels = [0]
-    # IMPORTANT: do NOT use cyclic
+
     try:
         sdr.tx_destroy_buffer()
     except Exception:
@@ -201,30 +205,44 @@ def tx_worker(stop_ev: threading.Event, q: "queue.Queue[np.ndarray]", cfg: TxCon
     sdr.tx_cyclic_buffer = False
 
     idle = make_idle_buffer(cfg)
-    idle_i14 = (idle * (2**14)).astype(np.complex64)
+    idle = fit_to_fixed_len(idle, cfg.fixed_len).astype(np.complex64)
+
+    last_sig: Optional[np.ndarray] = None
+    last_beacon_t = 0.0
 
     print("[TX] worker started. Continuous non-cyclic push. fixed_len =", cfg.fixed_len)
 
     try:
         while not stop_ev.is_set():
+            now = time.time()
+
+            # 1) try get new buffer
+            buf = None
             try:
                 buf = q.get_nowait()
-                if buf is None:
-                    buf = idle
             except queue.Empty:
-                buf = idle
+                buf = None
 
-            buf = fit_to_fixed_len(buf, cfg.fixed_len).astype(np.complex64)
+            if buf is not None:
+                # got new packet
+                buf = fit_to_fixed_len(buf, cfg.fixed_len).astype(np.complex64)
+                last_sig = buf.copy()
+                last_beacon_t = now
+
+            else:
+                # no new packet: maybe beacon
+                if (cfg.beacon_period_s > 0) and (last_sig is not None) and ((now - last_beacon_t) >= cfg.beacon_period_s):
+                    buf = last_sig
+                    last_beacon_t = now
+                else:
+                    buf = idle
+
             tx_i14 = (buf * (2**14)).astype(np.complex64)
-
-            # push
             sdr.tx(tx_i14)
 
             if cfg.send_interval_s > 0:
                 time.sleep(cfg.send_interval_s)
 
-    except KeyboardInterrupt:
-        pass
     finally:
         try:
             sdr.tx_destroy_buffer()
@@ -301,12 +319,13 @@ def main():
     ap.add_argument("--gap_short", type=int, default=1000)
     ap.add_argument("--gap_long", type=int, default=3000)
     ap.add_argument("--tx_scale", type=float, default=0.7)
-    ap.add_argument("--idle_amp", type=float, default=0.0, help="0 -> strict zeros (silent). small value -> tiny noise")
+    ap.add_argument("--idle_amp", type=float, default=0.002, help="Idle amplitude (small noise)")
 
     ap.add_argument("--payload", type=str, default="")
     ap.add_argument("--payload_len", type=int, default=64)
     ap.add_argument("--infile", type=str, default="")
     ap.add_argument("--chunk_bytes", type=int, default=512, help="fragment file/payload into chunks")
+    ap.add_argument("--beacon_period", type=float, default=0.2, help="If no new packet, resend last packet every N seconds (0 disables)")
 
     args = ap.parse_args()
 
@@ -327,6 +346,7 @@ def main():
         tx_scale=args.tx_scale,
         idle_amp=args.idle_amp,
         send_interval_s=args.send_interval,
+        beacon_period_s=args.beacon_period,
     )
 
     q: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=int(args.queue_depth))
@@ -365,14 +385,16 @@ if __name__ == "__main__":
 
 
 python3 rf_stream_tx_step5phy.py \
-  --uri usb:1.4.5 \
+  --uri ip:192.168.3.2 \
   --fc 2.3e9 --fs 3e6 \
   --tx_gain -20 \
   --fixed_len 65536 \
   --repeat 1 \
   --tone_duration_ms 0 \
   --payload "step5 streaming hello @2.3G 3Msps" \
-  --chunk_bytes 256
+  --chunk_bytes 256 \
+  --idle_amp 0.002 \
+  --beacon_period 0.2
 
 如果你想“保持 DMA 活跃但极低泄漏”，用严格静默：
 --idle_amp 0
