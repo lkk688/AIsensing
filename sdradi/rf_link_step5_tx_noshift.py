@@ -327,7 +327,7 @@ if __name__ == "__main__":
 
 """
 python3 rf_link_step5_tx_noshift.py \
-  --uri usb:1.4.5 \
+  --uri ip:192.168.3.2 \
   --fc 2.3e9 --fs 3e6 \
   --tx_gain -20 \
   --tone_duration_ms 0 \
