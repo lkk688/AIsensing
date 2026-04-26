@@ -51,7 +51,21 @@ PILOT_BINS = np.array([sc_to_bin(int(k)) for k in PILOT_SUBCARRIERS], dtype=int)
 # Helpers
 # =========================
 def bits_from_bytes(b: bytes) -> np.ndarray:
-    return np.unpackbits(np.frombuffer(b, dtype=np.uint8)).astype(np.uint8)
+    return np.unpackbits(np.frombuffer(b, dtype=np.uint8), bitorder='big').astype(np.uint8)
+
+def bits_to_bytes(bits: np.ndarray) -> bytes:
+    return np.packbits(bits, bitorder='big').tobytes()
+
+def scramble_bits(bits: np.ndarray, seed: int = 0x7F) -> np.ndarray:
+    state = seed
+    out = np.zeros_like(bits)
+    for i in range(len(bits)):
+        b7 = (state >> 6) & 1
+        b4 = (state >> 3) & 1
+        feedback = b7 ^ b4
+        out[i] = bits[i] ^ b7
+        state = ((state << 1) | feedback) & 0x7F
+    return out
 
 def qpsk_map(bits: np.ndarray) -> np.ndarray:
     bits = bits.astype(np.uint8)
@@ -76,6 +90,7 @@ def create_schmidl_cox_stf(num_repeats: int = 6) -> np.ndarray:
     bpsk = rng.choice([-1.0, 1.0], size=len(even_subs)).astype(np.float32)
     for i, k in enumerate(even_subs):
         X[sc_to_bin(int(k))] = bpsk[i] + 0j
+    # IMPORTANT: match RX fftshift convention
     x = np.fft.ifft(np.fft.ifftshift(X)) * np.sqrt(N_FFT)
     stf = np.tile(x.astype(np.complex64), num_repeats)
     stf_cp = np.concatenate([stf[-N_CP:], stf]).astype(np.complex64)
@@ -100,13 +115,13 @@ def create_ofdm_symbol(data_syms: np.ndarray, pilot_vals: np.ndarray, sym_idx: i
     X[PILOT_BINS] = pilot_sign * pilot_vals
 
     # IMPORTANT: match RX fftshift(fft()) convention
-    x = np.fft.ifft(np.fft.ifftshift(X)) * np.sqrt(N_FFT)
+    x = np.fft.ifft(X) * np.sqrt(N_FFT)
     td = np.concatenate([x[-N_CP:], x]).astype(np.complex64)
     return td
 
-def build_packet_bytes(seq: int, payload: bytes) -> bytes:
-    # MAGIC(4) | SEQ(4) | LEN(2) | PAYLOAD | CRC32(4)
-    hdr = MAGIC + int(seq).to_bytes(4, "little") + int(len(payload)).to_bytes(2, "little")
+def build_packet_bytes(seq: int, total: int, payload: bytes) -> bytes:
+    # MAGIC(4) | SEQ(2) | TOTAL(2) | LEN(2) | PAYLOAD | CRC32(4)
+    hdr = MAGIC + int(seq).to_bytes(2, "little") + int(total).to_bytes(2, "little") + int(len(payload)).to_bytes(2, "little")
     body = hdr + payload
     crc = zlib.crc32(body) & 0xFFFFFFFF
     return body + int(crc).to_bytes(4, "little")
@@ -116,6 +131,7 @@ def bytes_to_ofdm_samples(frame_bytes: bytes, repeat: int, stf: np.ndarray, ltf:
                           gap_short: int, gap_long: int,
                           tx_scale: float) -> np.ndarray:
     bits = bits_from_bytes(frame_bytes)
+    bits = scramble_bits(bits)
     if repeat > 1:
         bits = np.repeat(bits, repeat)
 
@@ -240,8 +256,9 @@ def tx_worker(stop_ev: threading.Event, q: "queue.Queue[np.ndarray]", cfg: TxCon
                 else:
                     buf = idle
 
-            tx_i14 = (buf * (2**14)).astype(np.complex64)
-            sdr.tx(tx_i14)
+            # FIX: Conjugate to flip spectrum to match RX.
+            tx_data = (np.conj(buf) * 4096.0).astype(np.complex64)
+            sdr.tx(tx_data)
 
             if cfg.send_interval_s > 0:
                 time.sleep(cfg.send_interval_s)
@@ -255,12 +272,16 @@ def tx_worker(stop_ev: threading.Event, q: "queue.Queue[np.ndarray]", cfg: TxCon
 
 
 def producer_packets(stop_ev: threading.Event, q: "queue.Queue[np.ndarray]", cfg: TxConfig,
-                     infile: str, payload_str: str, payload_len: int, chunk_bytes: int):
+                     infile: str, payload_str: str, payload_len: int, chunk_bytes: int, ref_seed: int = 0, ref_len: int = 0):
     stf = create_schmidl_cox_stf(cfg.stf_repeats)
     ltf = create_ltf(cfg.ltf_symbols)
 
     # build payload stream
-    if infile:
+    if ref_len > 0:
+        rng = np.random.default_rng(ref_seed)
+        data = rng.integers(0, 256, size=ref_len, dtype=np.uint8).tobytes()
+        print(f"[TX] Generating reference payload: {len(data)} bytes (seed={ref_seed})")
+    elif infile:
         with open(infile, "rb") as f:
             data = f.read()
     elif payload_str:
@@ -275,25 +296,26 @@ def producer_packets(stop_ev: threading.Event, q: "queue.Queue[np.ndarray]", cfg
     else:
         chunks = [data[i:i+chunk_bytes] for i in range(0, len(data), chunk_bytes)]
 
-    seq = 0
-    for ch in chunks:
-        if stop_ev.is_set():
-            break
-        frame_bytes = build_packet_bytes(seq, ch)
-        sig = bytes_to_ofdm_samples(
-            frame_bytes, cfg.repeat, stf, ltf,
-            fs=cfg.fs,
-            tone_duration_ms=cfg.tone_duration_ms,
-            tone_freq_hz=cfg.tone_freq_hz,
-            gap_short=cfg.gap_short,
-            gap_long=cfg.gap_long,
-            tx_scale=cfg.tx_scale
-        )
-        sig = fit_to_fixed_len(sig, cfg.fixed_len)
-        # block if queue is full (backpressure)
-        q.put(sig, block=True)
-        print(f"[TX] enqueued packet seq={seq} payload={len(ch)}B frame_bytes={len(frame_bytes)} sig_len={len(sig)}")
-        seq += 1
+    total = len(chunks)
+    while not stop_ev.is_set():
+        seq = 0
+        for ch in chunks:
+            if stop_ev.is_set():
+                break
+            frame_bytes = build_packet_bytes(seq, total, ch)
+            sig = bytes_to_ofdm_samples(
+                frame_bytes, cfg.repeat, stf, ltf,
+                fs=cfg.fs,
+                tone_duration_ms=cfg.tone_duration_ms,
+                tone_freq_hz=cfg.tone_freq_hz,
+                gap_short=cfg.gap_short,
+                gap_long=cfg.gap_long,
+                tx_scale=cfg.tx_scale
+            )
+            sig = fit_to_fixed_len(sig, cfg.fixed_len)
+            q.put(sig, block=True)
+            print(f"[TX] enqueued packet seq={seq} payload={len(ch)}B frame_bytes={len(frame_bytes)} sig_len={len(sig)}")
+            seq += 1
 
     print("[TX] producer done. (TX will continue idling)")
     # keep alive until stop
@@ -344,20 +366,22 @@ def main():
     ap.add_argument("--queue_depth", type=int, default=8)
 
     ap.add_argument("--repeat", type=int, default=1, choices=[1,2,4])
-    ap.add_argument("--stf_repeats", type=int, default=6)
-    ap.add_argument("--ltf_symbols", type=int, default=4)
+    ap.add_argument("--stf_repeats", type=int, default=20)
+    ap.add_argument("--ltf_symbols", type=int, default=10)
 
     ap.add_argument("--tone_duration_ms", type=float, default=0.0)
     ap.add_argument("--tone_freq_hz", type=float, default=100e3)
     ap.add_argument("--gap_short", type=int, default=1000)
     ap.add_argument("--gap_long", type=int, default=3000)
-    ap.add_argument("--tx_scale", type=float, default=0.7)
-    ap.add_argument("--idle_amp", type=float, default=0.002, help="Idle amplitude (small noise)")
+    ap.add_argument("--tx_scale", type=float, default=0.8)
+    ap.add_argument("--idle_amp", type=float, default=0.0)
 
     ap.add_argument("--payload", type=str, default="")
     ap.add_argument("--payload_len", type=int, default=64)
     ap.add_argument("--infile", type=str, default="")
     ap.add_argument("--chunk_bytes", type=int, default=512, help="fragment file/payload into chunks")
+    ap.add_argument("--ref_seed", type=int, default=0)
+    ap.add_argument("--ref_len", type=int, default=0)
     ap.add_argument("--beacon_period", type=float, default=0.2, help="If no new packet, resend last packet every N seconds (0 disables)")
 
     ap.add_argument("--mode", type=str, default="packet", choices=["packet", "sweep"], help="TX mode: packet or sweep")
@@ -399,7 +423,7 @@ def main():
     if cfg.mode == "packet":
         t_prod = threading.Thread(
             target=producer_packets,
-            args=(stop_ev, q, cfg, args.infile, args.payload, args.payload_len, args.chunk_bytes),
+            args=(stop_ev, q, cfg, args.infile, args.payload, args.payload_len, args.chunk_bytes, args.ref_seed, args.ref_len),
             daemon=True
         )
     else:
@@ -430,7 +454,7 @@ if __name__ == "__main__":
 * 协议：Step5 PHY（Schmidl-Cox STF + 多符号 LTF + QPSK OFDM）
 * 负载：默认发字符串；也支持 --infile 发文件（会自动分片成多个包）
 * 帧格式（字节）：
-    MAGIC(4) | SEQ(4) | LEN(2) | PAYLOAD | CRC32(4)
+    MAGIC(4) | SEQ(2) | TOTAL(2) | LEN(2) | PAYLOAD | CRC32(4)
     CRC 覆盖 MAGIC..PAYLOAD
 
 Added a new producer_sweep thread. When running in --mode sweep, the TX node will iterate through a list of frequencies (-1e6, -5e5, 0, 5e5, 1e6 Hz by default) and continuously transmit a single complex tone for exactly 2 seconds per frequency.
@@ -441,7 +465,7 @@ python3 rf_stream_tx_step5phy.py --uri ip:192.168.3.2 --fc 2.3e9 --fs 3e6 --tx_g
 python3 rf_stream_tx_step5phy.py \
   --uri ip:192.168.3.2 \
   --fc 2.3e9 --fs 3e6 \
-  --tx_gain -20 \
+  --tx_gain 0 \
   --fixed_len 65536 \
   --repeat 1 \
   --tone_duration_ms 0 \
