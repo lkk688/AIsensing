@@ -314,6 +314,7 @@ class RxConfig:
 
     save_dir: str
     save_npz: bool
+    mode: str
 
 
 # =========================
@@ -356,6 +357,48 @@ def rx_acq_worker(stop_ev: threading.Event, q: "queue.Queue[np.ndarray]", cfg: R
         except Exception:
             pass
         print("[RX] acq worker stopped.")
+
+
+def dsp_sweep_thread(stop_ev: threading.Event, q: "queue.Queue[np.ndarray]", cfg: RxConfig):
+    import scipy.signal
+    os.makedirs(cfg.save_dir, exist_ok=True)
+    ring = RingBuffer(cfg.ring_size)
+    samples_since = 0
+    cap = 0
+    
+    print("[RX] Sweep thread started.")
+    try:
+        while not stop_ev.is_set():
+            try:
+                x = q.get(timeout=0.2)
+            except queue.Empty:
+                continue
+
+            ring.push(x)
+            samples_since += x.shape[0]
+            if samples_since < cfg.proc_window:
+                continue
+            samples_since = 0
+            
+            rxw = ring.get_window(cfg.proc_window)
+            if rxw.size == 0:
+                continue
+            cap += 1
+            
+            f, Pxx = scipy.signal.welch(rxw, fs=cfg.fs, return_onesided=False, nperseg=4096)
+            f = np.fft.fftshift(f)
+            Pxx = np.fft.fftshift(Pxx)
+            Pxx_dB = 10 * np.log10(Pxx + 1e-12)
+            
+            top_indices = np.argsort(Pxx_dB)[-3:][::-1]
+            peaks_str = ", ".join([f"{f[i]/1e6:+.3f} MHz ({Pxx_dB[i]:.1f} dB)" for i in top_indices])
+            
+            print(f"[RX Sweep] cap={cap} Peaks: {peaks_str}")
+            
+    except KeyboardInterrupt:
+        pass
+    finally:
+        print("[RX] Sweep thread stopped. cap=", cap)
 
 
 def dsp_thread(stop_ev: threading.Event, q: "queue.Queue[np.ndarray]", cfg: RxConfig):
@@ -521,7 +564,8 @@ def dsp_thread(stop_ev: threading.Event, q: "queue.Queue[np.ndarray]", cfg: RxCo
             maxe = float(np.max(e))
             eg_th = float(p10 * cfg.energy_mult)
 
-            if maxe < eg_th:
+            # Relaxed energy gating: only skip if maxe is practically indistinguishable from noise
+            if maxe < p10 * 1.1:
                 writer.writerow({
                     "cap": cap, "status": "skip", "reason": "energy_low", "peak": peak,
                     "p10": p10, "eg_th": eg_th, "maxe": maxe,
@@ -659,11 +703,11 @@ def main():
     ap.add_argument("--proc_hop", type=int, default=65536)
 
     ap.add_argument("--energy_win", type=int, default=512)
-    ap.add_argument("--energy_mult", type=float, default=8.0)
+    ap.add_argument("--energy_mult", type=float, default=2.5)
 
     ap.add_argument("--xcorr_search", type=int, default=200000)
     ap.add_argument("--xcorr_topk", type=int, default=8)
-    ap.add_argument("--xcorr_min_peak", type=float, default=1.0)
+    ap.add_argument("--xcorr_min_peak", type=float, default=0.2)
 
     ap.add_argument("--ltf_off_sweep", type=int, default=16)
     ap.add_argument("--probe_syms", type=int, default=16)
@@ -673,6 +717,8 @@ def main():
 
     ap.add_argument("--out_root", default="rf_stream_rx_runs")
     ap.add_argument("--save_npz", action="store_true")
+    
+    ap.add_argument("--mode", type=str, default="packet", choices=["packet", "sweep"])
 
     args = ap.parse_args()
 
@@ -711,6 +757,7 @@ def main():
 
         save_dir=out_dir,
         save_npz=bool(args.save_npz),
+        mode=args.mode,
     )
 
     print("\n" + "="*78)
@@ -725,7 +772,11 @@ def main():
     stop_ev = threading.Event()
 
     t_acq = threading.Thread(target=rx_acq_worker, args=(stop_ev, q, cfg), daemon=True)
-    t_dsp = threading.Thread(target=dsp_thread, args=(stop_ev, q, cfg), daemon=True)
+    if cfg.mode == "sweep":
+        t_dsp = threading.Thread(target=dsp_sweep_thread, args=(stop_ev, q, cfg), daemon=True)
+    else:
+        t_dsp = threading.Thread(target=dsp_thread, args=(stop_ev, q, cfg), daemon=True)
+        
     t_acq.start()
     t_dsp.start()
 
@@ -753,6 +804,11 @@ if __name__ == "__main__":
     * run_dir/captures.csv（每次检测记录）
     * run_dir/good_packets/seq_XXXX.bin（成功的 payload）
     * 可选：保存 debug npz（窗口波形+索引+指标），便于离线复现
+
+Added a corresponding dsp_sweep_thread that uses scipy.signal.welch to calculate the Power Spectral Density (PSD) of the incoming signal every window. It locates the peaks in the spectrum and outputs the top 3 frequencies and their corresponding power to validate the physical link.
+
+python3 rf_stream_rx_step5phy.py --uri ip:192.168.2.2 --fc 2.3e9 --fs 3e6 --rx_gain 30 --mode sweep
+
 
 python3 rf_stream_rx_step5phy.py \
   --uri ip:192.168.2.2 \

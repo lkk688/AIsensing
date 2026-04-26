@@ -192,3 +192,5 @@ sdradi/pluto_test/test_video.mp4
 sdradi/output
 *.h5
 sdradi/recovered.bin
+
+rf_stream/rf_stream_rx_runs

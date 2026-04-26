@@ -177,6 +177,9 @@ class TxConfig:
     idle_amp: float              # idle amplitude (0 -> strict zeros)
     send_interval_s: float       # pacing per buffer
     beacon_period_s: float   # e.g. 0.2
+    mode: str
+    sweep_freqs: list
+    sweep_time_s: float
 
 
 def make_idle_buffer(cfg: TxConfig) -> np.ndarray:
@@ -298,6 +301,36 @@ def producer_packets(stop_ev: threading.Event, q: "queue.Queue[np.ndarray]", cfg
         time.sleep(0.2)
 
 
+def producer_sweep(stop_ev: threading.Event, q: "queue.Queue[np.ndarray]", cfg: TxConfig):
+    print(f"[TX] Sweep mode started. Freqs: {cfg.sweep_freqs} Hz, Time/freq: {cfg.sweep_time_s} s")
+    
+    tone_samps = cfg.fixed_len
+    t = np.arange(tone_samps, dtype=np.float32) / float(cfg.fs)
+    
+    freq_idx = 0
+    start_t = time.time()
+    print(f"[TX] Sweeping to frequency: {cfg.sweep_freqs[freq_idx]} Hz")
+    
+    while not stop_ev.is_set():
+        now = time.time()
+        elapsed = now - start_t
+        if elapsed >= cfg.sweep_time_s:
+            freq_idx = (freq_idx + 1) % len(cfg.sweep_freqs)
+            start_t = now
+            print(f"[TX] Sweeping to frequency: {cfg.sweep_freqs[freq_idx]} Hz")
+            
+        f = cfg.sweep_freqs[freq_idx]
+        tone = (np.exp(2j * np.pi * f * t).astype(np.complex64))
+        tone = tone / (np.max(np.abs(tone)) + 1e-9) * float(cfg.tx_scale)
+        
+        try:
+            q.put(tone, timeout=0.1)
+        except queue.Full:
+            pass
+            
+    print("[TX] producer_sweep done.")
+
+
 def main():
     ap = argparse.ArgumentParser("Streaming Step5 PHY TX (no cyclic)")
     ap.add_argument("--uri", required=True)
@@ -327,7 +360,13 @@ def main():
     ap.add_argument("--chunk_bytes", type=int, default=512, help="fragment file/payload into chunks")
     ap.add_argument("--beacon_period", type=float, default=0.2, help="If no new packet, resend last packet every N seconds (0 disables)")
 
+    ap.add_argument("--mode", type=str, default="packet", choices=["packet", "sweep"], help="TX mode: packet or sweep")
+    ap.add_argument("--sweep_freqs", type=str, default="-1e6,-5e5,0,5e5,1e6", help="Comma separated frequencies for sweep mode")
+    ap.add_argument("--sweep_time", type=float, default=2.0, help="Duration per frequency in sweep mode")
+
     args = ap.parse_args()
+
+    sweep_freqs = [float(x.strip()) for x in args.sweep_freqs.split(",") if x.strip()]
 
     cfg = TxConfig(
         uri=args.uri,
@@ -347,17 +386,28 @@ def main():
         idle_amp=args.idle_amp,
         send_interval_s=args.send_interval,
         beacon_period_s=args.beacon_period,
+        mode=args.mode,
+        sweep_freqs=sweep_freqs,
+        sweep_time_s=args.sweep_time,
     )
 
     q: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=int(args.queue_depth))
     stop_ev = threading.Event()
 
     t_tx = threading.Thread(target=tx_worker, args=(stop_ev, q, cfg), daemon=True)
-    t_prod = threading.Thread(
-        target=producer_packets,
-        args=(stop_ev, q, cfg, args.infile, args.payload, args.payload_len, args.chunk_bytes),
-        daemon=True
-    )
+    
+    if cfg.mode == "packet":
+        t_prod = threading.Thread(
+            target=producer_packets,
+            args=(stop_ev, q, cfg, args.infile, args.payload, args.payload_len, args.chunk_bytes),
+            daemon=True
+        )
+    else:
+        t_prod = threading.Thread(
+            target=producer_sweep,
+            args=(stop_ev, q, cfg),
+            daemon=True
+        )
 
     t_tx.start()
     t_prod.start()
@@ -382,6 +432,10 @@ if __name__ == "__main__":
 * 帧格式（字节）：
     MAGIC(4) | SEQ(4) | LEN(2) | PAYLOAD | CRC32(4)
     CRC 覆盖 MAGIC..PAYLOAD
+
+Added a new producer_sweep thread. When running in --mode sweep, the TX node will iterate through a list of frequencies (-1e6, -5e5, 0, 5e5, 1e6 Hz by default) and continuously transmit a single complex tone for exactly 2 seconds per frequency.
+
+python3 rf_stream_tx_step5phy.py --uri ip:192.168.3.2 --fc 2.3e9 --fs 3e6 --tx_gain 0 --fixed_len 65536 --mode sweep --sweep_freqs "-1e6, -5e5, 0, 5e5, 1e6" --sweep_time 2.0
 
 
 python3 rf_stream_tx_step5phy.py \
