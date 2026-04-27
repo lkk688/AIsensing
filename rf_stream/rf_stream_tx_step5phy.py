@@ -114,8 +114,8 @@ def create_ofdm_symbol(data_syms: np.ndarray, pilot_vals: np.ndarray, sym_idx: i
     pilot_sign = 1 if (sym_idx % 2 == 0) else -1
     X[PILOT_BINS] = pilot_sign * pilot_vals
 
-    # IMPORTANT: match RX fftshift(fft()) convention
-    x = np.fft.ifft(X) * np.sqrt(N_FFT)
+    # ifftshift so RX fftshift(fft()) recovers X directly (same convention as STF/LTF)
+    x = np.fft.ifft(np.fft.ifftshift(X)) * np.sqrt(N_FFT)
     td = np.concatenate([x[-N_CP:], x]).astype(np.complex64)
     return td
 
@@ -366,8 +366,8 @@ def main():
     ap.add_argument("--queue_depth", type=int, default=8)
 
     ap.add_argument("--repeat", type=int, default=1, choices=[1,2,4])
-    ap.add_argument("--stf_repeats", type=int, default=20)
-    ap.add_argument("--ltf_symbols", type=int, default=10)
+    ap.add_argument("--stf_repeats", type=int, default=6)
+    ap.add_argument("--ltf_symbols", type=int, default=4)
 
     ap.add_argument("--tone_duration_ms", type=float, default=0.0)
     ap.add_argument("--tone_freq_hz", type=float, default=100e3)

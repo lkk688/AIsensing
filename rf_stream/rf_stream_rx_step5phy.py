@@ -129,6 +129,17 @@ def bits_to_bytes(bits: np.ndarray) -> bytes:
         return b""
     return np.packbits(bits[:L]).tobytes()
 
+def scramble_bits(bits: np.ndarray, seed: int = 0x7F) -> np.ndarray:
+    state = seed
+    out = np.zeros_like(bits)
+    for i in range(len(bits)):
+        b7 = (state >> 6) & 1
+        b4 = (state >> 3) & 1
+        feedback = b7 ^ b4
+        out[i] = bits[i] ^ b7
+        state = ((state << 1) | feedback) & 0x7F
+    return out
+
 def qpsk_demap(symbols: np.ndarray) -> np.ndarray:
     # hard decision by quadrant
     bits = np.zeros(symbols.size * 2, dtype=np.uint8)
@@ -218,12 +229,14 @@ def apply_cfo(rx: np.ndarray, cfo_hz: float, fs: float) -> np.ndarray:
 def parse_packet_bytes(bb: bytes) -> Tuple[bool, str, int, bytes]:
     """
     returns: (ok, reason, seq, payload)
+    Packet format: MAGIC(4) | SEQ(2) | TOTAL(2) | LEN(2) | PAYLOAD | CRC32(4)
+    CRC covers MAGIC..PAYLOAD.
     """
-    if len(bb) < 4+4+2+4:
+    if len(bb) < 14:
         return False, "too_short", -1, b""
     if bb[:4] != MAGIC:
         return False, "bad_magic", -1, b""
-    seq = int.from_bytes(bb[4:8], "little")
+    seq = int.from_bytes(bb[4:6], "little")
     plen = int.from_bytes(bb[8:10], "little")
     need = 10 + plen + 4
     if len(bb) < need:
@@ -408,7 +421,8 @@ def dsp_thread(stop_ev: threading.Event, q: "queue.Queue[np.ndarray]", cfg: RxCo
 
     stf_ref = create_schmidl_cox_stf(cfg.stf_repeats).astype(np.complex64)
     stf_ref_e = float(np.sqrt(np.sum(np.abs(stf_ref)**2)) + 1e-12)
-    _, ltf_freq_ref = create_ltf_ref(cfg.ltf_symbols)
+    ltf_ref_full, ltf_freq_ref = create_ltf_ref(cfg.ltf_symbols)
+    ltf_td_ref = ltf_ref_full[:SYMBOL_LEN].astype(np.complex64)  # one LTF symbol for timing xcorr
 
     ring = RingBuffer(cfg.ring_size)
     samples_since = 0
@@ -419,10 +433,10 @@ def dsp_thread(stop_ev: threading.Event, q: "queue.Queue[np.ndarray]", cfg: RxCo
         fcsv,
         fieldnames=[
             "cap","status","reason","peak",
-            "p10","eg_th","maxe",   # <-- add
+            "p10","eg_th","maxe",
             "xc_best_peak","xc_best_idx",
             "stf_idx","ltf_start","payload_start",
-            "probe_evm","seq","payload_len"
+            "probe_evm","cfo_hz","seq","payload_len"
         ]
     )
     writer.writeheader()
@@ -433,105 +447,140 @@ def dsp_thread(stop_ev: threading.Event, q: "queue.Queue[np.ndarray]", cfg: RxCo
     def try_demod_at(rxw: np.ndarray, stf_idx: int) -> Tuple[bool, str, int, bytes, dict]:
         """
         Demod starting at stf_idx (index within rxw).
+        Tries 8 combinations: 2 conjugation modes (normal + conj) x 4 QPSK rotations.
+        TX hardware conjugates signal (np.conj(buf)*4096), so conj(rxw) undoes this.
         """
-        # LTF start immediately after STF
         ltf0 = stf_idx + len(stf_ref)
 
-        # fine sweep around ltf0 to maximize channel "flatness quality"
-        best_q = -1.0
-        best_off = 0
-        used_bins = np.array([sc_to_bin(k) for k in range(-26,27) if k!=0], dtype=int)
-        for off in range(-cfg.ltf_off_sweep, cfg.ltf_off_sweep+1):
-            Y = extract_ofdm_symbol(rxw, ltf0 + off)
-            if Y is None:
+        # --- CFO estimation via Schmidl-Cox on the STF ---
+        # STF has period P = N_FFT//2 = 32 samples.  Use as many complete
+        # periods as available inside the STF region.
+        P = N_FFT // 2
+        sc_s = stf_idx
+        sc_e = min(rxw.shape[0] - P, stf_idx + len(stf_ref) - P)
+        if sc_e > sc_s:
+            R = np.sum(rxw[sc_s + P : sc_e + P].astype(np.complex64) *
+                       np.conj(rxw[sc_s : sc_e].astype(np.complex64)))
+            cfo_est = float(np.angle(R)) * cfg.fs / (2.0 * np.pi * P)
+        else:
+            cfo_est = 0.0
+
+        # Apply CFO correction to the whole window.
+        # After correction conj(rxw_cfo) implicitly has the correct -cfo,
+        # so a single correction handles both conj_comp modes.
+        n_arr = np.arange(rxw.shape[0], dtype=np.float32)
+        rxw_cfo = (rxw * np.exp(-1j * 2.0 * np.pi * (cfo_est / cfg.fs) * n_arr)
+                   ).astype(np.complex64)
+
+        # LTF timing: xcorr magnitude is conjugation-invariant, use CFO-corrected rxw
+        search_s = max(0, ltf0 - cfg.ltf_off_sweep)
+        search_e = min(rxw.shape[0] - SYMBOL_LEN, ltf0 + cfg.ltf_off_sweep)
+        if search_e > search_s and NUMBA_OK:
+            search_buf = rxw_cfo[search_s : search_e + SYMBOL_LEN].astype(np.complex64)
+            corr_ltf = xcorr_mag_valid(search_buf, ltf_td_ref)
+            ltf_start = search_s + int(np.argmax(corr_ltf)) if corr_ltf.size > 0 else ltf0
+        else:
+            ltf_start = ltf0
+
+        payload_start = ltf_start + cfg.ltf_symbols * SYMBOL_LEN
+        pilot_vals = np.array([1, 1, 1, -1], dtype=np.complex64)
+
+        # Precompute conjugated CFO-corrected window (for TX conj compensation)
+        rxw_cfo_conj = np.conj(rxw_cfo)
+
+        best_ok = False
+        best_reason = "bad_magic"
+        best_seq = -1
+        best_payload = b""
+        best_evm = 1e9
+        best_diag_inner = {}
+
+        # Outer loop: try with and without conjugate compensation
+        for conj_comp in [False, True]:
+            rxw_proc = rxw_cfo_conj if conj_comp else rxw_cfo
+
+            H = channel_estimate_from_ltf(rxw_proc, ltf_start, ltf_freq_ref, cfg.ltf_symbols)
+            if H is None:
                 continue
-            Ht = np.zeros(N_FFT, dtype=np.complex64)
-            for k in range(-26,27):
-                if k==0: continue
-                idx = sc_to_bin(k)
-                if np.abs(ltf_freq_ref[idx]) > 1e-6:
-                    Ht[idx] = Y[idx] / ltf_freq_ref[idx]
-            m = np.abs(Ht[used_bins])
-            qv = float((np.mean(m)**2) / (np.var(m) + 1e-12))
-            if qv > best_q:
-                best_q = qv
-                best_off = off
 
-        ltf_start = ltf0 + best_off
-        H = channel_estimate_from_ltf(rxw, ltf_start, ltf_freq_ref, cfg.ltf_symbols)
-        if H is None:
-            return False, "ltf_fail", -1, b"", {"ltf_q": best_q, "ltf_start": ltf_start}
+            data_syms_all = []
+            evm_list = []
 
-        payload_start = ltf_start + cfg.ltf_symbols*SYMBOL_LEN
+            for si in range(cfg.max_ofdm_syms_probe):
+                Y = extract_ofdm_symbol(rxw_proc, payload_start + si * SYMBOL_LEN)
+                if Y is None:
+                    break
+                Ye = Y.copy()
+                for k in range(-26, 27):
+                    if k == 0: continue
+                    idx = sc_to_bin(k)
+                    if np.abs(H[idx]) > 1e-6:
+                        Ye[idx] = Ye[idx] / (H[idx] + 1e-12)
 
-        # probe demod
-        pilot_vals = np.array([1,1,1,-1], dtype=np.complex64)
-        phase_acc = 0.0
-        freq_acc = 0.0
-        prev_phase = None
+                # Per-symbol pilot phase correction: measure phase from pilots and apply directly.
+                # This is exact for AWGN + slow CFO (no inter-symbol phase accumulation error).
+                sign = 1 if (si % 2 == 0) else -1
+                rp = Ye[PILOT_BINS]
+                ph = float(np.angle(np.sum(rp * np.conj(sign * pilot_vals))))
+                Ye *= np.exp(-1j * ph).astype(np.complex64)
 
-        data_syms_all = []
-        evm_list = []
+                ds = Ye[DATA_BINS]
+                nearest = np.empty_like(ds)
+                for i in range(ds.size):
+                    best_j = 0
+                    md = 1e9
+                    for j in range(4):
+                        d = ds[i] - IDEAL_QPSK[j]
+                        dd = d.real * d.real + d.imag * d.imag
+                        if dd < md:
+                            md = dd
+                            best_j = j
+                    nearest[i] = IDEAL_QPSK[best_j]
+                evm_list.append(float(np.sqrt(np.mean(np.abs(ds - nearest) ** 2))))
+                data_syms_all.append(ds)
 
-        for si in range(cfg.max_ofdm_syms_probe):
-            Y = extract_ofdm_symbol(rxw, payload_start + si*SYMBOL_LEN)
-            if Y is None:
+            if not data_syms_all:
+                continue
+
+            data_syms_all = np.concatenate(data_syms_all).astype(np.complex64)
+            cur_evm = float(np.mean(evm_list)) if evm_list else 1e9
+
+            # Try all 4 QPSK rotations; TX scrambles bits so descramble before parsing
+            for rot in range(4):
+                syms_rot = data_syms_all * (1j ** rot)
+                bits_raw = qpsk_demap(syms_rot)
+                bits = majority_vote(bits_raw, cfg.repeat)
+                bits = scramble_bits(bits)
+                bb = bits_to_bytes(bits)
+                ok, reason, seq, payload = parse_packet_bytes(bb)
+                if ok:
+                    # EVM only over the OFDM symbols that carry the actual packet bytes
+                    pkt_byte_count = 4 + 2 + 2 + 2 + len(payload) + 4
+                    pkt_syms_needed = int(np.ceil(pkt_byte_count * 8 / BITS_PER_SYM))
+                    pkt_evm = float(np.mean(evm_list[:pkt_syms_needed])) if evm_list else cur_evm
+                    best_ok = True
+                    best_reason = reason
+                    best_seq = seq
+                    best_payload = payload
+                    best_evm = pkt_evm
+                    best_diag_inner = {"ltf_start": ltf_start, "payload_start": payload_start, "probe_evm": pkt_evm, "cfo_hz": cfo_est}
+                    break
+                elif best_reason == "bad_magic":
+                    best_reason = reason
+
+            # Track lowest EVM for diagnostics even if not decoded
+            if not best_ok and cur_evm < best_evm:
+                best_evm = cur_evm
+                best_diag_inner = {"ltf_start": ltf_start, "payload_start": payload_start, "probe_evm": cur_evm}
+
+            if best_ok:
                 break
-            # equalize
-            Ye = Y.copy()
-            for k in range(-26,27):
-                if k==0: continue
-                idx = sc_to_bin(k)
-                if np.abs(H[idx]) > 1e-6:
-                    Ye[idx] = Ye[idx] / (H[idx] + 1e-12)
-            # pilots
-            sign = 1 if (si%2==0) else -1
-            rp = Ye[PILOT_BINS]
-            ph = float(np.angle(np.sum(rp * np.conj(sign*pilot_vals))))
-            if prev_phase is not None:
-                dph = ph - prev_phase
-                while dph > np.pi: dph -= 2*np.pi
-                while dph < -np.pi: dph += 2*np.pi
-                freq_acc += cfg.ki * dph
-            prev_phase = ph
-            phase_acc += freq_acc + cfg.kp * ph
-            Ye *= np.exp(-1j*phase_acc).astype(np.complex64)
 
-            ds = Ye[DATA_BINS]
-            # EVM
-            # nearest ideal
-            nearest = np.empty_like(ds)
-            for i in range(ds.size):
-                # brute nearest (48 per sym is fine)
-                best = 0
-                md = 1e9
-                for j in range(4):
-                    d = ds[i] - IDEAL_QPSK[j]
-                    dd = (d.real*d.real + d.imag*d.imag)
-                    if dd < md:
-                        md = dd
-                        best = j
-                nearest[i] = IDEAL_QPSK[best]
-            evm = float(np.sqrt(np.mean(np.abs(ds - nearest)**2)))
-            evm_list.append(evm)
-            data_syms_all.append(ds)
+        if not best_diag_inner:
+            best_diag_inner = {"ltf_start": ltf_start, "payload_start": payload_start, "probe_evm": 0.0}
 
-        if not data_syms_all:
-            return False, "no_payload", -1, b"", {"ltf_q": best_q, "ltf_start": ltf_start, "payload_start": payload_start}
-
-        data_syms_all = np.concatenate(data_syms_all).astype(np.complex64)
-        bits_raw = qpsk_demap(data_syms_all)
-        bits = majority_vote(bits_raw, cfg.repeat)
-        bb = bits_to_bytes(bits)
-
-        ok, reason, seq, payload = parse_packet_bytes(bb)
-        diag = {
-            "ltf_q": best_q,
-            "ltf_start": ltf_start,
-            "payload_start": payload_start,
-            "probe_evm": float(np.mean(evm_list)) if evm_list else 0.0,
-        }
-        return ok, reason, seq, payload, diag
+        diag = {"ltf_q": 0.0, **best_diag_inner}
+        return best_ok, best_reason, best_seq, best_payload, diag
 
     last_proc_w = None
 
@@ -571,7 +620,7 @@ def dsp_thread(stop_ev: threading.Event, q: "queue.Queue[np.ndarray]", cfg: RxCo
                     "p10": p10, "eg_th": eg_th, "maxe": maxe,
                     "xc_best_peak": 0.0, "xc_best_idx": -1,
                     "stf_idx": -1, "ltf_start": -1, "payload_start": -1,
-                    "probe_evm": "", "seq": "", "payload_len": ""
+                    "probe_evm": "", "cfo_hz": "", "seq": "", "payload_len": ""
                 })
                 continue
 
@@ -643,6 +692,7 @@ def dsp_thread(stop_ev: threading.Event, q: "queue.Queue[np.ndarray]", cfg: RxCo
                 "ltf_start": int(best_diag.get("ltf_start", -1)),
                 "payload_start": int(best_diag.get("payload_start", -1)),
                 "probe_evm": float(best_diag.get("probe_evm", 0.0)),
+                "cfo_hz": float(best_diag.get("cfo_hz", 0.0)),
                 "seq": (best_seq if best_ok else ""),
                 "payload_len": (payload_len if best_ok else ""),
             })
@@ -652,7 +702,12 @@ def dsp_thread(stop_ev: threading.Event, q: "queue.Queue[np.ndarray]", cfg: RxCo
                 outp = os.path.join(good_dir, f"seq_{best_seq:08d}.bin")
                 with open(outp, "wb") as f:
                     f.write(best_payload)
-                print(f"[RX] OK seq={best_seq} payload={payload_len}B probe_evm={best_diag.get('probe_evm',0):.3f} stf={best_stf} xc={best_xc_peak:.3f}")
+                try:
+                    payload_str = best_payload.decode("utf-8")
+                except Exception:
+                    payload_str = repr(best_payload[:32])
+                cfo_str = f" cfo={best_diag.get('cfo_hz',0):.0f}Hz" if best_diag.get('cfo_hz') else ""
+                print(f"[RX] OK seq={best_seq} payload={payload_len}B evm={best_diag.get('probe_evm',0):.3f} xc={best_xc_peak:.3f}{cfo_str} | {payload_str}")
 
                 if cfg.save_npz:
                     npz_path = os.path.join(cfg.save_dir, f"cap_{cap:06d}_ok.npz")

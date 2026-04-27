@@ -528,8 +528,8 @@ class RxConfig:
     rx_buf: int = 131072
     kernel_buffers: int = 4
     repeat: int = 1
-    stf_repeats: int = 20
-    ltf_symbols: int = 10
+    stf_repeats: int = 6
+    ltf_symbols: int = 4
 
     ring_size: int = 524288
     proc_window: int = 262144
@@ -919,8 +919,9 @@ def dsp_thread(stop_ev: threading.Event, q: "queue.Queue[np.ndarray]", fig_q: qu
                 syms_rot = syms_base * (1j**rot)
                 bits_raw = qpsk_demap(syms_rot)
                 bits = majority_vote(bits_raw, cfg.repeat)
+                bits = scramble_bits(bits)   # descramble (TX scrambles before modulation)
                 bb = bits_to_bytes(bits)
-                
+
                 res_ok, res_reason, res_seq, res_total, res_payload = parse_packet_bytes(bb)
                 if res_ok:
                     best_ok = True
