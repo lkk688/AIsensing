@@ -461,7 +461,7 @@ Added a new producer_sweep thread. When running in --mode sweep, the TX node wil
 
 python3 rf_stream_tx_step5phy.py --uri ip:192.168.3.2 --fc 2.3e9 --fs 3e6 --tx_gain 0 --fixed_len 65536 --mode sweep --sweep_freqs "-1e6, -5e5, 0, 5e5, 1e6" --sweep_time 2.0
 
-
+cmpe@cmpe-jetson:~$ source .venv/bin/activate
 python3 rf_stream_tx_step5phy.py \
   --uri ip:192.168.3.2 \
   --fc 2.3e9 --fs 3e6 \
@@ -476,4 +476,6 @@ python3 rf_stream_tx_step5phy.py \
 
 如果你想“保持 DMA 活跃但极低泄漏”，用严格静默：
 --idle_amp 0
+
+
 """

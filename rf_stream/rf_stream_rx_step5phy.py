@@ -878,4 +878,7 @@ python3 rf_stream_rx_step5phy.py \
   --energy_mult 2.5 \
   --probe_syms 16 \
   --save_npz
+
+  
+python3 rf_stream_rx_step5phy.py --uri ip:192.168.2.2 --fc 2.3e9 --fs 3e6 --rx_gain 30 --rx_buf 131072 --ring_size 524288 --proc_window 262144 --proc_hop 65536 --xcorr_topk 8 --xcorr_min_peak 0.2 --energy_mult 2.5 --probe_syms 16 --save_npz
 """

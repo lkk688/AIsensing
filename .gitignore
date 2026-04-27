@@ -194,3 +194,6 @@ sdradi/output
 sdradi/recovered.bin
 
 rf_stream/rf_stream_rx_runs
+rf_stream/rf_stream_rx_runs/
+*.bin
+rf_stream_rx_runs/run_20260427_112119/captures.csv
